@@ -1,4 +1,4 @@
-use crate::{database::DB, Thumbnail};
+use crate::database::DB;
 use chrono::Utc;
 
 
@@ -94,73 +94,36 @@ impl super::AISearchEngine {
     // re-index (and especially don't re-run expensive vision description) every launch.
     // Returns number of records loaded.
     pub async fn load_cached(&self) -> usize {
-        let rows: Result<Vec<Thumbnail>, _> = DB.select("thumbnails").await;
-        let mut loaded = 0usize;
-        match rows {
-            Ok(list) => {
-                if list.is_empty() {
-                    return 0;
-                }
-                // Preload clip embeddings (path -> embedding)
-                let clip_map: std::collections::HashMap<String, (Vec<f32>, Option<String>)> = match crate::database::load_all_clip_embeddings().await {
-                    Ok(rows) => rows.into_iter().map(|r| (r.path.clone(), (r.embedding.clone(), r.hash.clone()))).collect(),
-                    Err(e) => { log::warn!("Failed loading clip_embeddings: {e}"); std::collections::HashMap::new() }
-                };
-                let mut files_guard = self.files.lock().await;
-                for r in list.into_iter() {
-                    // Attempt parse of modified timestamp
-                    let modified_dt = r
-                        .modified
-                        .as_ref()
-                        .and_then(|s| Some(s.with_timezone(&chrono::Local)));
-
-                    let mut meta = super::FileMetadata {
-                        id: None, // document id not restored (not needed for search mapping)
-                        path: r.path.clone(),
-                        filename: r.filename.clone(),
-                        file_type: r.file_type.clone(),
-                        size: r.size,
-                        modified: modified_dt,
-                        created: modified_dt,
-                        // We persist only the base64 thumbnail (thumbnail_b64). Older rows may have stored
-                        // a path in thumbnail_b64 erroneously if a previous bug existed; we detect a likely
-                        // data URL by prefix. If it's not a data URL we keep it in thumbnail_path so later
-                        // code can try to load & convert it.
-                        thumbnail_path: r.thumbnail_b64.as_ref().and_then(|s| {
-                            if s.starts_with("data:image") {
-                                None
-                            } else {
-                                Some(s.clone())
+        // Only pull the minimal data necessary to know which paths have any cached AI info.
+        // This avoids deserializing large base64 thumbnails & embeddings at startup.
+        let sql = "SELECT path FROM thumbnails"; // path has a UNIQUE index for fast scan
+        let mut count = 0usize;
+        match DB.query(sql).await {
+            Ok(mut resp) => {
+                // Surreal returns one result set; take it as Vec<serde_json::Value> then extract paths.
+                let rows: Result<Vec<serde_json::Value>, _> = resp.take(0);
+                match rows {
+                    Ok(vals) => {
+                        let mut set_guard = self.cached_paths.lock().await;
+                        set_guard.clear();
+                        for v in vals.into_iter() {
+                            if let Some(p) = v.get("path").and_then(|x| x.as_str()) {
+                                set_guard.insert(p.to_string());
+                                count += 1;
                             }
-                        }),
-                        thumb_b64: r.thumbnail_b64.as_ref().and_then(|s| {
-                            if s.starts_with("data:image") {
-                                Some(s.clone())
-                            } else {
-                                None
-                            }
-                        }),
-                        hash: r.hash.clone(),
-                        description: r.description.clone(),
-                        caption: r.caption.clone(),
-                        tags: r.tags.clone(),
-                        category: r.category.clone(),
-                        embedding: r.embedding.clone(),
-                        similarity_score: None,
-                        clip_embedding: None,
-                        clip_similarity_score: None,
-                    };
-                    if let Some((emb, _hash)) = clip_map.get(&meta.path) { meta.clip_embedding = Some(emb.clone()); }
-                    files_guard.push(meta);
-                    loaded += 1;
+                        }
+                        log::info!("[AI] cached path-only hydration: {} paths", count);
+                    }
+                    Err(e) => {
+                        log::warn!("[AI] failed to parse cached path list: {e}");
+                    }
                 }
-                log::info!("Loaded {} cached AI metadata rows", loaded);
             }
             Err(e) => {
-                log::warn!("Failed to load cached AI metadata: {}", e);
+                log::warn!("[AI] failed path-only cache load: {e}");
             }
         }
-        loaded
+        count
     }
 
 }

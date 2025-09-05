@@ -4,11 +4,85 @@ use tokio::sync::Mutex;
 use crate::database::DB;
 
 impl super::AISearchEngine {
+    /// Hydrate minimal metadata (no thumbnails/base64/embeddings) for a set of directory file paths.
+    /// Returns number of rows inserted. Only paths already known in cached_paths and not yet in self.files are hydrated.
+    pub async fn hydrate_directory_paths(&self, dir_paths: &[String]) -> usize {
+        if dir_paths.is_empty() { return 0; }
+        // Snapshot existing in-memory paths into a HashSet for fast exclusion
+        let existing: std::collections::HashSet<String> = {
+            let files = self.files.lock().await;
+            files.iter().map(|f| f.path.clone()).collect()
+        };
+        // Filter to those we know have cached rows but are not loaded yet.
+        let cached_guard = self.cached_paths.lock().await;
+        let mut need: Vec<String> = Vec::new();
+        need.reserve(dir_paths.len());
+        for p in dir_paths.iter() {
+            if !existing.contains(p) && cached_guard.contains(p) {
+                need.push(p.clone());
+            }
+        }
+        drop(cached_guard);
+        if need.is_empty() { return 0; }
+
+        let mut inserted = 0usize;
+        // Chunk membership queries to avoid overly large parameter arrays.
+        const CHUNK: usize = 256;
+        for chunk in need.chunks(CHUNK) {
+            let chunk_vec: Vec<String> = chunk.iter().cloned().collect();
+            // Only select minimal fields. (thumbnail_b64 intentionally excluded)
+            let sql = "SELECT path, filename, file_type, size, modified, hash, description, caption, tags, category FROM thumbnails WHERE array::find($paths, path) != NONE";
+            match crate::database::DB.query(sql).bind(("paths", chunk_vec)).await {
+                Ok(mut resp) => {
+                    let rows: Result<Vec<serde_json::Value>, _> = resp.take(0);
+                    match rows {
+                        Ok(vals) => {
+                            let mut files_guard = self.files.lock().await;
+                            for v in vals.into_iter() {
+                                if let Some(p) = v.get("path").and_then(|x| x.as_str()) {
+                                    if files_guard.iter().any(|f| f.path == p) { continue; }
+                                    // Convert modified -> chrono::Local if present
+                                    let modified_local = v.get("modified").and_then(|m| m.as_str()).and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()).map(|dt| dt.with_timezone(&chrono::Local));
+                                    let fm = super::FileMetadata {
+                                        id: None,
+                                        path: p.to_string(),
+                                        filename: v.get("filename").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                                        file_type: v.get("file_type").and_then(|x| x.as_str()).unwrap_or("other").to_string(),
+                                        size: v.get("size").and_then(|x| x.as_i64()).unwrap_or(0) as u64,
+                                        modified: modified_local,
+                                        created: modified_local,
+                                        thumbnail_path: None,
+                                        thumb_b64: None, // defer heavy field
+                                        hash: v.get("hash").and_then(|x| x.as_str()).map(|s| s.to_string()),
+                                        description: v.get("description").and_then(|x| x.as_str()).map(|s| s.to_string()),
+                                        caption: v.get("caption").and_then(|x| x.as_str()).map(|s| s.to_string()),
+                                        tags: v.get("tags").and_then(|x| x.as_array()).map(|arr| arr.iter().filter_map(|e| e.as_str().map(|s| s.to_string())).collect()).unwrap_or_default(),
+                                        category: v.get("category").and_then(|x| x.as_str()).map(|s| s.to_string()),
+                                        embedding: None, // not loaded yet
+                                        similarity_score: None,
+                                        clip_embedding: None,
+                                        clip_similarity_score: None,
+                                    };
+                                    files_guard.push(fm);
+                                    inserted += 1;
+                                }
+                            }
+                        }
+                        Err(e) => { log::warn!("[AI] hydrate_directory_paths parse error: {e}"); }
+                    }
+                }
+                Err(e) => { log::warn!("[AI] hydrate_directory_paths query failed: {e}"); }
+            }
+        }
+        if inserted > 0 { log::info!("[AI] Hydrated {} minimal rows for directory", inserted); }
+        inserted
+    }
     pub fn new() -> Self {
         Self {
             files: Arc::new(Mutex::new(Vec::new())),
             path_to_id: Arc::new(Mutex::new(HashMap::new())),
             indexing_in_progress: Arc::new(Mutex::new(HashMap::new())),
+            cached_paths: Arc::new(Mutex::new(std::collections::HashSet::new())),
             auto_descriptions_enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             auto_clip_enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             index_tx: Arc::new(Mutex::new(None)),
@@ -86,9 +160,8 @@ impl super::AISearchEngine {
 
     // Attempt to restore FileMetadata from DB cached thumbnail row (best-effort)
     async fn try_restore_file_metadata(&self, path: &str) -> anyhow::Result<Option<super::FileMetadata>> {
-        // Query thumbnails by path (linear scan since we don't have an index abstraction here)
-        let rows: Result<Vec<crate::Thumbnail>, _> = crate::database::DB.select("thumbnails").await;
-        let Some(row) = rows.ok().and_then(|v| v.into_iter().find(|t| t.path == path)) else { return Ok(None); };
+        // Single-row lookup via UNIQUE index helper.
+        let Some(row) = crate::database::get_thumbnail_by_path(path).await? else { return Ok(None); };
         // Build FileMetadata (leave hash/clip/embedding empty; they will be filled later by indexing)
         // Convert surrealdb::sql::Datetime -> chrono::DateTime<Local>
         fn conv_dt(dt: &Option<surrealdb::sql::Datetime>) -> Option<chrono::DateTime<chrono::Local>> {
@@ -199,14 +272,15 @@ impl super::AISearchEngine {
     
     // Return up to 'limit' thumbnail/cache rows directly from Surreal for debug view.
     pub async fn list_thumbnail_rows(&self, limit: usize) -> Vec<crate::Thumbnail> {
-        let rows: Result<Vec<crate::Thumbnail>, _> = DB.select("thumbnails").await;
-        match rows {
-            Ok(mut v) => {
-                v.sort_by(|a,b| a.path.cmp(&b.path));
-                if v.len() > limit { v.truncate(limit); }
-                v
+        if limit == 0 { return Vec::new(); }
+        // Use an ordered, bounded query. If no index for ordering, we still constrain rows via LIMIT.
+        let sql = "SELECT * FROM thumbnails LIMIT $limit"; // stable order not guaranteed; only for debug
+        match DB.query(sql).bind(("limit", limit as i64)).await {
+            Ok(mut resp) => {
+                let rows: Result<Vec<crate::Thumbnail>, _> = resp.take(0);
+                rows.unwrap_or_else(|e| { log::warn!("Debug list_thumbnail_rows take failed: {e}"); Vec::new() })
             }
-            Err(e) => { log::warn!("Debug list_thumbnail_rows failed: {}", e); Vec::new() }
+            Err(e) => { log::warn!("Debug list_thumbnail_rows query failed: {e}"); Vec::new() }
         }
     }
 
@@ -259,6 +333,8 @@ impl super::AISearchEngine {
         // Fire-and-forget task.
         tokio::spawn(async move {
             let p_str = path.to_string_lossy().to_string();
+            // Check cached_paths inside async context.
+            if self.cached_paths.lock().await.contains(&p_str) { return; }
             {
                 let mut act = self.active_vision_path.lock().await; *act = Some(p_str.clone());
             }

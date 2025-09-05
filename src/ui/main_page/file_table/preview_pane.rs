@@ -17,10 +17,8 @@ impl super::FileExplorer {
                         tokio::spawn(async move {
                             if let Some(active) = crate::ai::GLOBAL_AI_ENGINE.get_active_vision_path().await {
                                 if !active.is_empty() && active != cur_path {
-                                    if let Ok(rows) = crate::database::DB.select::<Vec<crate::Thumbnail>>("thumbnails").await {
-                                        if let Some(row) = rows.into_iter().find(|r| r.path == active) {
-                                            let _ = tx_thumb.send(row);
-                                        }
+                                    if let Ok(row_opt) = crate::database::get_thumbnail_by_path(&active).await {
+                                        if let Some(row) = row_opt { let _ = tx_thumb.send(row); }
                                     }
                                 }
                             }
@@ -52,8 +50,8 @@ impl super::FileExplorer {
                                 tokio::spawn(async move {
                                     if let Some(_meta) = crate::ai::GLOBAL_AI_ENGINE.get_file_metadata(&path_clone2).await {
                                         // Re-use thumbnail channel to signal update by re-sending current thumbnail from DB
-                                        if let Ok(rows) = crate::database::DB.select::<Vec<crate::Thumbnail>>("thumbnails").await {
-                                            if let Some(row) = rows.into_iter().find(|r| r.path == path_clone2) { let _ = tx_thumb.send(row); }
+                                        if let Ok(row_opt) = crate::database::get_thumbnail_by_path(&path_clone2).await {
+                                            if let Some(row) = row_opt { let _ = tx_thumb.send(row); }
                                         }
                                     }
                                 });

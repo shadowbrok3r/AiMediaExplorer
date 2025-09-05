@@ -120,22 +120,7 @@ pub async fn save_thumbnail_batch(thumbs: Vec<Thumbnail>) -> anyhow::Result<(), 
     Ok(())
 }
 
-// Load all thumbnail rows (full records)
-pub async fn load_all_thumbnails() -> anyhow::Result<Vec<Thumbnail>, anyhow::Error> {
-    log::info!("load_all_thumbnails");
-    let rows: Vec<crate::Thumbnail> = DB.select("thumbnails").await?;
-    Ok(rows)
-}
 
-// Build a lookup map: path -> (hash, thumb_b64, category)
-pub async fn load_thumb_lookup() -> anyhow::Result<std::collections::HashMap<String, Thumbnail>, anyhow::Error> {
-    let rows: Vec<crate::Thumbnail> = DB.select("thumbnails").await?;
-    let mut map: std::collections::HashMap<String, Thumbnail> = std::collections::HashMap::with_capacity(rows.len());
-    for r in rows.into_iter() {
-        map.insert(r.path.clone(), r.clone());
-    }
-    Ok(map)
-}
 
 // Save (insert) a single thumbnail row (best-effort). Does not deduplicate existing rows.
 pub async fn save_thumbnail_row(row: Thumbnail) -> anyhow::Result<(), anyhow::Error> {
@@ -146,6 +131,17 @@ pub async fn save_thumbnail_row(row: Thumbnail) -> anyhow::Result<(), anyhow::Er
         .await?
         .take();
     Ok(())
+}
+
+// Fetch a single thumbnail row by exact path (leverages UNIQUE index on path)
+pub async fn get_thumbnail_by_path(path: &str) -> anyhow::Result<Option<Thumbnail>, anyhow::Error> {
+    let sql = "SELECT * FROM thumbnails WHERE path = $path LIMIT 1";
+    let mut resp = DB
+        .query(sql)
+        .bind(("path", path.to_string()))
+        .await?;
+    let row: Option<Thumbnail> = resp.take(0)?;
+    Ok(row)
 }
 
 // Fetch thumbnail record id (thumbnails:...) by path

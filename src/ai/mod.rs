@@ -64,6 +64,8 @@ pub struct AISearchEngine {
     pub files: std::sync::Arc<tokio::sync::Mutex<Vec<FileMetadata>>>,
     pub path_to_id: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, String>>>,
     pub indexing_in_progress: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, usize>>>, // path -> reentry count
+    // Set of paths known to have cached AI metadata (loaded cheaply at startup without full row hydration)
+    pub cached_paths: std::sync::Arc<tokio::sync::Mutex<std::collections::HashSet<String>>>,
     
 
     // Control flags for manual vs automatic behaviors

@@ -88,6 +88,13 @@ pub struct FileExplorer {
     meta_tx: Sender<AIMetadataUpdate>,
     #[serde(skip)]
     meta_rx: Receiver<AIMetadataUpdate>,
+        // Vision description generation tracking (bulk vision progress separate from indexing)
+        #[serde(skip)]
+        vision_started: usize,
+        #[serde(skip)]
+        vision_completed: usize,
+        #[serde(skip)]
+        vision_pending: usize, // scheduled but not yet final
 }
 
 impl Default for FileExplorer {
@@ -126,6 +133,9 @@ impl Default for FileExplorer {
             follow_active_vision: true,
             clip_presence: std::collections::HashMap::new(),
             meta_tx, meta_rx,
+            vision_started: 0,
+            vision_completed: 0,
+            vision_pending: 0,
         };
         // Initial shallow directory population (non-recursive)
         this.populate_current_directory();
@@ -262,6 +272,9 @@ impl FileExplorer {
                                             }
                                         }).await;
                                     });
+                                    // Update vision generation counters
+                                    self.vision_started += 1;
+                                    self.vision_pending += 1;
                                     scheduled += 1;
                                 }
                                 if scheduled == 0 { log::info!("[AI] Bulk Generate: nothing to schedule"); } else { log::info!("[AI] Bulk Generate scheduled {scheduled} items"); }
@@ -336,15 +349,33 @@ impl FileExplorer {
                     let active = crate::ai::GLOBAL_AI_ENGINE.index_active.load(Ordering::Relaxed);
                     let completed = crate::ai::GLOBAL_AI_ENGINE.index_completed.load(Ordering::Relaxed);
                     let total_for_ratio = q + active + completed;
+                    // Vision generation state
+                    let vision_active = !self.streaming_interim.is_empty();
+                    let vision_pending = self.vision_pending;
+                    let vision_started = self.vision_started;
+                    let vision_completed = self.vision_completed;
+                    // Build status strings
                     if total_for_ratio > 0 {
                         let ratio = (completed as f32) / (total_for_ratio as f32);
                         ProgressBar::new(ratio.clamp(0.0,1.0))
-                            .desired_width(150.)
+                            .desired_width(140.)
                             .show_percentage()
-                            .text(format!("AI {} ({} / {})", if ai_ready {"Ready"} else {"Loading"}, completed, total_for_ratio))
+                            .text(format!("Index {} ({} / {})", if ai_ready {"ing"} else {"load"}, completed, total_for_ratio))
                             .ui(ui);
+                    }
+                    if vision_started > 0 {
+                        let done_ratio = if vision_started == 0 {0.0} else {(vision_completed as f32)/(vision_started as f32)};
+                        let bar = ProgressBar::new(done_ratio.clamp(0.0,1.0))
+                            .desired_width(140.)
+                            .show_percentage()
+                            .text(format!("Vision {} act:{} pend:{}", vision_completed, self.streaming_interim.len(), vision_pending.saturating_sub(self.streaming_interim.len())));
+                        bar.ui(ui);
+                    } else if vision_active || vision_pending > 0 {
+                        ui.label("Vision: starting...");
+                    } else if !ai_ready {
+                        ui.label("AI: Loading");
                     } else {
-                        ui.label(format!("AI: {}", if ai_ready {"Ready"} else {"Idle"}));
+                        ui.label("AI: Idle");
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {                
                         let mut img_cnt=0usize; let mut vid_cnt=0usize; let mut dir_cnt=0usize; let mut total_size=0u64;
@@ -646,16 +677,30 @@ impl FileExplorer {
             ctx.request_repaint();
             match update {
                 AIUpdate::Interim { path, text } => {
-                    if self.follow_active_vision && !self.open_preview_pane && !path.is_empty() {
-                        if let Some(row) = self.table.iter().find(|r| r.path == path) { self.current_thumb = row.clone(); self.open_preview_pane = true; }
+                    // Auto-follow: always advance to the currently streaming image if enabled.
+                    if self.follow_active_vision && !path.is_empty() {
+                        if self.current_thumb.path != path {
+                            if let Some(row) = self.table.iter().find(|r| r.path == path) {
+                                self.current_thumb = row.clone();
+                                self.open_preview_pane = true; // ensure visible
+                            }
+                        }
                     }
                     self.streaming_interim.insert(path, text);
                 }
                 AIUpdate::Final { path, description, caption, category, tags } => {
-                    if self.follow_active_vision && !self.open_preview_pane && !path.is_empty() {
-                        if let Some(row) = self.table.iter().find(|r| r.path == path) { self.current_thumb = row.clone(); self.open_preview_pane = true; }
+                    if self.follow_active_vision && !path.is_empty() {
+                        if self.current_thumb.path != path {
+                            if let Some(row) = self.table.iter().find(|r| r.path == path) {
+                                self.current_thumb = row.clone();
+                                self.open_preview_pane = true;
+                            }
+                        }
                     }
                     self.streaming_interim.remove(&path);
+                    // Update counters: a pending item finished.
+                    if self.vision_pending > 0 { self.vision_pending -= 1; }
+                    self.vision_completed += 1;
                     let desc_clone_for_row = description.clone();
                     let caption_clone_for_row = caption.clone();
                     let category_clone_for_row = category.clone();
@@ -874,6 +919,17 @@ impl FileExplorer {
             });
         }
         // After listing entries, fetch any existing AI metadata cached in DB and merge.
+        // New per-directory minimal AI metadata hydration (path-only set + minimal fields).
+        {
+            let engine = std::sync::Arc::new(crate::ai::GLOBAL_AI_ENGINE.clone());
+            let dir_file_paths: Vec<String> = self.table.iter().filter(|t| t.file_type != "<DIR>").map(|t| t.path.clone()).collect();
+            if !dir_file_paths.is_empty() {
+                tokio::spawn(async move {
+                    let _ = engine.hydrate_directory_paths(&dir_file_paths).await; // count logged inside
+                });
+            }
+        }
+        // Legacy metadata fetch pathway retained for now (can be removed once UI fully reads from AI engine state if desired)
         self.fetch_directory_metadata();
     }
 
@@ -947,11 +1003,13 @@ impl FileExplorer {
         self.pending_thumb_rows.clear();
         let tx = self.thumbnail_tx.clone();
         tokio::spawn(async move {
-            match crate::database::load_all_thumbnails().await {
+            // Page size for debug/DB view; can make user-configurable later.
+            let page_limit = 500usize;
+            match crate::database::load_thumbnails_page(0, page_limit, None, None, None, None, None).await {
                 Ok(rows) => {
                     for r in rows.into_iter() { let _ = tx.try_send(r); }
                 },
-                Err(e) => { log::error!("DB load failed: {e}"); }
+                Err(e) => { log::error!("DB page load failed: {e}"); }
             }
         });
     }
