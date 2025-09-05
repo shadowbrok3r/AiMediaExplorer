@@ -190,24 +190,15 @@ impl super::AISearchEngine {
         Ok(Some(fm))
     }
 
-    // Convenience: build inside an Arc directly (part of Arc refactor start)
-    // pub async fn new_shared() -> anyhow::Result<std::sync::Arc<Self>, anyhow::Error> {
-    //     Ok(std::sync::Arc::new(Self::new().await?))
-    // }
-
     pub async fn ensure_vision_model(
         &self,
     ) -> Result<(), anyhow::Error> {
         if crate::ai::joycaption_adapter::is_enabled() {
-            // Ensure the joycaption worker is started (best-effort) and bail out.
             if let Err(e) = crate::ai::joycaption_adapter::ensure_loaded().await { log::warn!("[AI] joycaption ensure_loaded failed: {e}"); }
             return Ok(());
         }
         Ok(())
     }
-
-    
-    // (Legacy semantic document table removed.)
 
     // Background enrichment: generate descriptions for any previously indexed images that are missing one.
     pub async fn enrich_missing_descriptions(&self) -> usize {
@@ -266,9 +257,6 @@ impl super::AISearchEngine {
         }
         Ok(hasher.finalize().to_hex().to_string())
     }
-
-    
-    // (Legacy semantic embedding generation removed.)
     
     // Return up to 'limit' thumbnail/cache rows directly from Surreal for debug view.
     pub async fn list_thumbnail_rows(&self, limit: usize) -> Vec<crate::Thumbnail> {

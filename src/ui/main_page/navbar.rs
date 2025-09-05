@@ -60,31 +60,25 @@ impl super::MainPage {
                                 log::info!("[CLIP] Missing embeddings: {missing}");
                             });
                         }
-                        if ui.button("AI Settings").clicked() {
-                            // Open preferences modal focusing AI section
-                            // We'll set an external flag via a global logger message for now
-                            log::info!("Open AI Settings (TODO: focus AI section)");
-                        }
                     });
                     if ui.button("Preferences").clicked() {
                         crate::app::OPEN_SETTINGS_REQUEST.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
                 });
-                if ui.button("View").clicked() {
-                    
-                }
                 ui.menu_button("Quick Access", |ui| {
                     ui.vertical_centered_justified(|ui| {
+                        ui.add_space(5.);
+                        ui.heading("User Directories");
+                        ui.add_space(5.);
                         for access in crate::quick_access().iter() {
                             ui.separator();
                             if Button::new(&access.icon).min_size(vec2(20., 20.)).right_text(&access.label).ui(ui).on_hover_text(&access.label).clicked() {
                                 self.file_explorer.set_path(access.path.to_string_lossy());
                             }
                         }
-                    });
-                });
-                ui.menu_button("Drives", |ui| {
-                    ui.vertical_centered_justified(|ui| {
+                        ui.add_space(5.);
+                        ui.heading("Drives");
+                        ui.add_space(5.);
                         for drive in list_drive_infos() {
                             ui.separator();
                             let root = drive.root.clone();
@@ -107,7 +101,6 @@ impl super::MainPage {
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.checkbox(&mut self.open_log_window, "View Logs");
-                    // ui.label(format!("Database Connection: {}", if self.))
                 });
             });
             
@@ -118,28 +111,12 @@ impl super::MainPage {
                 .warn_color(Color32::from_rgb(94, 215, 221)) 
                 .error_color(Color32::from_rgb(255, 55, 102)) 
                 .log_levels([true, true, true, false, false])
-                // there should be a way to set default false...
                 .enable_category("eframe".to_string(), false)
                 .enable_category("eframe::native::glow_integration".to_string(), false)
                 .enable_category("egui_glow::shader_version".to_string(), false)
                 .enable_category("egui_glow::painter".to_string(), false)
                 .show(ui);
             })
-            // ComboBox::new("Selection", "")
-            // .selected_text(self.selection.as_str())
-            // .show_ui(ui, |ui| {
-            //     let selected = &mut self.selection;
-            //     ui.selectable_value(
-            //         selected, 
-            //         StockSelection::CompanyStock,
-            //         StockSelection::CompanyStock.as_str()
-            //     );
-            //     ui.selectable_value(
-            //         selected, 
-            //         StockSelection::StoreInventory,
-            //         StockSelection::StoreInventory.as_str()
-            //     );
-            // });
         });
     }
 }

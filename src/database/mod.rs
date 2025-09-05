@@ -205,6 +205,7 @@ pub async fn load_thumbnails_page(
     modified_after: Option<&str>,
     modified_before: Option<&str>,
     excluded_exts: Option<&[String]>,
+    path_prefix: Option<&str>,
 ) -> anyhow::Result<Vec<Thumbnail>, anyhow::Error> {
     let mut clauses: Vec<String> = Vec::new();
     if let Some(ms) = min_size { clauses.push(format!("size >= {}", ms)); }
@@ -212,6 +213,12 @@ pub async fn load_thumbnails_page(
     if let Some(a) = modified_after { clauses.push(format!("modified >= time::parse('{}')", a)); }
     if let Some(b) = modified_before { clauses.push(format!("modified <= time::parse('{}')", b)); }
     if let Some(exts) = excluded_exts { if !exts.is_empty() { let joined = exts.iter().map(|e| format!("'{}'", e)).collect::<Vec<_>>().join(","); clauses.push(format!("file_type NOT IN [{}]", joined)); } }
+    if let Some(prefix) = path_prefix { if !prefix.trim().is_empty() { // simple prefix filter (string starts-with)
+        // SurrealDB lacks direct STARTSWITH; use string::starts_with function if available or fallback to LIKE
+        // Using LIKE with escaped %; ensure prefix sanitized (no % introduced by user). For large datasets an index on path exists.
+        let safe = prefix.replace('%', "");
+        clauses.push(format!("path LIKE '{}%'", safe));
+    }}
     let where_sql = if clauses.is_empty() { String::new() } else { format!(" WHERE {}", clauses.join(" AND ")) };
     let sql = format!("SELECT * FROM thumbnails{} LIMIT {} START {}", where_sql, limit, offset);
     let mut resp = DB.query(sql).await?;

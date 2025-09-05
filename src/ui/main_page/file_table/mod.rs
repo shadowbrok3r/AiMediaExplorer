@@ -1,5 +1,6 @@
 use std::{borrow::Cow, collections::HashMap, path::PathBuf, sync::Arc, path::Path};
 use crossbeam::channel::{Receiver, Sender};
+use egui::containers::menu::MenuConfig;
 use egui_data_table::Renderer;
 use humansize::DECIMAL;
 use serde::Serialize;
@@ -95,6 +96,15 @@ pub struct FileExplorer {
         vision_completed: usize,
         #[serde(skip)]
         vision_pending: usize, // scheduled but not yet final
+        // Database paging state
+        #[serde(skip)]
+        db_offset: usize,
+        #[serde(skip)]
+        db_limit: usize,
+        #[serde(skip)]
+        db_last_batch_len: usize,
+        #[serde(skip)]
+        db_loading: bool,
 }
 
 impl Default for FileExplorer {
@@ -136,6 +146,10 @@ impl Default for FileExplorer {
             vision_started: 0,
             vision_completed: 0,
             vision_pending: 0,
+            db_offset: 0,
+            db_limit: 500,
+            db_last_batch_len: 0,
+            db_loading: false,
         };
         // Initial shallow directory population (non-recursive)
         this.populate_current_directory();
@@ -149,49 +163,29 @@ impl FileExplorer {
         self.preview_pane(ui);
         self.quick_access_pane(ui);
 
-        TopBottomPanel::top("FileExplorerTopPanel").exact_height(25.).show_inside(ui, |ui| {
+        MenuBar::new().config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside)).ui(ui, |ui| {
+            ui.set_height(25.);
             ui.horizontal_top(|ui| {
                 let fs_mode = self.viewer.mode == viewer::ExplorerMode::FileSystem;
-                if ui.add_enabled(fs_mode, Button::new("⬅")).clicked() { self.nav_back(); }
-                if ui.add_enabled(fs_mode, Button::new("⬆")).clicked() { self.nav_up(); }
-                if ui.add_enabled(fs_mode, Button::new("➡")).clicked() { self.nav_forward(); }
-                if ui.add_enabled(fs_mode, Button::new("⟲")).clicked() { self.refresh(); }
-                if ui.add_enabled(fs_mode, Button::new("🏠")).clicked() { self.nav_home(); }
+                if ui.add_enabled(fs_mode, Button::new("⬅").min_size(vec2(20., 20.))).clicked() { self.nav_back(); }
+                if ui.add_enabled(fs_mode, Button::new("⬆").min_size(vec2(20., 20.))).clicked() { self.nav_up(); }
+                if ui.add_enabled(fs_mode, Button::new("➡").min_size(vec2(20., 20.))).clicked() { self.nav_forward(); }
+                if ui.add_enabled(fs_mode, Button::new("⟲").min_size(vec2(20., 20.))).clicked() { self.refresh(); }
+                if ui.add_enabled(fs_mode, Button::new("🏠").min_size(vec2(20., 20.))).clicked() { self.nav_home(); }
                 ui.separator();
-                egui::ComboBox::from_label("Mode")
-                    .selected_text(match self.viewer.mode { viewer::ExplorerMode::FileSystem => "File Explorer", viewer::ExplorerMode::Database => "Database Explorer" })
-                    .show_ui(ui, |ui| {
-                        let prev = self.viewer.mode;
-                        if ui.selectable_value(&mut self.viewer.mode, viewer::ExplorerMode::FileSystem, "File Explorer").clicked() && prev != viewer::ExplorerMode::FileSystem {
-                            self.populate_current_directory();
-                        }
-                        if ui.selectable_value(&mut self.viewer.mode, viewer::ExplorerMode::Database, "Database Explorer").clicked() && prev != viewer::ExplorerMode::Database {
-                            self.load_database_rows();
-                        }
-                    });
+                let path_edit = TextEdit::singleline(&mut self.current_path)
+                    .hint_text(if self.viewer.mode == viewer::ExplorerMode::Database { "Path Prefix Filter" } else { "Current Directory" })
+                    .desired_width(300.)
+                    .ui(ui);
                 if self.viewer.mode == viewer::ExplorerMode::Database {
-                    if ui.button("🔄 Reload DB").clicked() { self.load_database_rows(); }
-                }
-                
-                // Breadcrumbs (avoid borrow conflicts by cloning path first)
-                let current_path_clone = self.current_path.clone();
-                let parts: Vec<String> = current_path_clone.split(['\\','/']).filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
-                let root_has_slash = current_path_clone.starts_with('/');
-                let mut accum = if root_has_slash { String::from("/") } else { String::new() };
-                ui.horizontal(|ui| {
-                    for (i, part) in parts.iter().enumerate() {
-                        if !accum.ends_with(std::path::MAIN_SEPARATOR) && !accum.is_empty() { accum.push(std::path::MAIN_SEPARATOR); }
-                        accum.push_str(part);
-                        let display = if part.is_empty() { std::path::MAIN_SEPARATOR.to_string() } else { part.clone() };
-                        if ui.selectable_label(false, RichText::new(display).underline()).clicked() {
-                            self.push_history(accum.clone());
-                            self.populate_current_directory();
-                        }
-                        if i < parts.len()-1 { ui.label(RichText::new("›").weak()); }
-                        // Remove trailing segment for next iteration accumulation clone safety
+                    // Apply filter on Enter
+                    if (path_edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter))) || ui.button("Apply Filter").clicked() {
+                        // Reset paging and reload
+                        self.db_offset = 0;
+                        self.db_last_batch_len = 0;
+                        self.load_database_rows();
                     }
-                });
-                TextEdit::singleline(&mut self.current_path).hint_text("Current Directory").desired_width(300.).ui(ui);
+                }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.menu_button("⚙", |ui| {
                         ui.menu_button("Scan", |ui| {
@@ -279,6 +273,12 @@ impl FileExplorer {
                                 }
                                 if scheduled == 0 { log::info!("[AI] Bulk Generate: nothing to schedule"); } else { log::info!("[AI] Bulk Generate scheduled {scheduled} items"); }
                             }
+                            if ui.button("Generate Missing CLIP Embeddings Now").clicked() {
+                                tokio::spawn(async move {
+                                    let count = crate::ai::GLOBAL_AI_ENGINE.clip_generate_recursive().await;
+                                    log::info!("[CLIP] Manual generation completed for {count} images");
+                                });
+                            }
                             if ui.button("🗙 Cancel Scan").clicked() { /* TODO cancel scan token */ }
                         });
                         ui.menu_button("View", |ui| {
@@ -318,12 +318,27 @@ impl FileExplorer {
                         });
                     });
                     TextEdit::singleline(&mut self.viewer.filter).desired_width(200.0).hint_text("Search for files").ui(ui);
+                    ui.separator();
+                    egui::ComboBox::new("Table Mode", "")
+                    .selected_text(match self.viewer.mode { viewer::ExplorerMode::FileSystem => "File Explorer", viewer::ExplorerMode::Database => "Database Explorer" })
+                    .show_ui(ui, |ui| {
+                        let prev = self.viewer.mode;
+                        if ui.selectable_value(&mut self.viewer.mode, viewer::ExplorerMode::FileSystem, "File Explorer").clicked() && prev != viewer::ExplorerMode::FileSystem {
+                            self.populate_current_directory();
+                        }
+                        if ui.selectable_value(&mut self.viewer.mode, viewer::ExplorerMode::Database, "Database Explorer").clicked() && prev != viewer::ExplorerMode::Database {
+                            self.load_database_rows();
+                        }
+                    });
+                    if self.viewer.mode == viewer::ExplorerMode::Database {
+                        if ui.button("🔄 Reload DB").clicked() { self.load_database_rows(); }
+                    }
                 });
             });
         });
 
         TopBottomPanel::bottom("FileExplorer Bottom Panel")
-            .default_height(25.)
+            .exact_height(22.)
             .show_inside(ui, |ui| {
                 ui.horizontal(|ui| {
                     if self.file_scan_progress > 0.0 {
@@ -377,6 +392,27 @@ impl FileExplorer {
                     } else {
                         ui.label("AI: Idle");
                     }
+
+                    ui.add_space(ui.available_width()/2.5);
+                    // Breadcrumbs (avoid borrow conflicts by cloning path first)
+                    let current_path_clone = self.current_path.clone();
+                    let parts: Vec<String> = current_path_clone.split(['\\','/']).filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
+                    let root_has_slash = current_path_clone.starts_with('/');
+                    let mut accum = if root_has_slash { String::from("/") } else { String::new() };
+                    ui.horizontal(|ui| {
+                        for (i, part) in parts.iter().enumerate() {
+                            if !accum.ends_with(std::path::MAIN_SEPARATOR) && !accum.is_empty() { accum.push(std::path::MAIN_SEPARATOR); }
+                            accum.push_str(part);
+                            let display = if part.is_empty() { std::path::MAIN_SEPARATOR.to_string() } else { part.clone() };
+                            if ui.selectable_label(false, RichText::new(display).underline()).clicked() {
+                                self.push_history(accum.clone());
+                                self.populate_current_directory();
+                            }
+                            if i < parts.len()-1 { ui.label(RichText::new("›").weak()); }
+                            // Remove trailing segment for next iteration accumulation clone safety
+                        }
+                    });
+                    
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {                
                         let mut img_cnt=0usize; let mut vid_cnt=0usize; let mut dir_cnt=0usize; let mut total_size=0u64;
                         for r in self.table.iter() {
@@ -412,12 +448,32 @@ impl FileExplorer {
                 ui.separator();
                 ui.label(format!("Selected: {}", self.selected.len()));
             }
+            if self.viewer.mode == viewer::ExplorerMode::Database {
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if self.db_loading { ui.label(RichText::new("Loading page ...").italics()); } else {
+                        let no_more = self.db_last_batch_len < self.db_limit && self.db_offset > 0;
+                        if no_more {
+                            ui.label(RichText::new("No more rows").weak());
+                        } else if ui.button("Load More").clicked() {
+                            // Prepare for next page
+                            self.db_last_batch_len = 0; // reset counter for incoming batch
+                            self.load_database_rows();
+                        }
+                    }
+                    ui.label(format!("Loaded: {} rows", self.table.len()));
+                });
+            }
         });
 
         // Similar images modal (rendered each frame if active)
         if self.show_similar_modal {
             let mut open_flag = true; // represent window open state locally
-            let title = if let Some(orig) = &self.similar_origin { format!("Similar To: {}", std::path::Path::new(orig).file_name().and_then(|n| n.to_str()).unwrap_or(orig)) } else { "Similar Images".to_string() };
+            let title = if let Some(orig) = &self.similar_origin { 
+                format!("Similar To: {}", std::path::Path::new(orig).file_name().and_then(|n| n.to_str()).unwrap_or(orig)) 
+            } else { 
+                "Similar Images".to_string() 
+            };
             egui::Window::new(title)
                 .open(&mut open_flag)
                 .resizable(true)
@@ -483,8 +539,19 @@ impl FileExplorer {
                 } else {
                     // New row arriving from async DB load
                     self.table.push(thumbnail.clone());
+                    // Update paging tracking
+                    self.db_last_batch_len += 1;
                 }
             }
+        }
+        // If we were loading a DB page and all rows have arrived (channel drained for now), finalize batch.
+        if self.viewer.mode == viewer::ExplorerMode::Database && self.db_loading {
+            // Heuristic: if last batch len < limit then no more pages.
+            if self.db_last_batch_len > 0 {
+                // Completed a page
+                self.db_offset += self.db_last_batch_len;
+            }
+            self.db_loading = false;
         }
 
         while let Ok(env) = self.scan_rx.try_recv() {
@@ -787,8 +854,6 @@ impl FileExplorer {
     }
 
     fn fetch_directory_metadata(&self) {
-        // Optimized: only fetch rows for the currently listed directory entries instead of selecting whole table.
-        // We build a list of file paths present in `self.table` that are real media files (or directories) and query by chunks.
         // This leverages the UNIQUE index on thumbnails.path.
         let paths: Vec<String> = self
             .table
@@ -797,14 +862,12 @@ impl FileExplorer {
             .collect();
         if paths.is_empty() { return; }
         let tx = self.meta_tx.clone();
-        // Chunk to keep query parameter size reasonable (Surreal has internal limits; 512 chosen conservatively)
-        const CHUNK: usize = 400; // adjustable; each row only binds path strings
+        // Chunk to keep query parameter size reasonable 
+        const CHUNK: usize = 400; 
         for chunk in paths.chunks(CHUNK) {
             let chunk_vec: Vec<String> = chunk.iter().cloned().collect();
             let tx_clone = tx.clone();
             tokio::spawn(async move {
-                // SurrealDB v2 membership test: array::find($paths, path) returns the value or NONE.
-                // Filter rows whose path is in the bound array.
                 let primary_sql = "SELECT path, description, db_created, caption, category, tags, size, filename, file_type FROM thumbnails WHERE array::find($paths, path) != NONE";
                 let mut resp = match crate::database::DB
                     .query(primary_sql)
@@ -998,16 +1061,24 @@ impl FileExplorer {
     fn refresh(&mut self) { self.populate_current_directory(); }
 
     fn load_database_rows(&mut self) {
-        self.table.clear();
-        self.thumb_scheduled.clear();
-        self.pending_thumb_rows.clear();
+        if self.db_loading { return; }
+        self.db_loading = true;
+        // When offset is zero we are (re)loading fresh page; clear existing rows
+        if self.db_offset == 0 { 
+            self.table.clear();
+            self.thumb_scheduled.clear();
+            self.pending_thumb_rows.clear();
+        }
         let tx = self.thumbnail_tx.clone();
+        let offset = self.db_offset;
+        let limit = self.db_limit;
+        let path_filter = if self.current_path.trim().is_empty() { None } else { Some(self.current_path.clone()) };
         tokio::spawn(async move {
-            // Page size for debug/DB view; can make user-configurable later.
-            let page_limit = 500usize;
-            match crate::database::load_thumbnails_page(0, page_limit, None, None, None, None, None).await {
+            match crate::database::load_thumbnails_page(offset, limit, None, None, None, None, None, path_filter.as_deref()).await {
                 Ok(rows) => {
-                    for r in rows.into_iter() { let _ = tx.try_send(r); }
+                    for r in rows.iter() { let _ = tx.try_send(r.clone()); }
+                    // Send a synthetic zero-size row? Not needed; we will update state after join via channel? We'll rely on UI polling.
+                    log::info!("[DB] Loaded page offset={} count={}", offset, rows.len());
                 },
                 Err(e) => { log::error!("DB page load failed: {e}"); }
             }
