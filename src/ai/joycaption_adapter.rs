@@ -166,6 +166,8 @@ struct JoyCaptionModel {
 
 impl JoyCaptionModel {
     fn load_from_dir(dir: &Path) -> Result<Self> {
+    use crate::ui::status::{JOY_STATUS, StatusState, GlobalStatusIndicator};
+    JOY_STATUS.set_state(StatusState::Initializing, "Reading config");
         log::info!("[joycaption] loading model from dir: {}", dir.display());
         let config_path = dir.join("config.json");
         let gen_cfg_path = dir.join("generation_config.json");
@@ -397,6 +399,7 @@ impl JoyCaptionModel {
         }
         let weight_filenames = candle_examples::hub_load_local_safetensors(dir, "model.safetensors.index.json")?;
         let processor = preprocessor_config.to_clip_image_processor();
+    JOY_STATUS.set_state(StatusState::Initializing, "Mapping weights");
         let mut vb = unsafe { VarBuilder::from_mmaped_safetensors(&weight_filenames, dtype, &device)? };
         // Global upcast on CPU if original requested bf16/f16 to avoid kernel unsupported ops.
         if matches!(device, candle_core::Device::Cpu) && matches!(dtype, DType::BF16 | DType::F16) {
@@ -404,10 +407,12 @@ impl JoyCaptionModel {
             // Re-create VarBuilder with F32 target (re-mapping underlying storage lazily)
             vb = unsafe { VarBuilder::from_mmaped_safetensors(&weight_filenames, DType::F32, &device)? };
         }
+    JOY_STATUS.set_state(StatusState::Initializing, "Building model graph");
         let llava: LLaVA = LLaVA::load(vb, &llava_config, Some(clip_vision_config))?;
         if temperature < 0.0 { temperature = 0.5; }
         log::info!("[joycaption] sampling defaults: temperature={:.3} top_p={:.3} top_k={:?} repetition_penalty={:?}", temperature, top_p, top_k, repetition_penalty);
         let eos_id_usize = llava_config.eos_token_id;
+    JOY_STATUS.set_state(StatusState::Idle, "Ready");
         Ok(Self { llava, tokenizer, processor, llava_config, cache, eos_token_id: eos_id_usize, max_new_tokens: MAX_NEW_TOKENS, temperature, top_p, top_k, repetition_penalty, device })
     }
 
@@ -498,6 +503,7 @@ impl JoyCaptionModel {
     }
 
     fn stream_generate_from_image(&self, prompt: &str, img: image::DynamicImage, mut on_token: impl FnMut(&str)) -> Result<String> {
+    use crate::ui::status::{JOY_STATUS, StatusState, GlobalStatusIndicator, VISION_TOKENS, VISION_MAX_TOKENS};
         let requested_dtype_str = self.llava_config.torch_dtype.clone();
         let mut effective_dtype = match requested_dtype_str.as_str() {
             "float16" => DType::F16,
@@ -525,6 +531,10 @@ impl JoyCaptionModel {
             &self.llava_config,
         )?;
         log::info!("[joycaption.gen] temperature={:.3}", self.temperature);
+    JOY_STATUS.set_state(StatusState::Running, format!("Generating ({w}x{h})"));
+    JOY_STATUS.set_progress(0, self.max_new_tokens as u64);
+    VISION_TOKENS.store(0, std::sync::atomic::Ordering::Relaxed);
+    VISION_MAX_TOKENS.store(self.max_new_tokens, std::sync::atomic::Ordering::Relaxed);
         let input_embeds = self.llava.prepare_inputs_labels_for_multimodal(&tokens, &[img_tensor], &[(w,h)])?;
         use candle_transformers::generation::{Sampling, LogitsProcessor};
         let temperature = f64::from(self.temperature);
@@ -549,6 +559,10 @@ impl JoyCaptionModel {
             let next_embeds = self.llava.llama.embed(&next_token_tensor)?.unsqueeze(0)?;
             embeds = Tensor::cat(&[embeds, next_embeds], 1)?;
             token_ids.push(next_token);
+            // Progress update (token based)
+            let produced = token_ids.len() as u64;
+            VISION_TOKENS.store(produced as usize, std::sync::atomic::Ordering::Relaxed);
+            JOY_STATUS.set_progress(produced, self.max_new_tokens as u64);
             // Attempt ultra-incremental decode: decode just the last token id alone to guess its text.
             // Some tokenizers may require full context to merge bytes properly; fallback to full decode diff if needed.
             let mut emitted_this_step = false;
@@ -577,6 +591,7 @@ impl JoyCaptionModel {
         }
         let text = if token_ids.is_empty() { String::new() } else { self.tokenizer.decode(&token_ids, true).unwrap_or_default() };
         log::info!("[joycaption.stream] done chars={} tokens={}\nText: {}", text.len(), token_ids.len(), text);
+        JOY_STATUS.set_state(StatusState::Idle, format!("Generated {} tokens", token_ids.len()));
         Ok(text)
     }
 

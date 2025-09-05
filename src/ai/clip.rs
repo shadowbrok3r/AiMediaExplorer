@@ -1,5 +1,6 @@
 
 use fastembed::{ImageEmbedding, ImageInitOptions, ImageEmbeddingModel, TextEmbedding, TextInitOptions, EmbeddingModel};
+use crate::ui::status::{CLIP_STATUS, StatusState, GlobalStatusIndicator};
 
 fn l2_normalize(mut v: Vec<f32>) -> Vec<f32> {
     let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -7,28 +8,61 @@ fn l2_normalize(mut v: Vec<f32>) -> Vec<f32> {
     v
 }
 
-pub struct ClipEngine {
-    pub(crate) image_model: ImageEmbedding,
-    pub(crate) text_model: TextEmbedding,
+pub enum ClipBackend {
+    FastEmbed { image_model: ImageEmbedding, text_model: TextEmbedding },
+    Siglip(crate::ai::siglip::SiglipEngine),
 }
+
+pub struct ClipEngine { backend: ClipBackend }
 
 
 impl ClipEngine {
-    pub fn new_default() -> anyhow::Result<Self> {
-        // Use matching CLIP model variant for image & text
-        let img_model = ImageEmbedding::try_new(ImageInitOptions::new(ImageEmbeddingModel::UnicomVitB32))?;
-        let txt_model = TextEmbedding::try_new(TextInitOptions::new(EmbeddingModel::ClipVitB32))?;
-        Ok(Self { image_model: img_model, text_model: txt_model })
+    pub fn new_with_model_key(model_key: &str) -> anyhow::Result<Self> {
+        // Map simple keys -> underlying backends
+        let be = match model_key {
+            // FastEmbed
+            "unicom-vit-b32" => {
+                let img = ImageEmbedding::try_new(ImageInitOptions::new(ImageEmbeddingModel::UnicomVitB32))?;
+                let txt = TextEmbedding::try_new(TextInitOptions::new(EmbeddingModel::ClipVitB32))?;
+                ClipBackend::FastEmbed { image_model: img, text_model: txt }
+            }
+            "clip-vit-b32" => {
+                let img = ImageEmbedding::try_new(ImageInitOptions::new(ImageEmbeddingModel::ClipVitB32))?;
+                let txt = TextEmbedding::try_new(TextInitOptions::new(EmbeddingModel::ClipVitB32))?;
+                ClipBackend::FastEmbed { image_model: img, text_model: txt }
+            }
+            // SigLIP family via candle
+            key if key.starts_with("siglip") => {
+                let sig = crate::ai::siglip::SiglipEngine::new(model_key)?;
+                ClipBackend::Siglip(sig)
+            }
+            _ => {
+                let img = ImageEmbedding::try_new(ImageInitOptions::new(ImageEmbeddingModel::UnicomVitB32))?;
+                let txt = TextEmbedding::try_new(TextInitOptions::new(EmbeddingModel::ClipVitB32))?;
+                ClipBackend::FastEmbed { image_model: img, text_model: txt }
+            }
+        };
+        Ok(Self { backend: be })
     }
 
     pub fn embed_image_path(&mut self, path: &str) -> anyhow::Result<Vec<f32>> {
-        let out = self.image_model.embed(vec![path.to_string()], None)?; // single
-        Ok(l2_normalize(out.into_iter().next().unwrap()))
+        match &mut self.backend {
+            ClipBackend::FastEmbed { image_model, .. } => {
+                let out = image_model.embed(vec![path.to_string()], None)?;
+                Ok(l2_normalize(out.into_iter().next().unwrap()))
+            }
+            ClipBackend::Siglip(sig) => Ok(sig.embed_image_path(path)?),
+        }
     }
 
     pub fn embed_text(&mut self, text: &str) -> anyhow::Result<Vec<f32>> {
-        let out = self.text_model.embed(vec![text.to_string()], None)?;
-        Ok(l2_normalize(out.into_iter().next().unwrap()))
+        match &mut self.backend {
+            ClipBackend::FastEmbed { text_model, .. } => {
+                let out = text_model.embed(vec![text.to_string()], None)?;
+                Ok(l2_normalize(out.into_iter().next().unwrap()))
+            }
+            ClipBackend::Siglip(sig) => Ok(sig.embed_text(text)?),
+        }
     }
 
     pub fn zero_shot_tags(&mut self, _image_vec: &[f32], _top_k: usize) -> Vec<String> { Vec::new() }
@@ -40,13 +74,26 @@ impl ClipEngine {
 
 fn dot(a: &[f32], b: &[f32]) -> f32 { a.iter().zip(b).map(|(x,y)| x*y).sum() }
 
+impl ClipEngine {
+    /// SigLIP-only: compute logits for a single image against multiple text prompts (no dummy inputs).
+    /// Returns logits_per_image flattened, suitable for softmax post-processing if desired.
+    pub fn siglip_logits_image_vs_texts(&mut self, image_path: &str, texts: &[String]) -> anyhow::Result<Vec<f32>> {
+        match &mut self.backend {
+            ClipBackend::Siglip(sig) => sig.logits_image_vs_texts(image_path, texts),
+            _ => anyhow::bail!("siglip_logits_image_vs_texts is only available for the SigLIP backend"),
+        }
+    }
+}
+
 pub(crate) async fn ensure_clip_engine(engine_slot: &std::sync::Arc<tokio::sync::Mutex<Option<ClipEngine>>>) -> anyhow::Result<()> {
     let mut guard = engine_slot.lock().await;
     if guard.is_none() {
-        log::info!("[CLIP] Loading fastembed CLIP models (ViT-B/32)...");
-        match ClipEngine::new_default() {
-            Ok(c) => { *guard = Some(c); log::info!("[CLIP] Loaded."); },
-            Err(e) => { log::error!("[CLIP] Failed to init: {e}"); return Err(e); }
+        CLIP_STATUS.set_state(StatusState::Initializing, "Loading model");
+        let model_key = crate::database::settings::load_settings().clip_model.unwrap_or_else(|| "unicom-vit-b32".into());
+        log::info!("[CLIP] Loading model key: {}", model_key);
+        match ClipEngine::new_with_model_key(&model_key) {
+            Ok(c) => { *guard = Some(c); log::info!("[CLIP] Loaded."); CLIP_STATUS.set_state(StatusState::Idle, "Ready"); },
+            Err(e) => { log::error!("[CLIP] Failed to init: {e}"); CLIP_STATUS.set_state(StatusState::Error, "Init failed"); return Err(e); }
         }
     }
     Ok(())
@@ -54,9 +101,6 @@ pub(crate) async fn ensure_clip_engine(engine_slot: &std::sync::Arc<tokio::sync:
 
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 { dot(a,b) }
 
-// -----------------------------------------------------------------------------
-// AISearchEngine extension methods (placed here for proximity to CLIP logic)
-// -----------------------------------------------------------------------------
 impl crate::ai::AISearchEngine {
     pub async fn ensure_clip_engine(&self) -> anyhow::Result<()> { super::clip::ensure_clip_engine(&self.clip_engine).await }
 
@@ -103,6 +147,8 @@ impl crate::ai::AISearchEngine {
         if self.ensure_clip_engine().await.is_err() { return 0; }
         let mut added = 0usize;
         log::info!("[CLIP] Starting generation for {} path(s)", paths.len());
+        CLIP_STATUS.set_state(StatusState::Running, format!("Embedding {} images", paths.len()));
+        CLIP_STATUS.set_progress(0, paths.len() as u64);
         for p in paths {
             let pb = std::path::Path::new(p);
             if !pb.exists() { log::warn!("[CLIP] Skip missing path {p}"); continue; }
@@ -160,8 +206,11 @@ impl crate::ai::AISearchEngine {
                 added += 1;
                 log::info!("[CLIP] Embedded {p}");
             }
+            // progress update
+            CLIP_STATUS.set_progress(added as u64, paths.len() as u64);
         }
         log::info!("[CLIP] Generation complete. Added {} new embeddings", added);
+        CLIP_STATUS.set_state(StatusState::Idle, format!("Added {added}"));
         added
     }
 

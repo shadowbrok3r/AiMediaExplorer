@@ -209,6 +209,30 @@ impl RowViewer<Thumbnail> for FileTableViewer {
         column: usize,
         resp: &egui::Response,
     ) -> Option<Box<Thumbnail>> {
+        // Context menu: per-row actions (e.g., generate CLIP embedding)
+        resp.context_menu(|ui| {
+            let is_image = row.file_type.eq_ignore_ascii_case("image");
+            let label_img = "Generate CLIP Embedding";
+            let label_non = "Generate CLIP Embedding (images only)";
+            let mut clicked = false;
+            if is_image {
+                if ui.button(label_img).clicked() { clicked = true; }
+            } else {
+                // Disabled look for non-images
+                ui.add_enabled(false, egui::Button::new(label_non));
+            }
+            if clicked {
+                let path = row.path.clone();
+                tokio::spawn(async move {
+                    // Ensure engine and model are ready
+                    let _ = crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await;
+                    let added = crate::ai::GLOBAL_AI_ENGINE.clip_generate_for_paths(&[path.clone()]).await;
+                    log::info!("[CLIP] Manual per-item generation: added {added} for {path}");
+                });
+                ui.close();
+            }
+        });
+
         match column {
             2 => {
                 if resp.hovered() {

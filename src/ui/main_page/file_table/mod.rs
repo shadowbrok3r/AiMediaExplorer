@@ -5,14 +5,14 @@ use egui_data_table::Renderer;
 use humansize::DECIMAL;
 use serde::Serialize;
 use viewer::FileTableViewer;
-use crate::{next_scan_id, spawn_scan, Filters, ScanEnvelope, Thumbnail};
+use crate::{next_scan_id, ScanEnvelope, Thumbnail};
 use eframe::egui::*;
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use jwalk::WalkDirGeneric;
 
 // Temporary global size filter placeholders (to be replaced by settings persistence)
-static mut MIN_SIZE_MB: Option<u64> = None; // value stored in bytes (converted from MB input)
-static mut MAX_SIZE_MB: Option<u64> = None; // value stored in bytes (converted from MB input)
+pub(super) static mut MIN_SIZE_MB: Option<u64> = None; // value stored in bytes (converted from MB input)
+pub(super) static mut MAX_SIZE_MB: Option<u64> = None; // value stored in bytes (converted from MB input)
 
 pub mod viewer;
 pub mod codec;
@@ -105,6 +105,12 @@ pub struct FileExplorer {
         db_last_batch_len: usize,
         #[serde(skip)]
         db_loading: bool,
+        // Track current scan id for cancellation
+        #[serde(skip)]
+        current_scan_id: Option<u64>,
+        // Flag to stop scheduling bulk description tasks
+        #[serde(skip)]
+        bulk_cancel_requested: bool,
 }
 
 impl Default for FileExplorer {
@@ -150,6 +156,8 @@ impl Default for FileExplorer {
             db_limit: 500,
             db_last_batch_len: 0,
             db_loading: false,
+            current_scan_id: None,
+            bulk_cancel_requested: false,
         };
         // Initial shallow directory population (non-recursive)
         this.populate_current_directory();
@@ -174,6 +182,7 @@ impl FileExplorer {
                 if ui.add_enabled(fs_mode, Button::new("🏠").min_size(vec2(20., 20.))).clicked() { self.nav_home(); }
                 ui.separator();
                 let path_edit = TextEdit::singleline(&mut self.current_path)
+                    .frame(true)
                     .hint_text(if self.viewer.mode == viewer::ExplorerMode::Database { "Path Prefix Filter" } else { "Current Directory" })
                     .desired_width(300.)
                     .ui(ui);
@@ -187,136 +196,7 @@ impl FileExplorer {
                     }
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.menu_button("⚙", |ui| {
-                        ui.menu_button("Scan", |ui| {
-                            // Size filter inputs (temporary simple fields in bytes; could be enhanced with suffix parsing later)
-                            ui.horizontal(|ui| {
-                                ui.label("Min Size (MB):");
-                                static mut MIN_SIZE_MB: Option<u64> = None; // unsafe avoided elsewhere; quick placeholder (will refactor to settings struct)
-                                static mut MAX_SIZE_MB: Option<u64> = None;
-                                let mut min_txt = unsafe { MIN_SIZE_MB.map(|v| (v/1_000_000).to_string()).unwrap_or_default() };
-                                let mut max_txt = unsafe { MAX_SIZE_MB.map(|v| (v/1_000_000).to_string()).unwrap_or_default() };
-                                if ui.add(TextEdit::singleline(&mut min_txt).desired_width(60.)).lost_focus() { /* no-op */ }
-                                if ui.add(TextEdit::singleline(&mut max_txt).desired_width(60.)).lost_focus() { /* no-op */ }
-                                if ui.button("✔ Apply Size").clicked() {
-                                    unsafe {
-                                        MIN_SIZE_MB = min_txt.trim().parse::<u64>().ok().map(|m| m*1_000_000);
-                                        MAX_SIZE_MB = max_txt.trim().parse::<u64>().ok().map(|m| m*1_000_000);
-                                    }
-                                }
-                            });
-                            if ui.button("💡 Recursive Scan").clicked() {
-                                self.recursive_scan = true;
-                                self.scan_done = false; // reset completion flag
-                                self.table.clear();
-                                self.file_scan_progress = 0.0;
-                                let scan_id = next_scan_id();
-                                let tx = self.scan_tx.clone();
-                                let recurse = self.recursive_scan.clone();
-                                let mut filters = Filters::default();
-                                filters.root = PathBuf::from(self.current_path.clone());
-                                // Apply temporary size filters (if set)
-                                unsafe {
-                                    extern crate core; // silence unused warning potential
-                                    filters.min_size_bytes = MIN_SIZE_MB;
-                                    filters.max_size_bytes = MAX_SIZE_MB;
-                                }
-                                // Attach excluded terms list (already lowercase)
-                                filters.excluded_terms = self.excluded_terms.clone();
-                                tokio::spawn(async move {
-                                    spawn_scan(
-                                        filters,
-                                        tx,
-                                        recurse,
-                                        scan_id
-                                    ).await;
-                                });
-                            }
-                            if ui.button("🖩 Bulk Generate").clicked() {
-                                // Bulk generate AI descriptions for images without description.
-                                let engine = std::sync::Arc::new(crate::ai::GLOBAL_AI_ENGINE.clone());
-                                // Pull prompt template from current loaded settings (fallback to default if not yet loaded)
-                                let prompt = crate::database::settings::load_settings().ai_prompt_template;
-                                let mut scheduled = 0usize;
-                                for row in self.table.iter() {
-                                    if row.file_type == "<DIR>" { continue; }
-                                    // crude image extension test
-                                    if let Some(ext) = Path::new(&row.path).extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()) {
-                                        let is_img = crate::is_image(ext.as_str());
-                                        if !is_img { continue; }
-                                    } else { continue; }
-                                    if row.caption.is_some() || row.description.is_some() { continue; }
-                                    let path_str = row.path.clone();
-                                    let path_str_clone = path_str.clone();
-                                    let tx_updates = self.ai_update_tx.clone();
-                                    let prompt_clone = prompt.clone();
-                                    let eng = engine.clone();
-                                    tokio::spawn(async move {
-                                        eng.stream_vision_description(Path::new(&path_str_clone), &prompt_clone, move |interim, final_opt| {
-                                            if let Some(vd) = final_opt {
-                                                let _ = tx_updates.try_send(AIUpdate::Final { 
-                                                    path: path_str.clone(), 
-                                                    description: vd.description.clone(),
-                                                    caption: Some(vd.caption.clone()),
-                                                    category: if vd.category.trim().is_empty() { None } else { Some(vd.category.clone()) },
-                                                    tags: vd.tags.clone(),
-                                                });
-                                            } else {
-                                                let _ = tx_updates.try_send(AIUpdate::Interim { path: path_str.clone(), text: interim.to_string() });
-                                            }
-                                        }).await;
-                                    });
-                                    // Update vision generation counters
-                                    self.vision_started += 1;
-                                    self.vision_pending += 1;
-                                    scheduled += 1;
-                                }
-                                if scheduled == 0 { log::info!("[AI] Bulk Generate: nothing to schedule"); } else { log::info!("[AI] Bulk Generate scheduled {scheduled} items"); }
-                            }
-                            if ui.button("Generate Missing CLIP Embeddings Now").clicked() {
-                                tokio::spawn(async move {
-                                    let count = crate::ai::GLOBAL_AI_ENGINE.clip_generate_recursive().await;
-                                    log::info!("[CLIP] Manual generation completed for {count} images");
-                                });
-                            }
-                            if ui.button("🗙 Cancel Scan").clicked() { /* TODO cancel scan token */ }
-                        });
-                        ui.menu_button("View", |ui| {
-                            ui.checkbox(&mut self.open_preview_pane, "Show Preview");
-                            ui.checkbox(&mut self.open_quick_access, "Show Quick Access");
-                            if ui.button("Group by Category").clicked() { /* TODO group feature */ }
-                        });
-                        ui.menu_button("Filters", |ui| {
-                            ui.label(RichText::new("Excluded Terms").strong());
-                            ui.label("(substring match, case-insensitive)");
-                            ui.horizontal(|ui| {
-                                let resp = TextEdit::singleline(&mut self.excluded_term_input)
-                                    .hint_text("term")
-                                    .desired_width(120.)
-                                    .ui(ui);
-                                let add_clicked = ui.button("Add").clicked();
-                                if (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) || add_clicked {
-                                    let term = self.excluded_term_input.trim().to_ascii_lowercase();
-                                    if !term.is_empty() && !self.excluded_terms.iter().any(|t| t == &term) { self.excluded_terms.push(term); }
-                                    self.excluded_term_input.clear();
-                                }
-                                if ui.button("Clear All").clicked() { self.excluded_terms.clear(); }
-                            });
-                            ui.horizontal_wrapped(|ui| {
-                                let mut remove_idx: Option<usize> = None;
-                                for (i, term) in self.excluded_terms.iter().enumerate() {
-                                    if ui.add(Button::new(format!("{} ✕", term)).small()).clicked() { remove_idx = Some(i); }
-                                }
-                                if let Some(i) = remove_idx { self.excluded_terms.remove(i); }
-                            });
-                        });
-                        ui.menu_button("Database", |ui| {
-                            if ui.button("Reload Thumbnails Table").clicked() { self.load_database_rows(); }
-                            if ui.button("Clear Table View").clicked() { self.table.clear(); }
-                            if ui.button("Switch To DB Mode").clicked() { if self.viewer.mode != viewer::ExplorerMode::Database { self.viewer.mode = viewer::ExplorerMode::Database; self.load_database_rows(); } }
-                            if ui.button("Switch To FS Mode").clicked() { if self.viewer.mode != viewer::ExplorerMode::FileSystem { self.viewer.mode = viewer::ExplorerMode::FileSystem; self.populate_current_directory(); } }
-                        });
-                    });
+                    if ui.button("⚙ Options").clicked() { self.open_quick_access = true; }
                     TextEdit::singleline(&mut self.viewer.filter).desired_width(200.0).hint_text("Search for files").ui(ui);
                     ui.separator();
                     egui::ComboBox::new("Table Mode", "")
@@ -343,12 +223,15 @@ impl FileExplorer {
                 ui.horizontal(|ui| {
                     if self.file_scan_progress > 0.0 {
                         let mut bar = ProgressBar::new(self.file_scan_progress)
-                            .animate(true)
-                            .desired_width(200.)
-                            .show_percentage();
-                        if self.scan_done { bar = bar.text(RichText::new("Scan Complete").color(Color32::LIGHT_GREEN)); }
+                        .animate(true)
+                        .desired_width(100.)
+                        .show_percentage();
+                        if self.scan_done { 
+                            bar = bar.text(RichText::new("Scan Complete").color(Color32::LIGHT_GREEN)); 
+                        }
                         bar.ui(ui);
                     }
+                    
                     // AI status & progress
                     // Determine AI readiness via index worker activity (vision model removed)
                     let ai_ready = {
@@ -440,7 +323,7 @@ impl FileExplorer {
                 &mut self.viewer
             ).with_style_modify(|s| {
                 s.single_click_edit_mode = true;
-                s.table_row_height = Some(50.0);
+                s.table_row_height = Some(60.0);
                 s.auto_shrink = [false, false].into();
             }).ui(ui);
             // Summary inline (counts) if selection active
@@ -726,6 +609,7 @@ impl FileExplorer {
                     log::info!("Done");
                     self.file_scan_progress = 1.0;
                     self.scan_done = true;
+                    self.current_scan_id = None;
                     if !self.pending_thumb_rows.is_empty() {
                         let batch = std::mem::take(&mut self.pending_thumb_rows);
                         tokio::spawn(async move { 

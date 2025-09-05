@@ -7,6 +7,23 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 use jwalk::{WalkDirGeneric, Parallelism};
+use once_cell::sync::Lazy;
+
+// Track cancelled scan ids
+static CANCELLED_SCANS: Lazy<std::sync::Mutex<std::collections::HashSet<u64>>> = Lazy::new(|| std::sync::Mutex::new(Default::default()));
+
+pub fn cancel_scan(id: u64) {
+    if id == 0 { return; }
+    if let Ok(mut set) = CANCELLED_SCANS.lock() { set.insert(id); }
+}
+
+fn is_cancelled(id: u64) -> bool {
+    CANCELLED_SCANS.lock().map(|s| s.contains(&id)).unwrap_or(false)
+}
+
+fn clear_cancel(id: u64) {
+    if let Ok(mut set) = CANCELLED_SCANS.lock() { let _ = set.remove(&id); }
+}
 
 #[derive(Debug)]
 pub enum ScanMsg {
@@ -63,6 +80,11 @@ const BATCH_TARGET: usize = 1500;
 const PROGRESS_EVERY: usize = 5_000; // send a progress update every N scanned paths in recursive mode
 
 fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: bool, scan_id: u64) {
+    if is_cancelled(scan_id) {
+        let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::Done });
+        clear_cancel(scan_id);
+        return;
+    }
     let root = if filters.root.as_os_str().is_empty() {
         match std::env::current_dir().and_then(|p| std::path::absolute(p)) {
             Ok(p) => p,
@@ -144,6 +166,11 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
             });
         let mut idx: usize = 0;
         for dir_entry_result in walker {
+            if is_cancelled(scan_id) {
+                let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::Done });
+                clear_cancel(scan_id);
+                return;
+            }
             match dir_entry_result {
                 Ok(entry) => {
                     if entry.file_type.is_dir() { continue; }
@@ -173,6 +200,11 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
         if let Ok(rd) = std::fs::read_dir(&root) {
             let mut batch: Vec<FoundFile> = Vec::with_capacity(BATCH_TARGET);
             for dent in rd.flatten() {
+                if is_cancelled(scan_id) {
+                    let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::Done });
+                    clear_cancel(scan_id);
+                    return;
+                }
                 if let Ok(ft) = dent.file_type() { if !ft.is_file() { continue; } } else { continue; }
                 let path = dent.path();
                 if let Some(found) = process_path_collect(&path, &filters, after, before) {

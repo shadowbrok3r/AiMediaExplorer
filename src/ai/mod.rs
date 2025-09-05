@@ -3,7 +3,8 @@ pub mod index;
 pub mod data_extraction;
 pub mod generate;
 pub mod cache;
-pub mod clip; // CLIP embeddings & similarity
+pub mod clip; 
+pub mod siglip; 
 #[cfg(feature = "joycaption")]
 pub mod joycaption_adapter;
 #[cfg(feature = "joycaption")]
@@ -16,12 +17,11 @@ pub use ai_search::*;
 
 use crate::database::FileMetadata;
 use once_cell::sync::Lazy;
+use crate::ui::status::{JOY_STATUS, CLIP_STATUS, StatusState, GlobalStatusIndicator};
 
 // Global lazy AI engine accessor. Initialized on first use. Heavy components (vision model)
 // are loaded explicitly via `init_global_ai_engine_async()` to avoid blocking UI thread.
 pub static GLOBAL_AI_ENGINE: Lazy<AISearchEngine> = Lazy::new(|| AISearchEngine::new());
-
-/// Kick off async initialization of the global AI engine (vision model + cached rows).
 
 /// Log current process memory (RSS / Working Set) for diagnostics.
 /// Enabled by callers (e.g., bulk) when SM_LOG_MEM env var is set.
@@ -50,12 +50,18 @@ pub fn log_memory_usage(note: Option<&str>) {
 pub async fn init_global_ai_engine_async() {
     // Ensure background index worker & model; load cached metadata.
     // We purposefully do these sequentially to minimize concurrent model load attempts.
+    JOY_STATUS.set_state(StatusState::Initializing, "Starting workers");
     GLOBAL_AI_ENGINE.ensure_index_worker().await;
+    JOY_STATUS.set_state(StatusState::Initializing, "Loading vision model");
     if let Err(e) = GLOBAL_AI_ENGINE.ensure_vision_model().await {
         log::warn!("[AI] vision model init failed: {e}");
+        JOY_STATUS.set_state(StatusState::Error, "Vision model failed");
     }
+    CLIP_STATUS.set_state(StatusState::Initializing, "CLIP engine pending");
     let loaded = GLOBAL_AI_ENGINE.load_cached().await;
     log::info!("[AI] global engine initialized (cached {loaded} rows)");
+    JOY_STATUS.set_state(StatusState::Running, format!("Cached {loaded}"));
+    CLIP_STATUS.set_state(StatusState::Idle, "Idle");
 }
 
 // AI Search Engine core (semantic/kalosm integration removed)
@@ -67,6 +73,9 @@ pub struct AISearchEngine {
     // Set of paths known to have cached AI metadata (loaded cheaply at startup without full row hydration)
     pub cached_paths: std::sync::Arc<tokio::sync::Mutex<std::collections::HashSet<String>>>,
     
+    // Global cancel switch for bulk/streaming operations
+    pub cancel_bulk: std::sync::Arc<std::sync::atomic::AtomicBool>,
+
 
     // Control flags for manual vs automatic behaviors
     pub auto_descriptions_enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -114,5 +123,13 @@ impl AISearchEngine {
         let sent = if let Some(tx) = self.index_tx.lock().await.as_ref() { tx.send(meta).is_ok() } else { false };
         if sent { self.index_queue_len.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
         sent
+    }
+
+    pub fn cancel_bulk_descriptions(&self) {
+        self.cancel_bulk.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn reset_bulk_cancel(&self) {
+        self.cancel_bulk.store(false, std::sync::atomic::Ordering::Relaxed);
     }
 }

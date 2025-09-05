@@ -91,6 +91,7 @@ impl super::AISearchEngine {
             index_completed: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             clip_engine: Arc::new(Mutex::new(None)),
             active_vision_path: Arc::new(Mutex::new(None)),
+            cancel_bulk: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
     
@@ -480,7 +481,9 @@ impl super::AISearchEngine {
                     let cb_partial = shared_partial.clone();
                     let cb_last_emit = last_emit.clone();
                     let cb_shared_cb = shared_cb.clone();
+                    let engine_cancel = self.cancel_bulk.clone();
                     let full_text = match crate::ai::joycaption_adapter::stream_describe_bytes_with_callback(bytes, &prompt, move |frag| {
+                        if engine_cancel.load(std::sync::atomic::Ordering::Relaxed) { cb_early.store(true, AtomicOrdering::Relaxed); return; }
                         if cb_early.load(AtomicOrdering::Relaxed) { return; }
                         let mut buf = cb_buffer.lock().unwrap();
                         buf.push_str(frag);
@@ -517,6 +520,9 @@ impl super::AISearchEngine {
                     // Recover owned buffer & partial
                     let buffer = std::sync::Arc::try_unwrap(shared_buffer).unwrap_or_default().into_inner().unwrap();
                     let mut partial = std::sync::Arc::try_unwrap(shared_partial).unwrap_or_default().into_inner().unwrap();
+
+                    // If bulk cancel was requested, stop here without applying results
+                    if self.cancel_bulk.load(std::sync::atomic::Ordering::Relaxed) { return; }
 
                     // Attempt fenced code block JSON extraction first (```json ... ```)
                     fn extract_fenced_json(s: &str) -> Option<&str> {
@@ -563,7 +569,7 @@ impl super::AISearchEngine {
             }
         }
         // Fallback: non-streaming generation
-    if let Some(vd) = self.generate_vision_description(&path.to_path_buf()).await {
+        if let Some(vd) = self.generate_vision_description(&path.to_path_buf()).await {
             let _ = self.apply_vision_description(&path.to_string_lossy(), &vd).await;
             on_update(&vd.description, Some(&vd));
         }

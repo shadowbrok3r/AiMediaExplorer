@@ -58,6 +58,9 @@ pub struct UiSettings {
     pub auto_clip_embeddings: bool, // automatically generate CLIP embeddings during indexing
     #[serde(default)]
     pub clip_augment_with_text: bool, // blend image + textual metadata into a joint CLIP vector
+    // Selected CLIP/SigLIP model key
+    #[serde(default)]
+    pub clip_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,6 +113,7 @@ impl Default for UiSettings {
             db_excluded_exts: None,
             auto_clip_embeddings: false,
             clip_augment_with_text: true,
+            clip_model: Some("unicom-vit-b32".into()),
         }
     }
 }
