@@ -1,6 +1,7 @@
 #![cfg(feature = "joycaption")]
 #![allow(unused)]
 use candle_core::{DType, Tensor, Device, IndexOp};
+use crate::ui::status::GlobalStatusIndicator; // for JOY_STATUS.set_model
 use crate::ai::generate::VisionDescription;
 use crate::ai::candle_llava::load_image;
 use crate::app::{DEFAULT_JOYCAPTION_PATH, MAX_NEW_TOKENS, TEMPERATURE};
@@ -39,6 +40,8 @@ async fn ensure_worker_started() -> Result<&'static WorkerHandle> {
         log::info!("JOYCAPTION_MODEL_DIR: {dir_env:?}");
         let candidate = dir_env.as_deref().unwrap_or(DEFAULT_JOYCAPTION_PATH);
         log::info!("candidate: {candidate}");
+        // Surface the selected model path in the status hover UI
+        crate::ui::status::JOY_STATUS.set_model(candidate);
         let model_dir = PathBuf::from(candidate);
         let (tx, mut rx) = mpsc::unbounded_channel::<WorkMsg>();
         thread::spawn(move || {

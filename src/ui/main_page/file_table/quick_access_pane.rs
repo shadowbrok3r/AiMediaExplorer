@@ -69,7 +69,7 @@ impl super::FileExplorer {
                                     }
                                     if ui.button("🖩 Bulk Generate Descriptions").on_hover_text("Generate AI descriptions for images missing caption/description").clicked() {
                                         let engine = std::sync::Arc::new(crate::ai::GLOBAL_AI_ENGINE.clone());
-                                        let prompt = crate::database::settings::load_settings().ai_prompt_template;
+                                        let prompt = self.ui_settings.ai_prompt_template.clone();
                                         let mut scheduled = 0usize;
                                         for row in self.table.iter() {
                                             if self.bulk_cancel_requested { break; }

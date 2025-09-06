@@ -121,19 +121,33 @@ impl Default for UiSettings {
 static SETTINGS_CACHE: Lazy<Mutex<Option<UiSettings>>> = Lazy::new(|| Mutex::new(None));
 
 pub fn load_settings() -> UiSettings {
-    // Return cached if set
-    if let Some(cached) = SETTINGS_CACHE.lock().unwrap().clone() { return cached; }
     // Kick off async fetch; return default immediately (will hydrate later)
     task::spawn(async {
         if let Ok(s) = super::get_settings().await { *SETTINGS_CACHE.lock().unwrap() = Some(s); }
     });
-    UiSettings::default()
+    // Return cached if set
+    if let Some(cached) = SETTINGS_CACHE.lock().unwrap().clone() { 
+        log::error!("Got cached ui settings: {:?}", cached.clip_model);
+        return cached; 
+    } else {
+        log::error!("Using UiSettings::default()");
+        UiSettings::default()
+    }
 }
 
 pub fn save_settings(s: &UiSettings) {
+    // Update cache immediately and persist asynchronously.
     *SETTINGS_CACHE.lock().unwrap() = Some(s.clone());
     let to_save = s.clone();
-    task::spawn(async move { 
-        let _ = super::save_settings(to_save).await;
+    task::spawn(async move {
+        if let Err(e) = super::save_settings(to_save).await {
+            log::error!("[settings] save_settings failed: {e}");
+        } else {
+            // After a successful save, refresh the cache from DB to ensure it's in sync.
+            match super::get_settings().await {
+                Ok(svr) => { *SETTINGS_CACHE.lock().unwrap() = Some(svr); },
+                Err(e) => log::warn!("[settings] get_settings after save failed: {e}"),
+            }
+        }
     });
 }

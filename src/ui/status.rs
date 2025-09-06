@@ -46,6 +46,9 @@ pub trait GlobalStatusIndicator {
     /// Update convenience helpers.
     fn set_state(&self, state: StatusState, detail: impl Into<String>);
     fn set_progress(&self, current: u64, total: u64);
+    /// Set or update the model string shown in the hover card.
+    /// Note: stored as a leaked &'static str to match StatusMeta's lifetime.
+    fn set_model(&self, model: &str);
 }
 
 // Internal representation stored globally.
@@ -73,6 +76,13 @@ impl GlobalStatusIndicator for RegisteredStatus {
     fn snapshot(&self) -> StatusMeta { STATUSES.read().unwrap().get(self.key).map(|i| i.meta.clone()).unwrap_or_default() }
     fn set_state(&self, state: StatusState, detail: impl Into<String>) { if let Some(inner) = STATUSES.write().unwrap().get_mut(self.key) { inner.meta.state = state; inner.meta.detail = detail.into(); if matches!(state, StatusState::Running | StatusState::Initializing) { inner.meta.started_at_ms = now_ms(); } } }
     fn set_progress(&self, current: u64, total: u64) { if let Some(inner) = STATUSES.write().unwrap().get_mut(self.key) { inner.meta.progress_current = current; inner.meta.progress_total = total; } }
+    fn set_model(&self, model: &str) {
+        if let Some(inner) = STATUSES.write().unwrap().get_mut(self.key) {
+            // Leak to obtain 'static lifetime acceptable for process lifetime.
+            let leaked: &'static str = Box::leak(model.to_string().into_boxed_str());
+            inner.meta.model = Some(leaked);
+        }
+    }
 }
 
 /// Access snapshot for arbitrary key (used by UI aggregation).
@@ -95,6 +105,7 @@ pub fn status_bar_inline(ui: &mut Ui) {
 }
 
 fn indicator_small(ui: &mut Ui, meta: &StatusMeta) {
+    ui.add_space(5.);
     let (pct, has_prog) = if meta.progress_total > 0 { 
         ((meta.progress_current as f32 / meta.progress_total as f32).clamp(0.0, 1.0), true) 
     } else { 
@@ -110,7 +121,7 @@ fn indicator_small(ui: &mut Ui, meta: &StatusMeta) {
         display_label = format!("   {}", display_label);
     }
 
-    let custom_button_id = Id::new("custom_button");
+    let custom_button_id = Id::new(format!("custom_button {display_label:?}"));
     let atom_layout = Button::new((
         Atom::custom(custom_button_id, Vec2::splat(14.0)),
         RichText::new(display_label).color(meta.state.color(ui.style())),
@@ -136,6 +147,7 @@ fn indicator_small(ui: &mut Ui, meta: &StatusMeta) {
             if let Some(err) = &meta.error { ui.colored_label(Color32::LIGHT_RED, err); }
         });
     });
+    ui.add_space(5.);
 }
 
 /// Draw a rotating gear (⚙) centered vertically, aligned near the left inside the given rect.

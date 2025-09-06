@@ -256,6 +256,7 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                             }
                             "image" => {
                                 if let Ok(b64) = generate_image_thumb_data(Path::new(&row.path)) {
+                                    log::warn!("Thumbnail embedding: {:?}", row.embedding.is_some());
                                     let _ = self.thumbnail_tx.try_send(Thumbnail {
                                         thumbnail_b64: Some(b64),
                                         ..row.clone()

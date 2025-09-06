@@ -94,8 +94,9 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
         DEFINE FIELD IF NOT EXISTS db_min_size_bytes ON user_settings TYPE option<number> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS db_max_size_bytes ON user_settings TYPE option<number> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS db_excluded_exts ON user_settings TYPE option<array<string>> PERMISSIONS FULL;
-    DEFINE FIELD IF NOT EXISTS auto_clip_embeddings ON user_settings TYPE bool PERMISSIONS FULL;
-    DEFINE FIELD IF NOT EXISTS clip_augment_with_text ON user_settings TYPE bool PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS auto_clip_embeddings ON user_settings TYPE bool PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS clip_augment_with_text ON user_settings TYPE bool PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS clip_model ON user_settings TYPE option<string> PERMISSIONS FULL;
 
         DEFINE INDEX IF NOT EXISTS category_idx ON thumbnails FIELDS category;
         DEFINE INDEX IF NOT EXISTS tags_idx ON thumbnails FIELDS tags;

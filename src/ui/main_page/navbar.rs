@@ -127,11 +127,11 @@ impl super::MainPage {
                     ProgressBar::new(cpu01)
                     .animate(false)
                     .desired_width(100.)
-                    .desired_height(0.2)
+                    .desired_height(1.)
                     .fill(ui.style().visuals.error_fg_color)
                     .show_percentage()
                     .ui(ui);
-
+                    
                     ui.label("CPU %");
                     ui.separator(); 
                     if let Some(ram_mb) = process_mem_mb() { 

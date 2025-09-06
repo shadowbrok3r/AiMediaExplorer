@@ -53,6 +53,7 @@ pub async fn init_global_ai_engine_async() {
     JOY_STATUS.set_state(StatusState::Initializing, "Starting workers");
     GLOBAL_AI_ENGINE.ensure_index_worker().await;
     JOY_STATUS.set_state(StatusState::Initializing, "Loading vision model");
+    // Model label is set when the JoyCaption worker resolves its path; avoid using unrelated settings here.
     if let Err(e) = GLOBAL_AI_ENGINE.ensure_vision_model().await {
         log::warn!("[AI] vision model init failed: {e}");
         JOY_STATUS.set_state(StatusState::Error, "Vision model failed");

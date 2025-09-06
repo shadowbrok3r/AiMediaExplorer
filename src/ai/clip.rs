@@ -75,8 +75,6 @@ impl ClipEngine {
 fn dot(a: &[f32], b: &[f32]) -> f32 { a.iter().zip(b).map(|(x,y)| x*y).sum() }
 
 impl ClipEngine {
-    /// SigLIP-only: compute logits for a single image against multiple text prompts (no dummy inputs).
-    /// Returns logits_per_image flattened, suitable for softmax post-processing if desired.
     pub fn siglip_logits_image_vs_texts(&mut self, image_path: &str, texts: &[String]) -> anyhow::Result<Vec<f32>> {
         match &mut self.backend {
             ClipBackend::Siglip(sig) => sig.logits_image_vs_texts(image_path, texts),
@@ -89,7 +87,15 @@ pub(crate) async fn ensure_clip_engine(engine_slot: &std::sync::Arc<tokio::sync:
     let mut guard = engine_slot.lock().await;
     if guard.is_none() {
         CLIP_STATUS.set_state(StatusState::Initializing, "Loading model");
-        let model_key = crate::database::settings::load_settings().clip_model.unwrap_or_else(|| "unicom-vit-b32".into());
+        // Prefer DB-backed settings to avoid picking the default due to async cache hydration.
+        let model_key = match crate::database::get_settings().await {
+            Ok(s) => s.clip_model.unwrap_or_else(|| "unicom-vit-b32".to_string()),
+            Err(e) => {
+                log::warn!("[CLIP] get_settings() failed: {e}. Falling back to cached settings/default.");
+                crate::database::settings::load_settings().clip_model.unwrap_or_else(|| "unicom-vit-b32".to_string())
+            }
+        };
+        CLIP_STATUS.set_model(&model_key);
         log::info!("[CLIP] Loading model key: {}", model_key);
         match ClipEngine::new_with_model_key(&model_key) {
             Ok(c) => { *guard = Some(c); log::info!("[CLIP] Loaded."); CLIP_STATUS.set_state(StatusState::Idle, "Ready"); },
@@ -144,7 +150,47 @@ impl crate::ai::AISearchEngine {
 
     // Persist and attach CLIP embedding for list of paths
     pub async fn clip_generate_for_paths(&self, paths: &[String]) -> usize {
+        // Ensure engine is loaded and matches selected model family (fastembed vs SigLIP)
         if self.ensure_clip_engine().await.is_err() { return 0; }
+        // Check desired model from DB and reconcile backend if needed
+        let desired_key = match crate::database::get_settings().await {
+            Ok(s) => s.clip_model.unwrap_or_else(|| "unicom-vit-b32".to_string()),
+            Err(_) => crate::database::settings::load_settings().clip_model.unwrap_or_else(|| "unicom-vit-b32".to_string()),
+        };
+        let want_siglip = desired_key.starts_with("siglip");
+        let mut must_reinit = false;
+        {
+            let mut guard = self.clip_engine.lock().await;
+            if let Some(engine) = guard.as_ref() {
+                let is_siglip = matches!(engine.backend, crate::ai::clip::ClipBackend::Siglip(_));
+                if is_siglip != want_siglip {
+                    log::warn!("[CLIP] Backend mismatch (loaded: {} desired: {}), reinitializing", if is_siglip {"SigLIP"} else {"FastEmbed"}, if want_siglip {"SigLIP"} else {"FastEmbed"});
+                    must_reinit = true;
+                }
+            } else {
+                must_reinit = true;
+            }
+            if must_reinit {
+                *guard = None; // clear existing
+            }
+        }
+        if must_reinit {
+            // Recreate engine with desired key immediately
+            if let Err(e) = super::clip::ensure_clip_engine(&self.clip_engine).await { log::error!("[CLIP] Re-init failed: {e}"); return 0; }
+            // Log backend after reinit
+            let guard = self.clip_engine.lock().await;
+            if let Some(engine) = guard.as_ref() {
+                let is_siglip = matches!(engine.backend, crate::ai::clip::ClipBackend::Siglip(_));
+                log::info!("[CLIP] Active backend after reinit: {}", if is_siglip {"SigLIP"} else {"FastEmbed"});
+            }
+        } else {
+            // Log currently active backend for visibility
+            let guard = self.clip_engine.lock().await;
+            if let Some(engine) = guard.as_ref() {
+                let is_siglip = matches!(engine.backend, crate::ai::clip::ClipBackend::Siglip(_));
+                log::info!("[CLIP] Active backend: {} (model: {})", if is_siglip {"SigLIP"} else {"FastEmbed"}, desired_key);
+            }
+        }
         let mut added = 0usize;
         log::info!("[CLIP] Starting generation for {} path(s)", paths.len());
         CLIP_STATUS.set_state(StatusState::Running, format!("Embedding {} images", paths.len()));
@@ -153,18 +199,18 @@ impl crate::ai::AISearchEngine {
             let pb = std::path::Path::new(p);
             if !pb.exists() { log::warn!("[CLIP] Skip missing path {p}"); continue; }
             let maybe_meta = self.get_file_metadata(p).await;
-            if maybe_meta.as_ref().map(|m| m.clip_embedding.is_some()).unwrap_or(false) { log::debug!("[CLIP] Skip already embedded {p}"); continue; }
-            log::debug!("[CLIP] Embedding image {p}");
+            if maybe_meta.as_ref().map(|m| m.clip_embedding.is_some()).unwrap_or(false) { log::warn!("[CLIP] Skip already embedded {p}"); continue; }
+            log::warn!("[CLIP] Embedding image {p}");
             let mut emb_opt = {
                 let mut guard = self.clip_engine.lock().await;
                 if let Some(engine) = guard.as_mut() { engine.embed_image_path(p).ok() } else { None }
             };
-            // Optional augmentation: if enabled, average with text embedding derived from existing metadata
+
             if emb_opt.is_some() {
                 let settings = crate::database::settings::load_settings();
                 if settings.clip_augment_with_text {
                     if let Some(meta) = &maybe_meta {
-                        log::debug!("[CLIP] Augmenting with text for {p}");
+                        log::warn!("[CLIP] Augmenting with text for {p}");
                         let mut text_pieces: Vec<String> = Vec::new();
                         if let Some(desc) = &meta.description { if desc.len() > 12 { text_pieces.push(desc.clone()); } }
                         if let Some(caption) = &meta.caption { text_pieces.push(caption.clone()); }
@@ -172,7 +218,7 @@ impl crate::ai::AISearchEngine {
                         if let Some(cat) = &meta.category { text_pieces.push(cat.clone()); }
                         if !text_pieces.is_empty() {
                             let joined = text_pieces.join(" | ");
-                            log::trace!("[CLIP] Text blend input for {p}: {}", joined);
+                            log::warn!("[CLIP] Text blend input for {p}: {}", joined);
                             let text_vec = {
                                 let mut guard = self.clip_engine.lock().await;
                                 if let Some(engine) = guard.as_mut() { engine.embed_text(&joined).ok() } else { None }
@@ -180,7 +226,7 @@ impl crate::ai::AISearchEngine {
                             if let (Some(img_vec), Some(txt_vec)) = (emb_opt.as_ref(), text_vec.as_ref()) {
                                 if img_vec.len() == txt_vec.len() {
                                     let blended: Vec<f32> = img_vec.iter().zip(txt_vec.iter()).map(|(a,b)| (a + b) * 0.5).collect();
-                                    log::debug!("[CLIP] Blended image+text embedding for {p}");
+                                    log::warn!("[CLIP] Blended image+text embedding for {p}");
                                     emb_opt = Some(blended);
                                 }
                             }

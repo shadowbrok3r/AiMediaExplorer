@@ -89,6 +89,11 @@ pub struct FileExplorer {
     meta_tx: Sender<AIMetadataUpdate>,
     #[serde(skip)]
     meta_rx: Receiver<AIMetadataUpdate>,
+    // Channel for clip presence updates (path -> has_clip)
+    #[serde(skip)]
+    clip_presence_tx: Sender<(String, bool)>,
+    #[serde(skip)]
+    clip_presence_rx: Receiver<(String, bool)>,
         // Vision description generation tracking (bulk vision progress separate from indexing)
         #[serde(skip)]
         vision_started: usize,
@@ -111,6 +116,8 @@ pub struct FileExplorer {
         // Flag to stop scheduling bulk description tasks
         #[serde(skip)]
         bulk_cancel_requested: bool,
+        // Cached UI settings to avoid calling load_settings() in the UI loop
+        pub ui_settings: crate::UiSettings,
 }
 
 impl Default for FileExplorer {
@@ -118,7 +125,8 @@ impl Default for FileExplorer {
         let (thumbnail_tx, thumbnail_rx) = crossbeam::channel::unbounded();
         let (scan_tx, scan_rx) = crossbeam::channel::unbounded();
         let (ai_update_tx, ai_update_rx) = crossbeam::channel::unbounded();
-        let (meta_tx, meta_rx) = crossbeam::channel::unbounded();
+    let (meta_tx, meta_rx) = crossbeam::channel::unbounded();
+    let (clip_presence_tx, clip_presence_rx) = crossbeam::channel::unbounded();
         let current_path = directories::UserDirs::new().unwrap().picture_dir().unwrap().to_string_lossy().to_string();
         let mut this = Self {
             table: Default::default(), 
@@ -149,6 +157,7 @@ impl Default for FileExplorer {
             follow_active_vision: true,
             clip_presence: std::collections::HashMap::new(),
             meta_tx, meta_rx,
+            clip_presence_tx, clip_presence_rx,
             vision_started: 0,
             vision_completed: 0,
             vision_pending: 0,
@@ -158,6 +167,7 @@ impl Default for FileExplorer {
             db_loading: false,
             current_scan_id: None,
             bulk_cancel_requested: false,
+            ui_settings: crate::UiSettings::default(),
         };
         // Initial shallow directory population (non-recursive)
         this.populate_current_directory();
@@ -734,6 +744,12 @@ impl FileExplorer {
                 if let Some(cat) = category { self.current_thumb.category = Some(cat); }
                 self.current_thumb.tags = tags.clone();
             }
+        }
+
+        // Process clip presence updates
+        while let Ok((path, has)) = self.clip_presence_rx.try_recv() {
+            self.clip_presence.insert(path, has);
+            ctx.request_repaint();
         }
     }
 
