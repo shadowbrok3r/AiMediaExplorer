@@ -58,11 +58,11 @@ pub struct DebugDocumentSnippet {
 // This avoids bloating the core thumbnails row and lets us regenerate embeddings independently.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct ClipEmbeddingRow {
-    pub id: Option<String>,                 // record id (clip_embeddings:xxxx)
-    pub thumb_ref: Option<String>,          // foreign record id pointing to thumbnails table
-    pub path: String,                       // duplicate for convenience + uniqueness & fast lookup
-    pub hash: Option<String>,               // file content hash when embedding was generated
-    pub embedding: Vec<f32>,                // CLIP vector
+    pub id: Option<RecordId>,
+    pub thumb_ref: Option<RecordId>,
+    pub path: String,
+    pub hash: Option<String>,
+    pub embedding: Vec<f32>,
     pub created: Option<surrealdb::sql::Datetime>,
     pub updated: Option<surrealdb::sql::Datetime>,
 }

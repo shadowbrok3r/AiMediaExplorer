@@ -149,9 +149,9 @@ impl crate::ai::AISearchEngine {
     }
 
     // Persist and attach CLIP embedding for list of paths
-    pub async fn clip_generate_for_paths(&self, paths: &[String]) -> usize {
+    pub async fn clip_generate_for_paths(&self, paths: &[String]) -> anyhow::Result<usize, anyhow::Error> {
         // Ensure engine is loaded and matches selected model family (fastembed vs SigLIP)
-        if self.ensure_clip_engine().await.is_err() { return 0; }
+        self.ensure_clip_engine().await?;
         // Check desired model from DB and reconcile backend if needed
         let desired_key = match crate::database::get_settings().await {
             Ok(s) => s.clip_model.unwrap_or_else(|| "unicom-vit-b32".to_string()),
@@ -176,7 +176,9 @@ impl crate::ai::AISearchEngine {
         }
         if must_reinit {
             // Recreate engine with desired key immediately
-            if let Err(e) = super::clip::ensure_clip_engine(&self.clip_engine).await { log::error!("[CLIP] Re-init failed: {e}"); return 0; }
+            if let Err(e) = super::clip::ensure_clip_engine(&self.clip_engine).await { 
+                log::error!("[CLIP] Re-init failed: {e}"); return Ok(0); 
+            }
             // Log backend after reinit
             let guard = self.clip_engine.lock().await;
             if let Some(engine) = guard.as_ref() {
@@ -257,10 +259,10 @@ impl crate::ai::AISearchEngine {
         }
         log::info!("[CLIP] Generation complete. Added {} new embeddings", added);
         CLIP_STATUS.set_state(StatusState::Idle, format!("Added {added}"));
-        added
+        Ok(added)
     }
 
-    pub async fn clip_generate_recursive(&self) -> usize {
+    pub async fn clip_generate_recursive(&self) -> anyhow::Result<usize, anyhow::Error> {
         let (targets, total, image_total, missing) = {
             let files = self.files.lock().await;
             let total = files.len();
@@ -270,6 +272,6 @@ impl crate::ai::AISearchEngine {
             (missing_vec, total, image_total, missing)
         };
         log::info!("[CLIP] recursive: engine_files={total} images={image_total} missing_clip={missing}");
-        self.clip_generate_for_paths(&targets).await
+        Ok(self.clip_generate_for_paths(&targets).await?)
     }
 }

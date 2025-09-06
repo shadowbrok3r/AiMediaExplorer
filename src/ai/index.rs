@@ -52,8 +52,9 @@ impl super::AISearchEngine {
                             let arc_self = std::sync::Arc::new(self.clone());
                             let p_clone = metadata.path.clone();
                             tokio::spawn(async move {
-                                let added = arc_self.clip_generate_for_paths(&[p_clone]).await;
+                                let added = arc_self.clip_generate_for_paths(&[p_clone]).await?;
                                 if added > 0 { log::info!("[CLIP] Generated embedding on skip path"); }
+                                Ok::<(), anyhow::Error>(())
                             });
                         }
                         return Ok(());
@@ -112,8 +113,9 @@ impl super::AISearchEngine {
                 let arc_self2 = std::sync::Arc::new(self.clone());
                 let clip_path = metadata.path.clone();
                 tokio::spawn(async move {
-                    let added = arc_self2.clip_generate_for_paths(&[clip_path]).await;
+                    let added = arc_self2.clip_generate_for_paths(&[clip_path]).await?;
                     if added > 0 { log::info!("[CLIP] Generated embedding during indexing (post-insert)"); }
+                    Ok::<(), anyhow::Error>(())
                 });
             }
         }

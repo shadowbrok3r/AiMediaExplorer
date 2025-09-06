@@ -46,8 +46,9 @@ impl crate::app::SmartMediaApp {
             crate::ai::GLOBAL_AI_ENGINE.auto_clip_enabled.store(enable_clip, std::sync::atomic::Ordering::Relaxed);
             if enable_clip {
                 tokio::spawn(async move {
-                    let added = crate::ai::GLOBAL_AI_ENGINE.clip_generate_recursive().await;
+                    let added = crate::ai::GLOBAL_AI_ENGINE.clip_generate_recursive().await?;
                     log::info!("[CLIP] Auto backfill scheduled on settings load: added {added}");
+                    Ok::<(), anyhow::Error>(())
                 });
             }
             if self.ui_settings.auto_indexing && !self.ai_ready {
@@ -184,8 +185,8 @@ impl crate::app::SmartMediaApp {
                             self.main_page.file_explorer.ui_settings = self.ui_settings.clone();
                             let to_save = self.ui_settings.clone();
                             tokio::spawn(async move { 
-                                let result = crate::database::save_settings(to_save).await;
-                                log::info!("Database save settings Result: {result:?}");
+                                crate::database::save_settings(&to_save);
+                                log::info!("Database save settings ");
                             });
                             // Reflect CLIP model change immediately in status hover
                             let model_key = self
@@ -205,8 +206,9 @@ impl crate::app::SmartMediaApp {
                             }
                             if enable_clip {
                                 tokio::spawn(async move {
-                                    let added = crate::ai::GLOBAL_AI_ENGINE.clip_generate_recursive().await;
+                                    let added = crate::ai::GLOBAL_AI_ENGINE.clip_generate_recursive().await?;
                                     log::info!("[CLIP] Auto backfill after settings save: added {added}");
+                                    Ok::<(), anyhow::Error>(())
                                 });
                             }
                             if self.ui_settings.auto_indexing && !self.ai_ready {
@@ -237,8 +239,9 @@ impl crate::app::SmartMediaApp {
                             }
                             if ui.button("Generate Missing CLIP Embeddings Now").clicked() {
                                 tokio::spawn(async move {
-                                    let count = crate::ai::GLOBAL_AI_ENGINE.clip_generate_recursive().await;
+                                    let count = crate::ai::GLOBAL_AI_ENGINE.clip_generate_recursive().await?;
                                     log::info!("[CLIP] Manual generation completed for {count} images");
+                                    Ok::<(), anyhow::Error>(())
                                 });
                             }
                         });

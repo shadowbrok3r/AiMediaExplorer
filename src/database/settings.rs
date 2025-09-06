@@ -140,14 +140,30 @@ pub fn save_settings(s: &UiSettings) {
     *SETTINGS_CACHE.lock().unwrap() = Some(s.clone());
     let to_save = s.clone();
     task::spawn(async move {
-        if let Err(e) = super::save_settings(to_save).await {
+        if let Err(e) = save_settings_in_db(to_save).await {
             log::error!("[settings] save_settings failed: {e}");
         } else {
             // After a successful save, refresh the cache from DB to ensure it's in sync.
-            match super::get_settings().await {
+            match get_settings().await {
                 Ok(svr) => { *SETTINGS_CACHE.lock().unwrap() = Some(svr); },
                 Err(e) => log::warn!("[settings] get_settings after save failed: {e}"),
             }
         }
     });
 }
+
+pub async fn save_settings_in_db(s: UiSettings) -> anyhow::Result<(), anyhow::Error> {
+    super::DB.upsert::<Option<UiSettings>>(UiSettings::default().id).content::<UiSettings>(s).await?;
+    Ok(())
+}
+
+pub async fn get_settings() -> anyhow::Result<UiSettings, anyhow::Error> {
+    let settings_res: Option<UiSettings> = super::DB.select(UiSettings::default().id).await?;
+    log::info!("Got settings: {settings_res:?}");
+    if let Some(settings)  = settings_res {
+        return Ok(settings);
+    } else {
+        Ok(UiSettings::default())
+    }
+}
+

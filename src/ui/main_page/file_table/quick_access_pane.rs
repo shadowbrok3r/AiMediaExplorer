@@ -51,7 +51,7 @@ impl super::FileExplorer {
                                         self.scan_done = false;
                                         self.table.clear();
                                         self.file_scan_progress = 0.0;
-                    let scan_id = next_scan_id();
+                                        let scan_id = next_scan_id();
                                         let tx = self.scan_tx.clone();
                                         let recurse = self.recursive_scan.clone();
                                         let mut filters = Filters::default();
@@ -61,8 +61,8 @@ impl super::FileExplorer {
                                             filters.max_size_bytes = super::MAX_SIZE_MB;
                                         }
                                         filters.excluded_terms = self.excluded_terms.clone();
-                    // Remember current scan id so cancel can target it
-                    self.current_scan_id = Some(scan_id);
+                                        // Remember current scan id so cancel can target it
+                                        self.current_scan_id = Some(scan_id);
                                         tokio::spawn(async move {
                                             spawn_scan(filters, tx, recurse, scan_id).await;
                                         });
@@ -107,8 +107,9 @@ impl super::FileExplorer {
                                     }
                                     if ui.button("Generate Missing CLIP Embeddings").clicked() {
                                         tokio::spawn(async move {
-                                            let count = crate::ai::GLOBAL_AI_ENGINE.clip_generate_recursive().await;
+                                            let count = crate::ai::GLOBAL_AI_ENGINE.clip_generate_recursive().await?;
                                             log::info!("[CLIP] Manual generation completed for {count} images");
+                                            Ok::<(), anyhow::Error>(())
                                         });
                                     }
                                     if ui.button("🗙 Cancel Scan").on_hover_text("Cancel active recursive scan").clicked() {

@@ -43,19 +43,21 @@ impl super::MainPage {
                             crate::ai::GLOBAL_AI_ENGINE.auto_clip_enabled.store(true, std::sync::atomic::Ordering::Relaxed);
                             status::CLIP_STATUS.set_state(status::StatusState::Running, "Auto CLIP backfill");
                             tokio::spawn(async move {
-                                let added = crate::ai::GLOBAL_AI_ENGINE.clip_generate_recursive().await;
+                                let added = crate::ai::GLOBAL_AI_ENGINE.clip_generate_recursive().await?;
                                 log::info!("[CLIP] Auto CLIP enabled via navbar; backfill added {added}");
                                 status::CLIP_STATUS.set_state(status::StatusState::Idle, "Idle");
+                                Ok::<(), anyhow::Error>(())
                             });
                         }
                         if ui.button("Generate CLIP (Missing)").clicked() {
                             status::CLIP_STATUS.set_state(status::StatusState::Running, "Generating missing");
                             tokio::spawn(async move {
                                 let count_before = crate::ai::GLOBAL_AI_ENGINE.clip_missing_count().await;
-                                let added = crate::ai::GLOBAL_AI_ENGINE.clip_generate_recursive().await;
+                                let added = crate::ai::GLOBAL_AI_ENGINE.clip_generate_recursive().await?;
                                 let remaining = crate::ai::GLOBAL_AI_ENGINE.clip_missing_count().await;
                                 log::info!("[CLIP] Manual missing generation added {added}; remaining {remaining} (was {count_before})");
                                 status::CLIP_STATUS.set_state(status::StatusState::Idle, format!("Remaining {remaining}"));
+                                Ok::<(), anyhow::Error>(())
                             });
                         }
                         if ui.button("Generate CLIP (Selected)").clicked() {
@@ -63,9 +65,10 @@ impl super::MainPage {
                             if !path.is_empty() {
                                 status::CLIP_STATUS.set_state(status::StatusState::Running, "Selected path");
                                 tokio::spawn(async move {
-                                    let added = crate::ai::GLOBAL_AI_ENGINE.clip_generate_for_paths(&[path.clone()]).await;
+                                    let added = crate::ai::GLOBAL_AI_ENGINE.clip_generate_for_paths(&[path.clone()]).await?;
                                     log::info!("[CLIP] Selected generation for {path} -> added {added}");
                                     status::CLIP_STATUS.set_state(status::StatusState::Idle, "Idle");
+                                    Ok::<(), anyhow::Error>(())
                                 });
                             } else {
                                 log::warn!("[CLIP] No current preview path set for generation");

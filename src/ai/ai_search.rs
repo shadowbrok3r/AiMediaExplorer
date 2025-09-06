@@ -1,7 +1,7 @@
 use std::{path::PathBuf, sync::Arc, collections::HashMap};
 use tokio::sync::Mutex;
 
-use crate::database::DB;
+use crate::{database::DB, find_thumb_out_of_paths};
 
 impl super::AISearchEngine {
     /// Hydrate minimal metadata (no thumbnails/base64/embeddings) for a set of directory file paths.
@@ -30,45 +30,35 @@ impl super::AISearchEngine {
         const CHUNK: usize = 256;
         for chunk in need.chunks(CHUNK) {
             let chunk_vec: Vec<String> = chunk.iter().cloned().collect();
-            // Only select minimal fields. (thumbnail_b64 intentionally excluded)
-            let sql = "SELECT path, filename, file_type, size, modified, hash, description, caption, tags, category FROM thumbnails WHERE array::find($paths, path) != NONE";
-            match crate::database::DB.query(sql).bind(("paths", chunk_vec)).await {
-                Ok(mut resp) => {
-                    let rows: Result<Vec<serde_json::Value>, _> = resp.take(0);
-                    match rows {
-                        Ok(vals) => {
-                            let mut files_guard = self.files.lock().await;
-                            for v in vals.into_iter() {
-                                if let Some(p) = v.get("path").and_then(|x| x.as_str()) {
-                                    if files_guard.iter().any(|f| f.path == p) { continue; }
-                                    // Convert modified -> chrono::Local if present
-                                    let modified_local = v.get("modified").and_then(|m| m.as_str()).and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()).map(|dt| dt.with_timezone(&chrono::Local));
-                                    let fm = super::FileMetadata {
-                                        id: None,
-                                        path: p.to_string(),
-                                        filename: v.get("filename").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-                                        file_type: v.get("file_type").and_then(|x| x.as_str()).unwrap_or("other").to_string(),
-                                        size: v.get("size").and_then(|x| x.as_i64()).unwrap_or(0) as u64,
-                                        modified: modified_local,
-                                        created: modified_local,
-                                        thumbnail_path: None,
-                                        thumb_b64: None, // defer heavy field
-                                        hash: v.get("hash").and_then(|x| x.as_str()).map(|s| s.to_string()),
-                                        description: v.get("description").and_then(|x| x.as_str()).map(|s| s.to_string()),
-                                        caption: v.get("caption").and_then(|x| x.as_str()).map(|s| s.to_string()),
-                                        tags: v.get("tags").and_then(|x| x.as_array()).map(|arr| arr.iter().filter_map(|e| e.as_str().map(|s| s.to_string())).collect()).unwrap_or_default(),
-                                        category: v.get("category").and_then(|x| x.as_str()).map(|s| s.to_string()),
-                                        embedding: None, // not loaded yet
-                                        similarity_score: None,
-                                        clip_embedding: None,
-                                        clip_similarity_score: None,
-                                    };
-                                    files_guard.push(fm);
-                                    inserted += 1;
-                                }
-                            }
-                        }
-                        Err(e) => { log::warn!("[AI] hydrate_directory_paths parse error: {e}"); }
+            match find_thumb_out_of_paths(chunk_vec).await {
+                Ok(thumbs) =>  {
+                    for thumb in thumbs.iter() {
+                        let mut files_guard = self.files.lock().await;
+                        if files_guard.iter().any(|f| f.path == thumb.path) { continue; }
+                        // Convert modified -> chrono::Local if present
+                        let modified_local = thumb.modified.as_ref().and_then(|s| chrono::DateTime::parse_from_rfc3339(&s.to_string()).ok()).map(|dt| dt.with_timezone(&chrono::Local));
+                        let fm = super::FileMetadata {
+                            id: None,
+                            path: thumb.path.clone(),
+                            filename: thumb.filename.clone(),
+                            file_type: thumb.file_type.clone(),
+                            size: thumb.size,
+                            modified: modified_local,
+                            created: modified_local,
+                            thumbnail_path: None,
+                            thumb_b64: None,
+                            hash: thumb.hash.clone(),
+                            description: thumb.description.clone(),
+                            caption: thumb.caption.clone(),
+                            tags: thumb.tags.clone(),
+                            category: thumb.category.clone(),
+                            embedding: None,
+                            similarity_score: None,
+                            clip_embedding: None,
+                            clip_similarity_score: None,
+                        };
+                        files_guard.push(fm);
+                        inserted += 1;
                     }
                 }
                 Err(e) => { log::warn!("[AI] hydrate_directory_paths query failed: {e}"); }
@@ -262,9 +252,7 @@ impl super::AISearchEngine {
     // Return up to 'limit' thumbnail/cache rows directly from Surreal for debug view.
     pub async fn list_thumbnail_rows(&self, limit: usize) -> Vec<crate::Thumbnail> {
         if limit == 0 { return Vec::new(); }
-        // Use an ordered, bounded query. If no index for ordering, we still constrain rows via LIMIT.
-        let sql = "SELECT * FROM thumbnails LIMIT $limit"; // stable order not guaranteed; only for debug
-        match DB.query(sql).bind(("limit", limit as i64)).await {
+        match DB.query("SELECT * FROM thumbnails LIMIT $limit").bind(("limit", limit as i64)).await {
             Ok(mut resp) => {
                 let rows: Result<Vec<crate::Thumbnail>, _> = resp.take(0);
                 rows.unwrap_or_else(|e| { log::warn!("Debug list_thumbnail_rows take failed: {e}"); Vec::new() })

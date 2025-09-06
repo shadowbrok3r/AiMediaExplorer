@@ -226,10 +226,10 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                 tokio::spawn(async move {
                     // Ensure engine and model are ready
                     let _ = crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await;
-                    let added = crate::ai::GLOBAL_AI_ENGINE.clip_generate_for_paths(&[path.clone()]).await;
+                    let added = crate::ai::GLOBAL_AI_ENGINE.clip_generate_for_paths(&[path.clone()]).await?;
                     log::info!("[CLIP] Manual per-item generation: added {added} for {path}");
+                    Ok::<(), anyhow::Error>(())
                 });
-                ui.close();
             }
         });
 

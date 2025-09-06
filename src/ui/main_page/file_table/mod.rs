@@ -768,28 +768,15 @@ impl FileExplorer {
             let chunk_vec: Vec<String> = chunk.iter().cloned().collect();
             let tx_clone = tx.clone();
             tokio::spawn(async move {
-                let primary_sql = "SELECT path, description, db_created, caption, category, tags, size, filename, file_type FROM thumbnails WHERE array::find($paths, path) != NONE";
-                let mut resp = match crate::database::DB
-                    .query(primary_sql)
-                    .bind(("paths", chunk_vec.clone()))
-                    .await {
-                        Ok(r) => r,
-                        Err(e) => {
-                            log::warn!("Primary directory metadata query failed: {e}");
-                            return;
-                        }
-                    };
-                let rows: Result<Vec<crate::Thumbnail>, _> = resp.take(0);
-                match rows {
-                    Ok(list) => {
-                        for row in list.into_iter() {
-                            let _ = tx_clone.try_send(AIMetadataUpdate { path: row.path.clone(), description: row.description.clone(), caption: row.caption.clone(), category: row.category.clone(), tags: row.tags.clone() });
-                        }
-                    }
+                match crate::database::find_thumb_out_of_paths(chunk_vec).await {
+                    Ok(rows) => for row in rows.into_iter() {
+                        let _ = tx_clone.try_send(AIMetadataUpdate { path: row.path.clone(), description: row.description.clone(), caption: row.caption.clone(), category: row.category.clone(), tags: row.tags.clone() });
+                    },
                     Err(e) => {
-                        log::warn!("Failed to take directory metadata rows: {e}");
+                        log::warn!("Primary directory metadata query failed: {e}");
+                        return;
                     }
-                }
+                };
             });
         }
     }
