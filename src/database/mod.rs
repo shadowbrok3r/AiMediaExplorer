@@ -1,14 +1,18 @@
-use surrealdb::{engine::local::Db, opt::{capabilities::Capabilities, Config}, Surreal};
 use crossbeam::channel::Sender;
 use std::sync::LazyLock;
-pub mod settings;
-pub mod files;
-pub mod thumbnails;
+use surrealdb::{
+    Surreal,
+    engine::local::Db,
+    opt::{Config, capabilities::Capabilities},
+};
 pub mod clip_embeddings;
+pub mod files;
+pub mod settings;
+pub mod thumbnails;
 pub use clip_embeddings::*;
-pub use thumbnails::*;
-pub use settings::*;
 pub use files::*;
+pub use settings::*;
+pub use thumbnails::*;
 
 pub static DB: LazyLock<Surreal<Db>> = LazyLock::new(Surreal::init);
 pub const NS: &str = "file_explorer";
@@ -18,25 +22,13 @@ pub const USER_SETTINGS: &str = "user_settings";
 pub const DB_DEFAULT_TABLE: &str = "./db/default.surql";
 pub const DB_BACKUP_PATH: &str = "./db/backup.surql";
 
-
 pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
     let capabilities = Capabilities::all().with_all_experimental_features_allowed();
     let config = Config::new().capabilities(capabilities);
-    DB.connect::<surrealdb::engine::local::SurrealKv>(("./db/ai_search", config)).await?;
+    DB.connect::<surrealdb::engine::local::SurrealKv>(("./db/ai_search", config))
+        .await?;
     DB.use_ns(NS).use_db(DB_NAME).await?;
-    // DB.signin(Record {
-    //     namespace: NS,
-    //     database: DB_NAME,
-    //     access: "admin",
-    //     params: Credentials {
-    //         username: "user",
-    //         password: "toor"
-    //     }
-    // }).await?;
-    // LOCAL_DB.connect::<surrealdb::engine::local::SurrealKv>(("./db/ai_search1.db", config)).await?;
-    // LOCAL_DB.use_ns(NS).use_db(DB_NAME).await?;
-    // DB.import(DB_DEFAULT_TABLE).await?;
-    
+
     // DEFINE BUCKET userfiles BACKEND "memory";
     let query = r#" 
         BEGIN;
@@ -103,10 +95,9 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
         DEFINE INDEX IF NOT EXISTS clip_thumb_ref_idx ON clip_embeddings FIELDS thumb_ref;
         COMMIT;
     "#;
-    
+
     let response = DB.query(query).await?;
     let _ = response.check()?;
     let _ = tx.send(());
     Ok(())
 }
-

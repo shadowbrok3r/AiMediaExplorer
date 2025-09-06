@@ -9,19 +9,12 @@ impl crate::app::SmartMediaApp {
             let db_ready_tx = self.db_ready_tx.clone();
             tokio::spawn(async move {
                 crate::ui::status::DB_STATUS.set_state(crate::ui::status::StatusState::Initializing, "Opening DB");
-                let db = crate::database::new(db_ready_tx.clone()).await; // signal sent internally when ready
+                let db = crate::database::new(db_ready_tx.clone()).await;
                 crate::ui::status::DB_STATUS.set_state(crate::ui::status::StatusState::Running, "Loading settings");
                 log::warn!("DB: {db:?}");
                 let ui_settings = crate::database::get_settings().await?;
                 log::info!("Got settings: {ui_settings:?}");
-                // let _cached_thumbs = crate::database::load_all_thumbnails().await?;
                 let _ = ui_settings_tx.try_send(ui_settings);
-
-                // let engine = crate::ai::AISearchEngine::new();
-                // engine.ensure_index_worker().await; // start indexing queue worker
-                // engine.ensure_vision_model().await?;
-                // let loaded = engine.load_cached().await;
-                // log::info!("AI Search Engine initialized (cached {} rows)", loaded);
                 Ok::<(), anyhow::Error>(())
             });
 
@@ -39,7 +32,7 @@ impl crate::app::SmartMediaApp {
         if let Ok(ui_settings) = self.ui_settings_rx.try_recv() {
             self.ui_settings = ui_settings;
             // Keep FileExplorer's cached settings in sync with the latest from DB
-            self.main_page.file_explorer.ui_settings = self.ui_settings.clone();
+            self.file_explorer.viewer.ui_settings = self.ui_settings.clone();
             // Sync atomics to current settings
             let enable_clip = self.ui_settings.auto_clip_embeddings;
             crate::ai::GLOBAL_AI_ENGINE.auto_descriptions_enabled.store(self.ui_settings.auto_indexing, std::sync::atomic::Ordering::Relaxed);
@@ -182,7 +175,7 @@ impl crate::app::SmartMediaApp {
                         if ui.button(eframe::egui::RichText::new("Save").strong()).clicked() {
                             // Persist draft and propagate to explorer cache immediately
                             self.ui_settings = draft.clone();
-                            self.main_page.file_explorer.ui_settings = self.ui_settings.clone();
+                            self.file_explorer.viewer.ui_settings = self.ui_settings.clone();
                             let to_save = self.ui_settings.clone();
                             tokio::spawn(async move { 
                                 crate::database::save_settings(&to_save);

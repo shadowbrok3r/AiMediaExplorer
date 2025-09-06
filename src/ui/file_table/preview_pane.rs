@@ -2,8 +2,6 @@ use eframe::egui::*;
 use humansize::DECIMAL;
 // use surrealdb::RecordId; // no longer needed: presence check relies on in-memory metadata only
 
-use crate::ui::main_page::file_table::get_img_ui;
-
 impl super::FileExplorer {
     pub fn preview_pane(&mut self, ui: &mut Ui) {
         SidePanel::right("MainPageRightPanel")
@@ -18,7 +16,7 @@ impl super::FileExplorer {
                         tokio::spawn(async move {
                             if let Some(active) = crate::ai::GLOBAL_AI_ENGINE.get_active_vision_path().await {
                                 if !active.is_empty() && active != cur_path {
-                                    if let Ok(row_opt) = crate::database::get_thumbnail_by_path(&active).await {
+                                    if let Ok(row_opt) = crate::Thumbnail::get_thumbnail_by_path(&active).await {
                                         if let Some(row) = row_opt { let _ = tx_thumb.send(row); }
                                     }
                                 }
@@ -36,7 +34,7 @@ impl super::FileExplorer {
                     let thumb_cache = &self.viewer.thumb_cache;
                     ui.heading(name);
 
-                    get_img_ui(thumb_cache, cache_key, ui);
+                    super::get_img_ui(thumb_cache, cache_key, ui);
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("Size:").underline().strong());
                         ui.label(humansize::format_size(self.current_thumb.size, DECIMAL));
@@ -189,7 +187,7 @@ impl super::FileExplorer {
 
                                 ui.add_space(10.);
                                 ui.horizontal(|ui| {
-                                    let overwrite_allowed = self.ui_settings.overwrite_descriptions;
+                                    let overwrite_allowed = self.viewer.ui_settings.overwrite_descriptions;
                                     let already_has = self.current_thumb.description.is_some();
                                     let can_generate = !self.streaming_interim.contains_key(&path_key) && (!already_has || overwrite_allowed);
                                     let btn_text = if already_has { if overwrite_allowed { "Regenerate (Overwrite)" } else { "Generated" } } else { "Generate Description" };
@@ -204,8 +202,8 @@ impl super::FileExplorer {
                                         let engine = std::sync::Arc::new(crate::ai::GLOBAL_AI_ENGINE.clone());
                                         let path_for_stream = path_key.clone();
                                         self.streaming_interim.insert(path_for_stream.clone(), String::new());
-                                        let tx_updates = self.ai_update_tx.clone();
-                                        let prompt = self.ui_settings.ai_prompt_template.clone();
+                                        let tx_updates = self.viewer.ai_update_tx.clone();
+                                        let prompt = self.viewer.ui_settings.ai_prompt_template.clone();
                                         tokio::spawn(async move {
                                             let path_string = path_for_stream;
                                             let arc_path = std::sync::Arc::new(path_string);
@@ -227,36 +225,12 @@ impl super::FileExplorer {
                                             }).await;
                                         });
                                     }
-                                    // Simple SigLIP verification utility: compute logits vs a few prompts for current image.
-                                    if ui.button("SigLIP Verify").on_hover_text("Compute logits for a few prompts to verify SigLIP backend is active").clicked() {
-                                        let img_path = path_key.clone();
-                                        tokio::spawn(async move {
-                                            if crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await.is_ok() {
-                                                let prompts = vec![
-                                                    "a photo of a cat".to_string(),
-                                                    "a photo of a dog".to_string(),
-                                                    "a scenic landscape".to_string(),
-                                                ];
-                                                // Call SigLIP-only function; will error if not SigLIP
-                                                let mut guard = crate::ai::GLOBAL_AI_ENGINE.clip_engine.lock().await;
-                                                if let Some(engine) = guard.as_mut() {
-                                                    match engine.siglip_logits_image_vs_texts(&img_path, &prompts) {
-                                                        Ok(logits) => {
-                                                            log::info!("[SigLIP] logits for {} -> {:?}", img_path, logits);
-                                                        }
-                                                        Err(e) => {
-                                                            log::warn!("[SigLIP] verify not available: {}", e);
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        });
-                                    }
+                                    
                                     // Similarity search button (requires clip embedding availability; will fall back to generating on-demand)
                                     if ui.button("Find Similar").clicked() {
                                         let sel_path = path_key.clone();
                                         let engine = std::sync::Arc::new(crate::ai::GLOBAL_AI_ENGINE.clone());
-                                        let tx_updates = self.ai_update_tx.clone();
+                                        let tx_updates = self.viewer.ai_update_tx.clone();
                                         self.similar_results.clear();
                                         self.show_similar_modal = true;
                                         tokio::spawn(async move {

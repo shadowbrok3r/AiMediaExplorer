@@ -1,11 +1,17 @@
 use eframe::egui::*;
 use once_cell::sync::Lazy;
-use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicU64, AtomicUsize};
 
 /// High-level lifecycle state for a backend component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StatusState { Idle, Initializing, Running, Waiting, Error }
+pub enum StatusState {
+    Idle,
+    Initializing,
+    Running,
+    Waiting,
+    Error,
+}
 
 impl StatusState {
     pub fn color(self, style: &Style) -> Color32 {
@@ -34,7 +40,19 @@ pub struct StatusMeta {
 }
 
 impl Default for StatusMeta {
-    fn default() -> Self { Self { name: "", model: None, detail: String::new(), state: StatusState::Idle, started_at_ms: 0, progress_current: 0, progress_total: 0, extra: vec![], error: None } }
+    fn default() -> Self {
+        Self {
+            name: "",
+            model: None,
+            detail: String::new(),
+            state: StatusState::Idle,
+            started_at_ms: 0,
+            progress_current: 0,
+            progress_total: 0,
+            extra: vec![],
+            error: None,
+        }
+    }
 }
 
 /// Trait for anything that can render itself as a compact indicator + optional hover card.
@@ -53,29 +71,67 @@ pub trait GlobalStatusIndicator {
 
 // Internal representation stored globally.
 #[derive(Debug)]
-struct GlobalStatusInner { meta: StatusMeta }
+struct GlobalStatusInner {
+    meta: StatusMeta,
+}
 
-static STATUSES: Lazy<RwLock<std::collections::HashMap<&'static str, GlobalStatusInner>>> = Lazy::new(|| RwLock::new(Default::default()));
+static STATUSES: Lazy<RwLock<std::collections::HashMap<&'static str, GlobalStatusInner>>> =
+    Lazy::new(|| RwLock::new(Default::default()));
 
-fn now_ms() -> u64 { (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis()) as u64 }
+fn now_ms() -> u64 {
+    (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()) as u64
+}
 
 /// Handle for a registered global status.
 #[derive(Clone)]
-pub struct RegisteredStatus { key: &'static str }
+pub struct RegisteredStatus {
+    key: &'static str,
+}
 
 impl RegisteredStatus {
     pub fn register(name: &'static str, model: Option<&'static str>) -> Self {
         let mut w = STATUSES.write().unwrap();
-        w.entry(name).or_insert_with(|| GlobalStatusInner { meta: StatusMeta { name, model, ..Default::default() } });
+        w.entry(name).or_insert_with(|| GlobalStatusInner {
+            meta: StatusMeta {
+                name,
+                model,
+                ..Default::default()
+            },
+        });
         Self { key: name }
     }
 }
 
 impl GlobalStatusIndicator for RegisteredStatus {
-    fn key(&self) -> &'static str { self.key }
-    fn snapshot(&self) -> StatusMeta { STATUSES.read().unwrap().get(self.key).map(|i| i.meta.clone()).unwrap_or_default() }
-    fn set_state(&self, state: StatusState, detail: impl Into<String>) { if let Some(inner) = STATUSES.write().unwrap().get_mut(self.key) { inner.meta.state = state; inner.meta.detail = detail.into(); if matches!(state, StatusState::Running | StatusState::Initializing) { inner.meta.started_at_ms = now_ms(); } } }
-    fn set_progress(&self, current: u64, total: u64) { if let Some(inner) = STATUSES.write().unwrap().get_mut(self.key) { inner.meta.progress_current = current; inner.meta.progress_total = total; } }
+    fn key(&self) -> &'static str {
+        self.key
+    }
+    fn snapshot(&self) -> StatusMeta {
+        STATUSES
+            .read()
+            .unwrap()
+            .get(self.key)
+            .map(|i| i.meta.clone())
+            .unwrap_or_default()
+    }
+    fn set_state(&self, state: StatusState, detail: impl Into<String>) {
+        if let Some(inner) = STATUSES.write().unwrap().get_mut(self.key) {
+            inner.meta.state = state;
+            inner.meta.detail = detail.into();
+            if matches!(state, StatusState::Running | StatusState::Initializing) {
+                inner.meta.started_at_ms = now_ms();
+            }
+        }
+    }
+    fn set_progress(&self, current: u64, total: u64) {
+        if let Some(inner) = STATUSES.write().unwrap().get_mut(self.key) {
+            inner.meta.progress_current = current;
+            inner.meta.progress_total = total;
+        }
+    }
     fn set_model(&self, model: &str) {
         if let Some(inner) = STATUSES.write().unwrap().get_mut(self.key) {
             // Leak to obtain 'static lifetime acceptable for process lifetime.
@@ -86,33 +142,52 @@ impl GlobalStatusIndicator for RegisteredStatus {
 }
 
 /// Access snapshot for arbitrary key (used by UI aggregation).
-pub fn snapshot(key: &'static str) -> Option<StatusMeta> { STATUSES.read().ok()?.get(key).map(|i| i.meta.clone()) }
-pub fn all_snapshots() -> Vec<StatusMeta> { STATUSES.read().map(|m| m.values().map(|i| i.meta.clone()).collect()).unwrap_or_default() }
+pub fn snapshot(key: &'static str) -> Option<StatusMeta> {
+    STATUSES.read().ok()?.get(key).map(|i| i.meta.clone())
+}
+pub fn all_snapshots() -> Vec<StatusMeta> {
+    STATUSES
+        .read()
+        .map(|m| m.values().map(|i| i.meta.clone()).collect())
+        .unwrap_or_default()
+}
 
 /// Convenience registration for core components.
 pub static DB_STATUS: Lazy<RegisteredStatus> = Lazy::new(|| RegisteredStatus::register("DB", None));
-pub static JOY_STATUS: Lazy<RegisteredStatus> = Lazy::new(|| RegisteredStatus::register("JOY", None));
-pub static CLIP_STATUS: Lazy<RegisteredStatus> = Lazy::new(|| RegisteredStatus::register("CLIP", None));
+pub static JOY_STATUS: Lazy<RegisteredStatus> =
+    Lazy::new(|| RegisteredStatus::register("JOY", None));
+pub static CLIP_STATUS: Lazy<RegisteredStatus> =
+    Lazy::new(|| RegisteredStatus::register("CLIP", None));
 
 /// Token-progress tracker for generation (vision description) from anywhere.
 pub static VISION_TOKENS: Lazy<AtomicUsize> = Lazy::new(|| AtomicUsize::new(0));
-pub static VISION_MAX_TOKENS: Lazy<AtomicUsize> = Lazy::new(|| AtomicUsize::new(crate::app::MAX_NEW_TOKENS));
+pub static VISION_MAX_TOKENS: Lazy<AtomicUsize> =
+    Lazy::new(|| AtomicUsize::new(crate::app::MAX_NEW_TOKENS));
 pub static LAST_ERROR_TS_MS: Lazy<AtomicU64> = Lazy::new(|| AtomicU64::new(0));
 
 /// Render a compact horizontal status bar section suitable for embedding in a toolbar.
 pub fn status_bar_inline(ui: &mut Ui) {
-    for meta in all_snapshots() { indicator_small(ui, &meta); }
+    for meta in all_snapshots() {
+        indicator_small(ui, &meta);
+    }
 }
 
 fn indicator_small(ui: &mut Ui, meta: &StatusMeta) {
     ui.add_space(5.);
-    let (pct, has_prog) = if meta.progress_total > 0 { 
-        ((meta.progress_current as f32 / meta.progress_total as f32).clamp(0.0, 1.0), true) 
-    } else { 
-        (0.0, false) 
+    let (pct, has_prog) = if meta.progress_total > 0 {
+        (
+            (meta.progress_current as f32 / meta.progress_total as f32).clamp(0.0, 1.0),
+            true,
+        )
+    } else {
+        (0.0, false)
     };
 
-    let label = if has_prog { format!("{} {:.0}%", meta.name, pct * 100.0) } else { meta.name.to_string() };
+    let label = if has_prog {
+        format!("{} {:.0}%", meta.name, pct * 100.0)
+    } else {
+        meta.name.to_string()
+    };
     // Reserve space for a spinner glyph inside the button when active.
     let show_spinner = matches!(meta.state, StatusState::Initializing | StatusState::Running);
     let mut display_label = label.clone();
@@ -130,21 +205,36 @@ fn indicator_small(ui: &mut Ui, meta: &StatusMeta) {
 
     if let Some(rect) = atom_layout.rect(custom_button_id) {
         if show_spinner {
-            ui.put(rect, GearSpinner::new().color(ui.style().visuals.error_fg_color).size(18.));
+            ui.put(
+                rect,
+                GearSpinner::new()
+                    .color(ui.style().visuals.error_fg_color)
+                    .size(18.),
+            );
         } else {
             ui.put(rect, Label::new(RichText::new("⚙").weak()));
         }
     }
-    
+
     atom_layout.response.on_hover_ui(|ui| {
         ui.vertical(|ui| {
             ui.heading(meta.name);
-            if let Some(model) = meta.model { ui.label(format!("Model: {model}")); }
+            if let Some(model) = meta.model {
+                ui.label(format!("Model: {model}"));
+            }
             ui.label(format!("State: {:?}", meta.state));
-            if !meta.detail.is_empty() { ui.label(format!("Detail: {}", meta.detail)); }
-            if has_prog { ui.add(ProgressBar::new(pct).show_percentage()); }
-            for (k, v) in &meta.extra { ui.label(format!("{k}: {v}")); }
-            if let Some(err) = &meta.error { ui.colored_label(Color32::LIGHT_RED, err); }
+            if !meta.detail.is_empty() {
+                ui.label(format!("Detail: {}", meta.detail));
+            }
+            if has_prog {
+                ui.add(ProgressBar::new(pct).show_percentage());
+            }
+            for (k, v) in &meta.extra {
+                ui.label(format!("{k}: {v}"));
+            }
+            if let Some(err) = &meta.error {
+                ui.colored_label(Color32::LIGHT_RED, err);
+            }
         });
     });
     ui.add_space(5.);
@@ -210,13 +300,18 @@ impl GearSpinner {
 
     /// Paint the spinner in the given rectangle.
     pub fn paint_at(&self, ui: &Ui, button_rect: Rect) {
-        if !ui.is_rect_visible(button_rect) { return; }
+        if !ui.is_rect_visible(button_rect) {
+            return;
+        }
         ui.ctx().request_repaint(); // ensure animation
         let h = button_rect.height();
         // Square area for gear near left edge (after button's default padding ~4px)
         let side = h.min(18.0); // cap size a bit so it doesn't dominate
         let gear_rect = Rect::from_min_size(
-            pos2(button_rect.left() + 4.0, button_rect.center().y - side * 0.5),
+            pos2(
+                button_rect.left() + 4.0,
+                button_rect.center().y - side * 0.5,
+            ),
             vec2(side, side),
         );
         let angle = ui.input(|i| i.time as f32) * std::f32::consts::TAU * 0.6; // rotation speed factor
@@ -235,7 +330,9 @@ impl GearSpinner {
                 },
             );
             if let Shape::Text(ts) = &mut s {
-                let rotated = ts.clone().with_angle_and_anchor(angle, Align2::CENTER_CENTER);
+                let rotated = ts
+                    .clone()
+                    .with_angle_and_anchor(angle, Align2::CENTER_CENTER);
                 *ts = rotated;
             }
             s

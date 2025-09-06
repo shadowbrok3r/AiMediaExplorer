@@ -10,20 +10,19 @@ pub use database::*;
 
 
 impl eframe::App for app::SmartMediaApp {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.receive(ctx);
-        
-        match self.page {
-            app::Page::Main => self.main_page.ui(ctx, frame),
-        }
+        self.navbar(ctx);
+        egui::CentralPanel::default()
+        .show(ctx, |ui| {
+            self.file_explorer.ui(ui);
+        });
     }
 
     fn persist_egui_memory(&self) -> bool { true }
 
     fn save(&mut self, _storage: &mut dyn eframe::Storage) { }
 }
-
-
 
 #[tokio::main]
 async fn main() -> eframe::Result<()> {

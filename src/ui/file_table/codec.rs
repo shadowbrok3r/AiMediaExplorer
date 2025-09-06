@@ -1,5 +1,5 @@
-use egui_data_table::viewer::{DecodeErrorBehavior, RowCodec};
 use crate::Thumbnail;
+use egui_data_table::viewer::{DecodeErrorBehavior, RowCodec};
 
 /* --------------------------------------------- Codec ------------------------------------------ */
 
@@ -15,7 +15,12 @@ impl RowCodec<Thumbnail> for ThumbCodec {
             2 => dst.push_str(&row.path),
             3 => dst.push_str(row.category.as_deref().unwrap_or("")),
             4 => dst.push_str(&row.tags.join(",")),
-            5 => dst.push_str(&row.modified.as_ref().map(|d| d.to_string()).unwrap_or_default()),
+            5 => dst.push_str(
+                &row.modified
+                    .as_ref()
+                    .map(|d| d.to_string())
+                    .unwrap_or_default(),
+            ),
             6 => dst.push_str(&row.size.to_string()),
             7 => dst.push_str(&row.file_type),
             _ => {}
@@ -29,12 +34,22 @@ impl RowCodec<Thumbnail> for ThumbCodec {
         row: &mut Thumbnail,
     ) -> Result<(), DecodeErrorBehavior> {
         match column {
-            0 => { /* thumbnail placeholder */ },
+            0 => { /* thumbnail placeholder */ }
             1 => row.filename = src.to_string(),
             2 => row.path = src.to_string(),
-            3 => row.category = if src.is_empty() { None } else { Some(src.to_string()) },
+            3 => {
+                row.category = if src.is_empty() {
+                    None
+                } else {
+                    Some(src.to_string())
+                }
+            }
             4 => {
-                row.tags = src.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                row.tags = src
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
             }
             5 => { /* skip modified parse */ }
             6 => row.size = src.parse().unwrap_or_default(),
@@ -44,5 +59,7 @@ impl RowCodec<Thumbnail> for ThumbCodec {
         Ok(())
     }
 
-    fn create_empty_decoded_row(&mut self) -> Thumbnail { Thumbnail::default() }
+    fn create_empty_decoded_row(&mut self) -> Thumbnail {
+        Thumbnail::default()
+    }
 }

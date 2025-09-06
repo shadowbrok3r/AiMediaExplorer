@@ -1,29 +1,18 @@
-use std::path::PathBuf;
-
-use eframe::egui::*;
-use once_cell::sync::Lazy;
-use std::sync::Mutex;
-#[cfg(windows)]
-use windows::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
-#[cfg(windows)]
-use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
-#[cfg(windows)]
-use windows::Win32::Foundation::FILETIME;
-use crate::ui::status::{self, GlobalStatusIndicator};
+use crate::{ui::status::{self, GlobalStatusIndicator}, utilities::windows::{gpu_mem_mb, system_mem_mb, smoothed_cpu01, smoothed_ram01, smoothed_vram01}};
 use humansize::{format_size, DECIMAL};
-
+use std::path::PathBuf;
+use eframe::egui::*;
 use crate::list_drive_infos;
 
 // We assume SmartMediaApp has (or will get) a boolean `ai_initializing` and `ai_ready` flags plus `open_settings_modal`.
 // If they don't exist yet, they need to be added to `SmartMediaApp` (app.rs). For now we optimistically reference via super::MainPage's parent.
 
-impl super::MainPage {
+impl crate::app::SmartMediaApp {
     pub fn navbar(&mut self, ctx: &Context) {
         TopBottomPanel::top("MainPageTopPanel")
         .exact_height(25.0)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-
                 ui.menu_button("File", |ui| {
                     ui.menu_button("AI", |ui| {
                         // Enable AI Search: spawn async global init if not already in progress
@@ -122,30 +111,45 @@ impl super::MainPage {
                 });
                 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(300));
                     ui.checkbox(&mut self.open_log_window, "View Logs");
                     ui.separator();
                     // System metrics (CPU, RAM, VRAM)
-                    let cpu01 = smoothed_cpu01(); // normalized 0..1 with EMA smoothing
-                    log::debug!("CPU: {:.2}%", cpu01 * 100.0);
+                    let cpu01 = smoothed_cpu01();
                     ProgressBar::new(cpu01)
-                    .animate(false)
                     .desired_width(100.)
-                    .desired_height(1.)
+                    .desired_height(3.)
                     .fill(ui.style().visuals.error_fg_color)
-                    .show_percentage()
                     .ui(ui);
-                    
-                    ui.label("CPU %");
+
+                    ui.label(format!("CPU: {:.2}%", cpu01 * 100.0));
                     ui.separator(); 
-                    if let Some(ram_mb) = process_mem_mb() { 
-                        ctx.request_repaint();
-                        ui.label(format!("RAM: {:.0} MiB", ram_mb)); 
-                        ui.separator(); 
+
+                    let ram01 = smoothed_ram01();
+                    ProgressBar::new(ram01)
+                    .desired_width(100.)
+                    .desired_height(3.)
+                    .fill(ui.style().visuals.error_fg_color)
+                    .ui(ui);
+
+                    if let Some((used_mb, total_mb)) = system_mem_mb() {
+                        ui.label(format!("RAM: {:.0}/{:.0} MiB", used_mb, total_mb));
+                    } else {
+                        ui.label("RAM: n/a");
                     }
-                    if let Some((v_used, v_total)) = gpu_mem_mb() { 
-                        ui.label(format!("VRAM: {:.0}/{:.0} MiB", v_used, v_total)); 
-                        ui.separator(); 
-                    }
+                    ui.separator(); 
+
+                    let vram01 = smoothed_vram01();
+                    ProgressBar::new(vram01)
+                    .desired_width(100.)
+                    .desired_height(3.)
+                    .fill(ui.style().visuals.error_fg_color)
+                    .ui(ui);
+
+                    let (v_used, v_total) = gpu_mem_mb().unwrap_or_default();
+                    ui.label(format!("VRAM: {:.0}/{:.0} MiB", v_used, v_total)); 
+                    ui.separator(); 
+
                     status::status_bar_inline(ui);
                 });
             });
@@ -153,78 +157,3 @@ impl super::MainPage {
     }
 }
 
-// --- System metrics helpers ---
-#[cfg(windows)]
-fn process_mem_mb() -> Option<f32> {
-    unsafe {
-        let handle = GetCurrentProcess();
-        let mut counters = PROCESS_MEMORY_COUNTERS::default();
-        if K32GetProcessMemoryInfo(handle, &mut counters, std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32).as_bool() {
-            let mb = counters.WorkingSetSize as f32 / (1024.0 * 1024.0);
-            Some(mb)
-        } else { None }
-    }
-}
-
-#[cfg(not(windows))]
-fn process_mem_mb() -> Option<f32> { None }
-
-#[cfg(windows)]
-fn filetime_to_u64(ft: &FILETIME) -> u64 { ((ft.dwHighDateTime as u64) << 32) | (ft.dwLowDateTime as u64) }
-
-#[cfg(windows)]
-static CPU_SNAPSHOT: Lazy<Mutex<Option<(u64, std::time::Instant)>>> = Lazy::new(|| Mutex::new(None));
-
-#[cfg(windows)]
-fn sample_process_cpu_percent() -> Option<f32> {
-    unsafe {
-        let handle = GetCurrentProcess();
-        let mut creation = FILETIME::default();
-        let mut exit = FILETIME::default();
-        let mut kernel = FILETIME::default();
-        let mut user = FILETIME::default();
-        if GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user).is_err() { return None; }
-        let proc_time_100ns = filetime_to_u64(&kernel) + filetime_to_u64(&user);
-        let now = std::time::Instant::now();
-        let mut guard = CPU_SNAPSHOT.lock().ok()?;
-        if let Some((prev_100ns, prev_t)) = *guard {
-            let dt = now.duration_since(prev_t).as_secs_f64();
-            if dt <= 0.0 { *guard = Some((proc_time_100ns, now)); return None; }
-            let dproc = (proc_time_100ns.saturating_sub(prev_100ns)) as f64 / 10_000_000.0; // seconds
-            let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) as f64;
-            let pct = ((dproc / dt) / cores * 100.0) as f32;
-            *guard = Some((proc_time_100ns, now));
-            Some(pct)
-        } else {
-            *guard = Some((proc_time_100ns, now));
-            None
-        }
-    }
-}
-
-#[cfg(not(windows))]
-fn sample_process_cpu_percent() -> Option<f32> { None }
-
-// Placeholder: GPU memory query (requires DXGI; return None for now)
-fn gpu_mem_mb() -> Option<(f32, f32)> { None }
-
-// --- Smoothing / normalization helpers ---
-static SMOOTHED_CPU01: Lazy<Mutex<Option<f32>>> = Lazy::new(|| Mutex::new(None));
-
-fn smoothed_cpu01() -> f32 {
-    let sample_pct = sample_process_cpu_percent(); // 0..100
-    let mut guard = SMOOTHED_CPU01.lock().unwrap();
-    let alpha: f32 = 0.15; // smoothing factor (lower = smoother)
-    match sample_pct {
-        Some(pct) => {
-            let current = (pct / 100.0).clamp(0.0, 1.0);
-            let smoothed = match *guard {
-                Some(prev) => prev + alpha * (current - prev),
-                None => current,
-            };
-            *guard = Some(smoothed);
-            smoothed
-        }
-        None => guard.unwrap_or(0.0),
-    }
-}

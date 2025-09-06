@@ -1,12 +1,11 @@
-use crate::{get_thumbnail_by_path, get_thumbnail_paths, update_or_create_thumbnail};
+use crate::get_thumbnail_paths;
 use chrono::Utc;
 
-
-impl super::AISearchEngine {
+impl crate::ai::AISearchEngine {
     // Cache thumbnail & AI metadata in surrealdb table `thumbnails` (id = path)
     pub async fn cache_thumbnail_and_metadata(
         &self,
-        metadata: &super::FileMetadata,
+        metadata: &crate::FileMetadata,
     ) -> Result<(), anyhow::Error> {
         // Prefer existing in-memory base64 thumbnail if present; else attempt to read from on-disk path.
         let thumb_b64 = if let Some(b64) = &metadata.thumb_b64 {
@@ -25,24 +24,26 @@ impl super::AISearchEngine {
             None
         };
 
-        let merged = get_thumbnail_by_path(&metadata.path).await?.unwrap_or_else(|| crate::Thumbnail {
-            id: None,
-            db_created: Utc::now().into(),
-            path: metadata.path.clone(),
-            filename: metadata.filename.clone(),
-            file_type: metadata.file_type.clone(),
-            size: metadata.size,
-            description: None,
-            caption: None,
-            tags: Vec::new(),
-            category: None,
-            embedding: None,
-            thumbnail_b64: None,
-            modified: metadata.modified.map(|dt| dt.to_utc().into()),
-            hash: metadata.hash.clone(),
-        });
-
-        update_or_create_thumbnail(merged, metadata, thumb_b64).await?;
+        crate::Thumbnail::get_thumbnail_by_path(&metadata.path)
+            .await?
+            .unwrap_or_else(|| crate::Thumbnail {
+                id: None,
+                db_created: Utc::now().into(),
+                path: metadata.path.clone(),
+                filename: metadata.filename.clone(),
+                file_type: metadata.file_type.clone(),
+                size: metadata.size,
+                description: None,
+                caption: None,
+                tags: Vec::new(),
+                category: None,
+                embedding: None,
+                thumbnail_b64: None,
+                modified: metadata.modified.map(|dt| dt.to_utc().into()),
+                hash: metadata.hash.clone(),
+            })
+            .update_or_create_thumbnail(metadata, thumb_b64)
+            .await?;
 
         Ok(())
     }
@@ -69,5 +70,4 @@ impl super::AISearchEngine {
         }
         count
     }
-
 }

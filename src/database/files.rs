@@ -16,11 +16,11 @@ pub struct FileMetadata {
     // BLAKE3 hex hash of file contents to detect if content changed and re-embedding is needed.
     pub hash: Option<String>,
     // AI-powered metadata
-    pub description: Option<String>,   // AI-generated description (multi-sentence)
-    pub caption: Option<String>,       // Short caption/alt text
-    pub tags: Vec<String>,             // AI-extracted tags
-    pub category: Option<String>,      // Single high-level AI category
-    pub embedding: Option<Vec<f32>>,   // AI embedding vector
+    pub description: Option<String>, // AI-generated description (multi-sentence)
+    pub caption: Option<String>,     // Short caption/alt text
+    pub tags: Vec<String>,           // AI-extracted tags
+    pub category: Option<String>,    // Single high-level AI category
+    pub embedding: Option<Vec<f32>>, // AI embedding vector
     pub similarity_score: Option<f32>, // For search ranking
     // Dedicated CLIP embedding (fastembed) kept separate from legacy semantic `embedding` above.
     pub clip_embedding: Option<Vec<f32>>,

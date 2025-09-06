@@ -69,16 +69,16 @@ impl super::FileExplorer {
                                     }
                                     if ui.button("🖩 Bulk Generate Descriptions").on_hover_text("Generate AI descriptions for images missing caption/description").clicked() {
                                         let engine = std::sync::Arc::new(crate::ai::GLOBAL_AI_ENGINE.clone());
-                                        let prompt = self.ui_settings.ai_prompt_template.clone();
+                                        let prompt = self.viewer.ui_settings.ai_prompt_template.clone();
                                         let mut scheduled = 0usize;
                                         for row in self.table.iter() {
-                                            if self.bulk_cancel_requested { break; }
+                                            if self.viewer.bulk_cancel_requested { break; }
                                             if row.file_type == "<DIR>" { continue; }
                                             if let Some(ext) = Path::new(&row.path).extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()) { if !crate::is_image(ext.as_str()) { continue; } } else { continue; }
                                             if row.caption.is_some() || row.description.is_some() { continue; }
                                             let path_str = row.path.clone();
                                             let path_str_clone = path_str.clone();
-                                            let tx_updates = self.ai_update_tx.clone();
+                                            let tx_updates = self.viewer.ai_update_tx.clone();
                                             let prompt_clone = prompt.clone();
                                             let eng = engine.clone();
                                             tokio::spawn(async move {
@@ -102,7 +102,7 @@ impl super::FileExplorer {
                                         }
                                         if scheduled == 0 { log::info!("[AI] Bulk Generate: nothing to schedule"); } else { log::info!("[AI] Bulk Generate scheduled {scheduled} items"); }
                                         // reset flags after start to allow next run triggers later
-                                        self.bulk_cancel_requested = false;
+                                        self.viewer.bulk_cancel_requested = false;
                                         crate::ai::GLOBAL_AI_ENGINE.reset_bulk_cancel();
                                     }
                                     if ui.button("Generate Missing CLIP Embeddings").clicked() {
@@ -118,7 +118,7 @@ impl super::FileExplorer {
                                     if ui.button("🛑 Cancel Bulk Descriptions").on_hover_text("Stop scheduling/streaming new vision descriptions").clicked() {
                                         crate::ai::GLOBAL_AI_ENGINE.cancel_bulk_descriptions();
                                         crate::ai::GLOBAL_AI_ENGINE.auto_descriptions_enabled.store(false, std::sync::atomic::Ordering::Relaxed);
-                                        self.bulk_cancel_requested = true;
+                                        self.viewer.bulk_cancel_requested = true;
                                     }
                                 });
                                 ui.add_space(6.0);

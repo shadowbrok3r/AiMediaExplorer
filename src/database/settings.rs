@@ -1,9 +1,9 @@
-use serde::{Deserialize, Serialize};
-use once_cell::sync::Lazy;
-use surrealdb::RecordId;
-use std::sync::Mutex;
-use tokio::task;
 use crate::USER_SETTINGS;
+use once_cell::sync::Lazy;
+use serde::{Deserialize, Serialize};
+use std::sync::Mutex;
+use surrealdb::RecordId;
+use tokio::task;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UiSettings {
@@ -14,7 +14,7 @@ pub struct UiSettings {
     pub preview_width: u32,
     pub sort: Option<SortSetting>,
     // "icons" | "details"
-    pub view_mode: Option<String>, 
+    pub view_mode: Option<String>,
     pub left_width: u32,
     pub ext_enabled: Option<Vec<(String, bool)>>,
     pub excluded_dirs: Option<Vec<String>>,
@@ -22,7 +22,7 @@ pub struct UiSettings {
     pub group_by_category: bool,
     // Name, Path, Size, Modified, Created, Type
     #[serde(default)]
-    pub detail_column_widths: Option<[f32;6]>,
+    pub detail_column_widths: Option<[f32; 6]>,
     #[serde(default)]
     pub category_col_width: Option<f32>,
     #[serde(default)]
@@ -38,7 +38,7 @@ pub struct UiSettings {
     pub filter_modified_before: Option<String>,
     // multi-select categories
     #[serde(default)]
-    pub filter_category_multi: Option<Vec<String>>, 
+    pub filter_category_multi: Option<Vec<String>>,
     #[serde(default)]
     pub filter_only_with_thumb: bool,
     #[serde(default)]
@@ -123,12 +123,14 @@ static SETTINGS_CACHE: Lazy<Mutex<Option<UiSettings>>> = Lazy::new(|| Mutex::new
 pub fn load_settings() -> UiSettings {
     // Kick off async fetch; return default immediately (will hydrate later)
     task::spawn(async {
-        if let Ok(s) = super::get_settings().await { *SETTINGS_CACHE.lock().unwrap() = Some(s); }
+        if let Ok(s) = super::get_settings().await {
+            *SETTINGS_CACHE.lock().unwrap() = Some(s);
+        }
     });
     // Return cached if set
-    if let Some(cached) = SETTINGS_CACHE.lock().unwrap().clone() { 
+    if let Some(cached) = SETTINGS_CACHE.lock().unwrap().clone() {
         log::error!("Got cached ui settings: {:?}", cached.clip_model);
-        return cached; 
+        return cached;
     } else {
         log::error!("Using UiSettings::default()");
         UiSettings::default()
@@ -145,7 +147,9 @@ pub fn save_settings(s: &UiSettings) {
         } else {
             // After a successful save, refresh the cache from DB to ensure it's in sync.
             match get_settings().await {
-                Ok(svr) => { *SETTINGS_CACHE.lock().unwrap() = Some(svr); },
+                Ok(svr) => {
+                    *SETTINGS_CACHE.lock().unwrap() = Some(svr);
+                }
                 Err(e) => log::warn!("[settings] get_settings after save failed: {e}"),
             }
         }
@@ -153,17 +157,19 @@ pub fn save_settings(s: &UiSettings) {
 }
 
 pub async fn save_settings_in_db(s: UiSettings) -> anyhow::Result<(), anyhow::Error> {
-    super::DB.upsert::<Option<UiSettings>>(UiSettings::default().id).content::<UiSettings>(s).await?;
+    super::DB
+        .upsert::<Option<UiSettings>>(UiSettings::default().id)
+        .content::<UiSettings>(s)
+        .await?;
     Ok(())
 }
 
 pub async fn get_settings() -> anyhow::Result<UiSettings, anyhow::Error> {
     let settings_res: Option<UiSettings> = super::DB.select(UiSettings::default().id).await?;
-    log::info!("Got settings: {settings_res:?}");
-    if let Some(settings)  = settings_res {
+    log::info!("Got settings: {:?}", settings_res.is_some());
+    if let Some(settings) = settings_res {
         return Ok(settings);
     } else {
         Ok(UiSettings::default())
     }
 }
-
