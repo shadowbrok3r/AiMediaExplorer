@@ -18,7 +18,7 @@ impl crate::ai::AISearchEngine {
         &self,
         query: &str,
         top_k: usize,
-    ) -> Vec<crate::database::FileMetadata> {
+    ) -> Vec<crate::database::Thumbnail> {
         if self.ensure_clip_engine().await.is_err() {
             return Vec::new();
         }
@@ -36,7 +36,7 @@ impl crate::ai::AISearchEngine {
                 return Vec::new();
             }
         };
-        let mut scored: Vec<(f32, crate::database::FileMetadata)> = {
+        let mut scored: Vec<(f32, crate::database::Thumbnail)> = {
             let files = self.files.lock().await;
             files
                 .iter()
@@ -62,7 +62,7 @@ impl crate::ai::AISearchEngine {
         &self,
         image_path: &str,
         top_k: usize,
-    ) -> Vec<crate::database::FileMetadata> {
+    ) -> Vec<crate::database::Thumbnail> {
         if self.ensure_clip_engine().await.is_err() {
             return Vec::new();
         }
@@ -80,7 +80,7 @@ impl crate::ai::AISearchEngine {
                 return Vec::new();
             }
         };
-        let mut scored: Vec<(f32, crate::database::FileMetadata)> = {
+        let mut scored: Vec<(f32, crate::database::Thumbnail)> = {
             let files = self.files.lock().await;
             files
                 .iter()
@@ -179,6 +179,10 @@ impl crate::ai::AISearchEngine {
                 log::warn!("[CLIP] Skip missing path {p}");
                 continue;
             }
+            // Ensure there is an in-memory metadata entry so get_file_metadata works below
+            if let Err(e) = self.ensure_file_metadata_entry(p).await {
+                log::warn!("[CLIP] ensure_file_metadata_entry failed for {p}: {e}");
+            }
             let maybe_meta = self.get_file_metadata(p).await;
             if maybe_meta
                 .as_ref()
@@ -270,16 +274,14 @@ impl crate::ai::AISearchEngine {
                 }
                 // Persist embedding row
                 if let Some(meta2) = self.get_file_metadata(p).await {
-                    let _ = crate::database::upsert_clip_embedding(
-                        &meta2.path,
-                        meta2.hash.as_deref(),
-                        &vec,
-                    )
-                    .await;
+                    crate::database::upsert_clip_embedding(&meta2.path, meta2.hash.as_deref(), &vec).await?;
                 }
-                // Best-effort persist updated tags/category/description if we synthesized them
+
                 if let Some(updated) = self.get_file_metadata(p).await {
-                    let _ = self.cache_thumbnail_and_metadata(&updated).await;
+                    let result = self.cache_thumbnail_and_metadata(&updated).await;
+                    log::error!("self.cache_thumbnail_and_metadata: {result:?}");
+                } else {
+                    log::error!("get_file_metadata returned NONE");
                 }
                 added += 1;
                 log::info!("[CLIP] Embedded {p}");

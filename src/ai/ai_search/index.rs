@@ -1,13 +1,12 @@
-use crate::ai::FileMetadata;
-use base64::Engine;
-use std::fs;
+use crate::ai::Thumbnail;
+ 
 impl crate::ai::AISearchEngine {
     // Internal generalized indexer with optional force flag (bypass hash/description skip logic for reindex only).
     // NOTE: Description & embedding generation now rely solely on the corresponding auto_* atomic flags
     // (currently only auto_descriptions_enabled) and no longer use `force` to override.
     pub(crate) async fn index_file_internal(
         &self,
-        mut metadata: crate::FileMetadata,
+        mut metadata: crate::Thumbnail,
         force: bool,
     ) -> anyhow::Result<(), anyhow::Error> {
         // Reentrancy / duplicate guard
@@ -60,11 +59,10 @@ impl crate::ai::AISearchEngine {
                             let arc_self = std::sync::Arc::new(self.clone());
                             let p_clone = metadata.path.clone();
                             tokio::spawn(async move {
-                                let added = arc_self.clip_generate_for_paths(&[p_clone]).await?;
-                                if added > 0 {
-                                    log::info!("[CLIP] Generated embedding on skip path");
+                                match arc_self.clip_generate_for_paths(&[p_clone.clone()]).await {
+                                    Ok(added) => log::info!("[CLIP] Manual per-item generation: added {added} for {p_clone}"),
+                                    Err(e) => log::error!("engine.clip_generate_for_paths: {e:?}")
                                 }
-                                Ok::<(), anyhow::Error>(())
                             });
                         }
                         return Ok(());
@@ -75,26 +73,9 @@ impl crate::ai::AISearchEngine {
 
         // Normalize thumbnail fields: If thumb_b64 already contains a data URL, leave it.
         // If thumbnail_path references an on-disk file (not data URL) and we lack thumb_b64, encode it.
-        if metadata
-            .thumb_b64
-            .as_ref()
-            .map(|s| s.starts_with("data:image"))
-            .unwrap_or(false)
-            == false
-        {
-            if let Some(tp) = &metadata.thumbnail_path {
-                if !tp.starts_with("data:image") {
-                    if let Ok(bytes) = fs::read(tp) {
-                        metadata.thumb_b64 = Some(format!(
-                            "data:image/png;base64,{}",
-                            base64::engine::general_purpose::STANDARD.encode(bytes)
-                        ));
-                    }
-                } else if metadata.thumb_b64.is_none() {
-                    // Mis-assigned earlier code may have put data URL into thumbnail_path
-                    metadata.thumb_b64 = Some(tp.clone());
-                }
-            }
+        // Ensure any in-memory thumb_b64 gets mirrored to persisting thumbnail_b64
+        if metadata.thumbnail_b64.is_none() {
+            metadata.thumbnail_b64 = metadata.thumb_b64.clone();
         }
         if let Err(e) = self.cache_thumbnail_and_metadata(&metadata).await {
             log::warn!("Thumbnail cache failed: {}", e);
@@ -132,11 +113,10 @@ impl crate::ai::AISearchEngine {
                 let arc_self2 = std::sync::Arc::new(self.clone());
                 let clip_path = metadata.path.clone();
                 tokio::spawn(async move {
-                    let added = arc_self2.clip_generate_for_paths(&[clip_path]).await?;
-                    if added > 0 {
-                        log::info!("[CLIP] Generated embedding during indexing (post-insert)");
-                    }
-                    Ok::<(), anyhow::Error>(())
+                    match arc_self2.clip_generate_for_paths(&[clip_path.clone()]).await {
+                        Ok(added) => log::info!("[CLIP] Manual per-item generation: added {added} for {clip_path}"),
+                        Err(e) => log::error!("engine.clip_generate_for_paths: {e:?}")
+                    };
                 });
             }
         }
@@ -155,7 +135,7 @@ impl crate::ai::AISearchEngine {
         files.iter().map(|f| f.path.clone()).collect()
     }
 
-    pub async fn index_file(&self, metadata: FileMetadata) -> anyhow::Result<(), anyhow::Error> {
+    pub async fn index_file(&self, metadata: Thumbnail) -> anyhow::Result<(), anyhow::Error> {
         self.index_file_internal(metadata, false).await
     }
 
@@ -164,7 +144,7 @@ impl crate::ai::AISearchEngine {
         if guard.is_some() {
             return;
         }
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<FileMetadata>();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Thumbnail>();
         *guard = Some(tx);
         let engine = self.clone();
         tokio::spawn(async move {
@@ -197,7 +177,7 @@ impl crate::ai::AISearchEngine {
     }
 
     /// Enqueue a file metadata record for background indexing. Returns false if queue not ready yet.
-    pub async fn enqueue_index(&self, meta: FileMetadata) -> bool {
+    pub async fn enqueue_index(&self, meta: Thumbnail) -> bool {
         if self.index_tx.lock().await.is_none() {
             self.ensure_index_worker().await;
         }

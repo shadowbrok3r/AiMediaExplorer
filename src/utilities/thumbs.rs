@@ -126,3 +126,35 @@ unsafe fn hbitmap_to_png_data_url(
     let b64 = BASE64.encode(&png);
     Ok(format!("data:image/png;base64,{}", b64))
 }
+
+// Helper: convert a FoundFile (basic scan result) into a minimal Thumbnail row for persistence
+pub fn file_to_thumbnail(f: &crate::utilities::types::FoundFile) -> Option<crate::Thumbnail> {
+    use chrono::Utc;
+    let file_type = f.path.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase());
+    let ft_string = if let Some(ext) = file_type.clone() {
+        if crate::utilities::types::IMAGE_EXTS.iter().any(|e| *e == ext) { "image".to_string() }
+        else if crate::utilities::types::VIDEO_EXTS.iter().any(|e| *e == ext) { "video".to_string() }
+        else { ext }
+    } else { "other".into() };
+    let md = std::fs::metadata(&f.path).ok();
+    let modified = md.as_ref().and_then(|m| m.modified().ok()).map(|st| chrono::DateTime::<chrono::Utc>::from(st));
+    Some(crate::Thumbnail {
+        id: None,
+        db_created: Some(Utc::now().into()),
+        path: f.path.display().to_string(),
+        filename: f.path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string(),
+        file_type: ft_string,
+        size: f.size.unwrap_or(0),
+        description: None,
+        caption: None,
+        tags: Vec::new(),
+        category: None,
+        thumbnail_b64: f.thumb_data.clone(), // may be None; raw data URL string stored earlier version
+        modified: if let Some(date) = modified { Some(date.into()) } else { Some(Utc::now().into()) },
+        hash: None,
+    thumb_b64: None,
+    similarity_score: None,
+    clip_embedding: None,
+    clip_similarity_score: None,
+    })
+}

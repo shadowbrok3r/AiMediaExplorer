@@ -26,14 +26,20 @@ pub async fn upsert_clip_embedding(
     embedding: &[f32],
 ) -> anyhow::Result<(), anyhow::Error> {
     let thumbnail_id = crate::Thumbnail::get_thumbnail_id_by_path(path).await?;
-    let resp: Option<super::ClipEmbeddingRow> = super::DB.query("UPDATE clip_embeddings SET embedding = $embedding, hash = $hash, updated = time::now() WHERE path = $path")
+    let _ = super::DB
+        .query("UPDATE clip_embeddings SET embedding = $embedding, hash = $hash, updated = time::now() WHERE path = $path")
         .bind(("embedding", embedding.to_vec()))
         .bind(("hash", hash.map(|h| h.to_string())))
         .bind(("path", path.to_string()))
+        .await?;
+
+    // Check whether row exists; if not, create it
+    let existing: Option<surrealdb::RecordId> = super::DB
+        .query("SELECT id FROM clip_embeddings WHERE path = $path LIMIT 1")
+        .bind(("path", path.to_string()))
         .await?
         .take(0)?;
-
-    if resp.is_none() {
+    if existing.is_none() {
         let _: Option<super::ClipEmbeddingRow> = super::DB
             .create("clip_embeddings")
             .content(super::ClipEmbeddingRow {
@@ -44,6 +50,9 @@ pub async fn upsert_clip_embedding(
                 embedding: embedding.to_vec(),
                 created: None,
                 updated: None,
+                similarity_score: None,
+                clip_embedding: None,
+                clip_similarity_score: None,
             })
             .await?;
     }

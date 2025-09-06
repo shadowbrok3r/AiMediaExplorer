@@ -7,7 +7,7 @@ pub mod siglip;
 pub use ai_search::*;
 pub use joycap as joycaption_adapter;
 
-use crate::database::FileMetadata;
+use crate::database::Thumbnail;
 use crate::ui::status::{CLIP_STATUS, GlobalStatusIndicator, JOY_STATUS, StatusState};
 use once_cell::sync::Lazy;
 

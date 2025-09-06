@@ -274,9 +274,10 @@ impl RowViewer<Thumbnail> for FileTableViewer {
             9 => {
                 // DB Created date (DB mode only)
                 if self.mode == ExplorerMode::Database {
-                    use chrono::Datelike;
-                    let c = &row.db_created;
-                    ui.label(format!("{}/{}/{}", c.month(), c.day(), c.year()));
+                    if let Some(c) = &row.db_created {
+                        use chrono::Datelike;
+                        ui.label(format!("{}/{}/{}", c.month(), c.day(), c.year()));
+                    }
                 }
             }
             _ => unreachable!(),
@@ -378,10 +379,10 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                 tokio::spawn(async move {
                     // Ensure engine and model are ready
                     let _ = crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await;
-                    let added = crate::ai::GLOBAL_AI_ENGINE
-                        .clip_generate_for_paths(&[path.clone()])
-                        .await?;
-                    log::info!("[CLIP] Manual per-item generation: added {added} for {path}");
+                    match crate::ai::GLOBAL_AI_ENGINE.clip_generate_for_paths(&[path.clone()]).await {
+                        Ok(added) => log::info!("[CLIP] Manual per-item generation: added {added} for {path}"),
+                        Err(e) => log::error!("engine.clip_generate_for_paths: {e:?}")
+                    }
                     Ok::<(), anyhow::Error>(())
                 });
             }
@@ -412,10 +413,7 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                                 "image" => {
                                     if let Ok(b64) = generate_image_thumb_data(Path::new(&row.path))
                                     {
-                                        log::warn!(
-                                            "Thumbnail embedding: {:?}",
-                                            row.embedding.is_some()
-                                        );
+                                        // embedding presence is tracked via clip embeddings table now
                                         let _ = self.thumbnail_tx.try_send(Thumbnail {
                                             thumbnail_b64: Some(b64),
                                             ..row.clone()

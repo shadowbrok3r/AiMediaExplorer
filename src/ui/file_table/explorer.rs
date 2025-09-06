@@ -21,6 +21,7 @@ impl super::FileExplorer {
             .iter()
             .map(|s| s.to_ascii_lowercase())
             .collect();
+
         for entry in walker {
             if let Ok(e) = entry {
                 let p = e.path();
@@ -126,10 +127,21 @@ impl super::FileExplorer {
                 .filter(|t| t.file_type != "<DIR>")
                 .map(|t| t.path.clone())
                 .collect();
+
             if !dir_file_paths.is_empty() {
+                let paths_clone = dir_file_paths.clone();
                 tokio::spawn(async move {
-                    let _ = engine.hydrate_directory_paths(&dir_file_paths).await; // count logged inside
+                    log::info!(
+                        "[AI] Hydrating minimal metadata for {} directory paths",
+                        paths_clone.len()
+                    );
+                    let inserted = engine.hydrate_directory_paths(&paths_clone).await;
+                    if inserted > 0 {
+                        log::info!("[AI] Hydrated {inserted} in-memory rows for directory");
+                    }
                 });
+            } else {
+                log::debug!("[AI] No file rows to hydrate for directory");
             }
         }
         // Legacy metadata fetch pathway retained for now (can be removed once UI fully reads from AI engine state if desired)

@@ -12,7 +12,7 @@ pub use generate_description::*;
 // AI Search Engine core (semantic/kalosm integration removed)
 #[derive(Clone)]
 pub struct AISearchEngine {
-    pub files: std::sync::Arc<tokio::sync::Mutex<Vec<crate::FileMetadata>>>,
+    pub files: std::sync::Arc<tokio::sync::Mutex<Vec<crate::Thumbnail>>>,
     pub path_to_id: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, String>>>,
     pub indexing_in_progress:
         std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, usize>>>, // path -> reentry count
@@ -28,7 +28,7 @@ pub struct AISearchEngine {
 
     // Async indexing queue (fire-and-forget). UI enqueues metadata; background worker performs heavy work on Tokio runtime.
     pub index_tx: std::sync::Arc<
-        tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<crate::FileMetadata>>>,
+        tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<crate::Thumbnail>>>,
     >,
     // Progress metrics (atomics for cheap cross-thread reads)
     pub index_queue_len: std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -96,32 +96,42 @@ impl AISearchEngine {
                         if files_guard.iter().any(|f| f.path == thumb.path) {
                             continue;
                         }
-                        // Convert modified -> chrono::Local if present
-                        let modified_local = thumb
-                            .modified
-                            .as_ref()
-                            .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s.to_string()).ok())
-                            .map(|dt| dt.with_timezone(&chrono::Local));
-                        let fm = super::FileMetadata {
+                        // Use DB modified timestamp directly (surreal Datetime)
+                        let modified_surreal = thumb.modified.clone();
+
+                        // Normalize file_type from extension to a coarse kind expected by the engine (image/video/other)
+                        let norm_kind = thumb
+                            .file_type
+                            .as_str()
+                            .to_ascii_lowercase();
+                        let norm_kind = if crate::is_image(&norm_kind) {
+                            "image".to_string()
+                        } else if crate::is_video(&norm_kind) {
+                            "video".to_string()
+                        } else {
+                            "other".to_string()
+                        };
+
+                        let fm = crate::Thumbnail {
                             id: None,
+                            db_created: thumb.db_created.clone(),
                             path: thumb.path.clone(),
                             filename: thumb.filename.clone(),
-                            file_type: thumb.file_type.clone(),
+                            file_type: norm_kind,
                             size: thumb.size,
-                            modified: modified_local,
-                            created: modified_local,
-                            thumbnail_path: None,
+                            modified: modified_surreal,
+                            thumbnail_b64: None,
                             thumb_b64: None,
                             hash: thumb.hash.clone(),
                             description: thumb.description.clone(),
                             caption: thumb.caption.clone(),
                             tags: thumb.tags.clone(),
                             category: thumb.category.clone(),
-                            embedding: None,
                             similarity_score: None,
                             clip_embedding: None,
                             clip_similarity_score: None,
                         };
+                        log::error!("self.files + 1: {fm:?}");
                         files_guard.push(fm);
                         inserted += 1;
                     }
@@ -185,8 +195,9 @@ impl AISearchEngine {
                         })
                         .unwrap_or("other")
                         .to_string();
-                    let stub = super::FileMetadata {
+                    let stub = crate::Thumbnail {
                         id: None,
+                        db_created: None,
                         path: path.to_string(),
                         filename: std::path::Path::new(path)
                             .file_name()
@@ -196,8 +207,7 @@ impl AISearchEngine {
                         file_type: ftype,
                         size: 0,
                         modified: None,
-                        created: None,
-                        thumbnail_path: None,
+                        thumbnail_b64: None,
                         thumb_b64: None,
                         hash: None,
                         description: Some(vd.description.clone()),
@@ -208,7 +218,6 @@ impl AISearchEngine {
                         } else {
                             Some(vd.category.clone())
                         },
-                        embedding: None,
                         similarity_score: None,
                         clip_embedding: None,
                         clip_similarity_score: None,
@@ -239,49 +248,121 @@ impl AISearchEngine {
         Ok(())
     }
 
-    // Attempt to restore FileMetadata from DB cached thumbnail row (best-effort)
     async fn try_restore_file_metadata(
         &self,
         path: &str,
-    ) -> anyhow::Result<Option<super::FileMetadata>> {
+    ) -> anyhow::Result<Option<crate::Thumbnail>> {
         // Single-row lookup via UNIQUE index helper.
         let Some(row) = crate::Thumbnail::get_thumbnail_by_path(path).await? else {
             return Ok(None);
         };
-        // Build FileMetadata (leave hash/clip/embedding empty; they will be filled later by indexing)
-        // Convert surrealdb::sql::Datetime -> chrono::DateTime<Local>
-        fn conv_dt(
-            dt: &Option<surrealdb::sql::Datetime>,
-        ) -> Option<chrono::DateTime<chrono::Local>> {
-            dt.as_ref()
-                .and_then(|d| chrono::DateTime::parse_from_rfc3339(&d.to_string()).ok())
-                .map(|dt_fixed| dt_fixed.with_timezone(&chrono::Local))
-        }
-        let fm = super::FileMetadata {
-            id: row.id.as_ref().map(|rid| rid.to_string()),
+        // Build Thumbnail (leave hash/clip/embedding empty; they will be filled later by indexing)
+    // Note: keep timestamps as surreal Datetime in memory; convert to UI types at render time.
+        // Normalize file_type from extension value stored in DB into coarse kind
+        let ft_norm = row
+            .file_type
+            .to_ascii_lowercase();
+        let ft_norm = if crate::is_image(&ft_norm) {
+            "image".to_string()
+        } else if crate::is_video(&ft_norm) {
+            "video".to_string()
+        } else {
+            "other".to_string()
+        };
+
+        let fm = crate::Thumbnail {
+            id: row.id.clone(),
+            db_created: row.db_created.clone(),
             path: row.path.clone(),
             filename: std::path::Path::new(&row.path)
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("")
                 .to_string(),
-            file_type: row.file_type.clone(),
+            file_type: ft_norm,
             size: row.size,
-            modified: conv_dt(&row.modified),
-            created: None, // thumbnails row doesn't store a created time compatible with chrono Local directly
-            thumbnail_path: None,
+            modified: row.modified.clone(),
+            thumbnail_b64: row.thumbnail_b64.clone(),
             thumb_b64: row.thumbnail_b64.clone(),
             hash: row.hash.clone(),
             description: row.description.clone(),
             caption: row.caption.clone(),
             tags: row.tags.clone(),
             category: row.category.clone(),
-            embedding: row.embedding.clone(),
             similarity_score: None,
             clip_embedding: None,
             clip_similarity_score: None,
         };
         Ok(Some(fm))
+    }
+
+    /// Ensure there is an in-memory Thumbnail entry for the given path.
+    /// Attempts DB restore; if unavailable, creates a minimal stub using filesystem info.
+    pub async fn ensure_file_metadata_entry(
+        &self,
+        path: &str,
+    ) -> anyhow::Result<(), anyhow::Error> {
+        // Fast path: already present
+        if self
+            .files
+            .lock()
+            .await
+            .iter()
+            .any(|f| f.path == path)
+        {
+            return Ok(());
+        }
+
+        // Try restore from DB cached row
+        if let Some(restored) = self.try_restore_file_metadata(path).await? {
+            let mut files = self.files.lock().await;
+            files.push(restored);
+            return Ok(());
+        }
+
+        // Create minimal stub from filesystem
+        let p = std::path::Path::new(path);
+        let filename = p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        let ext = p
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default();
+        let kind = if crate::is_image(&ext) {
+            "image"
+        } else if crate::is_video(&ext) {
+            "video"
+        } else {
+            "other"
+        }
+        .to_string();
+        let size = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+        let stub = crate::Thumbnail {
+            id: None,
+            db_created: None,
+            path: path.to_string(),
+            filename,
+            file_type: kind,
+            size,
+            modified: None,
+            thumbnail_b64: None,
+            thumb_b64: None,
+            hash: None,
+            description: None,
+            caption: None,
+            tags: Vec::new(),
+            category: None,
+            similarity_score: None,
+            clip_embedding: None,
+            clip_similarity_score: None,
+        };
+        let mut files = self.files.lock().await;
+        files.push(stub);
+        Ok(())
     }
 
     // Background enrichment: generate descriptions for any previously indexed images that are missing one.
@@ -397,8 +478,9 @@ impl AISearchEngine {
                 entry.description = Some(desc.to_string());
             } else {
                 // If we don't have it yet, create a minimal placeholder so enrichment won't re-trigger.
-                files.push(super::FileMetadata {
+                files.push(crate::Thumbnail {
                     id: None,
+                    db_created: None,
                     path: path.to_string(),
                     filename: std::path::Path::new(path)
                         .file_name()
@@ -408,15 +490,13 @@ impl AISearchEngine {
                     file_type: "other".into(),
                     size: 0,
                     modified: None,
-                    created: None,
-                    thumbnail_path: None,
+                    thumbnail_b64: None,
                     thumb_b64: None,
                     hash: None,
                     description: Some(desc.to_string()),
                     caption: None,
                     tags: Vec::new(),
                     category: None,
-                    embedding: None,
                     similarity_score: None,
                     clip_embedding: None,
                     clip_similarity_score: None,
@@ -699,9 +779,10 @@ impl AISearchEngine {
 // Helper function to extract metadata from FoundFile
 pub fn found_file_to_metadata(
     found_file: &crate::utilities::types::FoundFile,
-) -> super::FileMetadata {
-    super::FileMetadata {
+) -> crate::Thumbnail {
+    crate::Thumbnail {
         id: None,
+    db_created: None,
         path: found_file.path.display().to_string(),
         filename: found_file
             .path
@@ -715,17 +796,15 @@ pub fn found_file_to_metadata(
             crate::utilities::types::MediaKind::Other => "other".to_string(),
         },
         size: found_file.size.unwrap_or(0),
-        modified: found_file.modified,
-        created: found_file.created,
-        // Only set thumb_b64; do not misuse thumbnail_path for base64 data URLs.
-        thumbnail_path: None,
+    modified: None,
+    // Only set in-memory thumb; DB field mirrored by indexer persist
+    thumbnail_b64: found_file.thumb_data.clone(),
         thumb_b64: found_file.thumb_data.clone(),
         hash: None,
         description: None,
         caption: None,
         tags: Vec::new(),
         category: None,
-        embedding: None,
         similarity_score: None,
         clip_embedding: None,
         clip_similarity_score: None,

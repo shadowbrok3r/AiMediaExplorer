@@ -35,7 +35,7 @@ pub enum AIUpdate {
     },
     SimilarResults {
         origin_path: String,
-        results: Vec<crate::database::FileMetadata>,
+        results: Vec<crate::database::Thumbnail>,
     },
 }
 
@@ -93,13 +93,16 @@ pub struct FileExplorer {
     #[serde(skip)]
     similar_origin: Option<String>,
     #[serde(skip)]
-    similar_results: Vec<crate::database::FileMetadata>,
+    similar_results: Vec<crate::database::Thumbnail>,
     // Auto-follow active vision generation updates
     #[serde(skip)]
     pub follow_active_vision: bool,
     // Cache of clip embedding presence per path to avoid frequent async queries in UI thread
     #[serde(skip)]
     clip_presence: std::collections::HashMap<String, bool>,
+    // Throttle for re-checking clip presence per path
+    #[serde(skip)]
+    clip_presence_last_check: std::collections::HashMap<String, std::time::Instant>,
     // Channel for async metadata merges
     #[serde(skip)]
     meta_tx: Sender<AIMetadataUpdate>,
@@ -174,6 +177,7 @@ impl Default for FileExplorer {
             similar_results: Vec::new(),
             follow_active_vision: true,
             clip_presence: std::collections::HashMap::new(),
+            clip_presence_last_check: std::collections::HashMap::new(),
             meta_tx,
             meta_rx,
             clip_presence_tx,

@@ -41,22 +41,29 @@ impl super::FileExplorer {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             ui.label(&self.current_thumb.file_type);
                             // CLIP embedding presence indicator (use in-memory metadata only)
-                            // Refresh clip presence cache asynchronously (fire & forget throttled by absence of entry)
+                            // Refresh clip presence cache asynchronously, throttled to ~1s per path
                             let path_for_clip = self.current_thumb.path.clone();
-                            if !self.clip_presence.contains_key(&path_for_clip) && !path_for_clip.is_empty() {
-                                let tx = self.clip_presence_tx.clone();
-                                let p = path_for_clip.clone();
-                                tokio::spawn(async move {
-                                    let has = crate::ai::GLOBAL_AI_ENGINE
-                                        .get_file_metadata(&p)
-                                        .await
-                                        .map(|m| m.clip_embedding.is_some())
-                                        .unwrap_or(false);
-                                    let _ = tx.try_send((p, has));
-                                });
+                            if !path_for_clip.is_empty() {
+                                let should_check = match self.clip_presence_last_check.get(&path_for_clip) {
+                                    Some(last) => last.elapsed() > std::time::Duration::from_millis(1000),
+                                    None => true,
+                                };
+                                if should_check {
+                                    self.clip_presence_last_check.insert(path_for_clip.clone(), std::time::Instant::now());
+                                    let tx = self.clip_presence_tx.clone();
+                                    let p = path_for_clip.clone();
+                                    tokio::spawn(async move {
+                                        let has = crate::ai::GLOBAL_AI_ENGINE
+                                            .get_file_metadata(&p)
+                                            .await
+                                            .map(|m| m.clip_embedding.is_some())
+                                            .unwrap_or(false);
+                                        let _ = tx.try_send((p, has));
+                                    });
+                                }
                             }
-                            let have_clip = *self.clip_presence.get(&path_for_clip).unwrap_or(&false);
-                            let badge = if have_clip || self.current_thumb.embedding.is_some() { 
+                                let have_clip = *self.clip_presence.get(&path_for_clip).unwrap_or(&false);
+                            let badge = if have_clip { 
                                 RichText::new("CLIP ✓").color(Color32::LIGHT_GREEN) 
                             } else { 
                                 RichText::new("CLIP X").color(ui.style().visuals.error_fg_color) 
@@ -236,7 +243,10 @@ impl super::FileExplorer {
                                         tokio::spawn(async move {
                                             // Ensure embedding exists; generate if missing
                                             if let Some(meta) = engine.get_file_metadata(&sel_path).await {
-                                                if meta.clip_embedding.is_none() { let _ = engine.clip_generate_for_paths(&[sel_path.clone()]).await; }
+                                                if meta.clip_embedding.is_none() { 
+                                                    let res = engine.clip_generate_for_paths(&[sel_path.clone()]).await; 
+                                                    log::error!("engine.clip_generate_for_paths: {res:?}");
+                                                }
                                             }
                                             let results = engine.clip_search_image(&sel_path, 50).await;
                                             let _ = tx_updates.try_send(super::AIUpdate::SimilarResults { origin_path: sel_path.clone(), results });
@@ -248,8 +258,10 @@ impl super::FileExplorer {
                                         tokio::spawn(async move {
                                             // Ensure engine and model are ready
                                             let _ = crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await;
-                                            let added = crate::ai::GLOBAL_AI_ENGINE.clip_generate_for_paths(&[path.clone()]).await?;
-                                            log::info!("[CLIP] Manual per-item generation: added {added} for {path}");
+                                            match crate::ai::GLOBAL_AI_ENGINE.clip_generate_for_paths(&[path.clone()]).await {
+                                                Ok(added) => log::info!("[CLIP] Manual per-item generation: added {added} for {path}"),
+                                                Err(e) => log::error!("engine.clip_generate_for_paths: {e:?}")
+                                            }
                                             Ok::<(), anyhow::Error>(())
                                         });
                                     }

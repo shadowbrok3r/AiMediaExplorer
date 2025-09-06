@@ -99,8 +99,9 @@ impl crate::ai::AISearchEngine {
         );
 
         // Index generated image metadata
-        let meta = crate::FileMetadata {
+        let meta = crate::Thumbnail {
             id: None,
+            db_created: None,
             path: out_path.to_string_lossy().to_string(),
             filename: out_path
                 .file_name()
@@ -109,16 +110,14 @@ impl crate::ai::AISearchEngine {
                 .to_string(),
             file_type: "image".to_string(),
             size: std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0),
-            modified: Some(chrono::Local::now()),
-            created: Some(chrono::Local::now()),
-            thumbnail_path: None,
+            modified: None,
+            thumbnail_b64: None,
             thumb_b64: None,
             hash: self.compute_file_hash(&out_path).ok(),
             description: Some(format!("Placeholder generated for prompt: {}", prompt)),
             caption: Some(format!("generated image: {}", prompt)),
             tags: vec!["generated".into()],
             category: Some("generated".into()),
-            embedding: None,
             similarity_score: None,
             clip_embedding: None,
             clip_similarity_score: None,

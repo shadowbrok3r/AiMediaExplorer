@@ -5,7 +5,7 @@ pub mod app;
 pub mod ui;
 pub mod receive;
 
-pub use utilities::{explorer::*, scan::*, thumbs::*, types::*, files::*};
+pub use utilities::{explorer::*, scan::*, thumbs::*, types::*};
 pub use database::*;
 
 

@@ -35,6 +35,7 @@ impl super::FileExplorer {
                 }
             }
         }
+        
         // If we were loading a DB page and all rows have arrived (channel drained for now), finalize batch.
         if self.viewer.mode == super::viewer::ExplorerMode::Database && self.db_loading {
             // Heuristic: if last batch len < limit then no more pages.
@@ -64,7 +65,7 @@ impl super::FileExplorer {
                         }
                         self.table.push(row);
                         ctx.request_repaint();
-                        // Enqueue for AI indexing (images/videos). Use lightweight FileMetadata conversion.
+                        // Enqueue for AI indexing (images/videos). Use lightweight Thumbnail conversion.
                         let path_clone = item.path.to_string_lossy().to_string();
                         let ftype = {
                             if let Some(ext) = item
@@ -84,8 +85,9 @@ impl super::FileExplorer {
                                 "other".to_string()
                             }
                         };
-                        let meta = crate::database::FileMetadata {
+                        let meta = crate::database::Thumbnail {
                             id: None,
+                            db_created: None,
                             path: path_clone.clone(),
                             filename: item
                                 .path
@@ -96,15 +98,13 @@ impl super::FileExplorer {
                             file_type: ftype,
                             size: item.size.unwrap_or(0),
                             modified: None,
-                            created: None,
-                            thumbnail_path: None,
+                            thumbnail_b64: item.thumb_data.clone(),
                             thumb_b64: item.thumb_data.clone(),
                             hash: None,
                             description: None,
                             caption: None,
                             tags: Vec::new(),
                             category: None,
-                            embedding: None,
                             similarity_score: None,
                             clip_embedding: None,
                             clip_similarity_score: None,
@@ -117,7 +117,7 @@ impl super::FileExplorer {
                 crate::utilities::scan::ScanMsg::FoundBatch(batch) => {
                     log::info!("FoundBatch");
                     let mut newly_enqueued: Vec<String> = Vec::new();
-                    let mut to_index: Vec<crate::database::FileMetadata> = Vec::new();
+                    let mut to_index: Vec<crate::database::Thumbnail> = Vec::new();
                     let excluded = if self.excluded_terms.is_empty() {
                         None
                     } else {
@@ -175,8 +175,9 @@ impl super::FileExplorer {
                                     "other".to_string()
                                 }
                             };
-                            to_index.push(crate::database::FileMetadata {
+                            to_index.push(crate::database::Thumbnail {
                                 id: None,
+                                db_created: None,
                                 path: item.path.to_string_lossy().to_string(),
                                 filename: item
                                     .path
@@ -187,15 +188,13 @@ impl super::FileExplorer {
                                 file_type: ftype,
                                 size: item.size.unwrap_or(0),
                                 modified: None,
-                                created: None,
-                                thumbnail_path: None,
+                                thumbnail_b64: item.thumb_data.clone(),
                                 thumb_b64: item.thumb_data.clone(),
                                 hash: None,
                                 description: None,
                                 caption: None,
                                 tags: Vec::new(),
                                 category: None,
-                                embedding: None,
                                 similarity_score: None,
                                 clip_embedding: None,
                                 clip_similarity_score: None,

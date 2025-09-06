@@ -54,8 +54,10 @@ impl crate::app::SmartMediaApp {
                             if !path.is_empty() {
                                 status::CLIP_STATUS.set_state(status::StatusState::Running, "Selected path");
                                 tokio::spawn(async move {
-                                    let added = crate::ai::GLOBAL_AI_ENGINE.clip_generate_for_paths(&[path.clone()]).await?;
-                                    log::info!("[CLIP] Selected generation for {path} -> added {added}");
+                                    match crate::ai::GLOBAL_AI_ENGINE.clip_generate_for_paths(&[path.clone()]).await {
+                                        Ok(added) => log::info!("[CLIP] Manual per-item generation: added {added} for {path}"),
+                                        Err(e) => log::error!("engine.clip_generate_for_paths: {e:?}")
+                                    }
                                     status::CLIP_STATUS.set_state(status::StatusState::Idle, "Idle");
                                     Ok::<(), anyhow::Error>(())
                                 });

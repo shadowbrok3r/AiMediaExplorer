@@ -8,7 +8,7 @@ impl crate::Thumbnail {
         path: &str,
     ) -> anyhow::Result<Option<Self>, anyhow::Error> {
         let resp: Option<Self> = DB
-            .query("SELECT * FROM thumbnails WHERE path = $path LIMIT 1")
+            .query("SELECT * FROM thumbnails WHERE path = $path")
             .bind(("path", path.to_string()))
             .await?
             .take(0)?;
@@ -18,9 +18,8 @@ impl crate::Thumbnail {
     pub async fn get_thumbnail_id_by_path(
         path: &str,
     ) -> anyhow::Result<Option<RecordId>, anyhow::Error> {
-        let sql = "SELECT id FROM thumbnails WHERE path = $path LIMIT 1";
         let resp: Option<RecordId> = DB
-            .query(sql)
+            .query("SELECT id FROM thumbnails WHERE path = $path")
             .bind(("path", path.to_string()))
             .await?
             .take(0)?;
@@ -108,7 +107,7 @@ impl crate::Thumbnail {
 
     pub async fn update_or_create_thumbnail(
         mut self,
-        metadata: &super::FileMetadata,
+        metadata: &super::Thumbnail,
         thumb_b64: Option<String>,
     ) -> anyhow::Result<(), anyhow::Error> {
         // Only update fields if new content present
@@ -130,16 +129,12 @@ impl crate::Thumbnail {
                 self.category = Some(cat.clone());
             }
         }
-        if let Some(embed) = &metadata.embedding {
-            if !embed.is_empty() {
-                self.embedding = Some(embed.clone());
-            }
-        }
+    // embedding field on thumbnails removed; embeddings live in clip_embeddings table
         if thumb_b64.is_some() {
             self.thumbnail_b64 = thumb_b64;
         }
-        if let Some(mod_dt) = metadata.modified {
-            self.modified = Some(mod_dt.to_utc().into());
+        if metadata.modified.is_some() {
+            self.modified = metadata.modified.clone();
         }
         if let Some(h) = &metadata.hash {
             if !h.is_empty() {
@@ -159,7 +154,6 @@ impl crate::Thumbnail {
                         caption = $caption, 
                         tags = $tags, 
                         category = $category, 
-                        embedding = $embedding, 
                         thumbnail_b64 = $thumbnail_b64, 
                         modified = $modified, 
                         hash = $hash 
@@ -174,7 +168,6 @@ impl crate::Thumbnail {
             .bind(("caption", self.caption.clone()))
             .bind(("tags", self.tags.clone()))
             .bind(("category", self.category.clone()))
-            .bind(("embedding", self.embedding.clone()))
             .bind(("thumbnail_b64", self.thumbnail_b64.clone()))
             .bind(("modified", self.modified.clone()))
             .bind(("hash", self.hash.clone()))

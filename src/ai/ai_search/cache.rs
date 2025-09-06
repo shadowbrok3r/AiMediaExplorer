@@ -5,30 +5,20 @@ impl crate::ai::AISearchEngine {
     // Cache thumbnail & AI metadata in surrealdb table `thumbnails` (id = path)
     pub async fn cache_thumbnail_and_metadata(
         &self,
-        metadata: &crate::FileMetadata,
+        metadata: &crate::Thumbnail,
     ) -> Result<(), anyhow::Error> {
-        // Prefer existing in-memory base64 thumbnail if present; else attempt to read from on-disk path.
+        // Prefer in-memory `thumb_b64`; else use already-persisted `thumbnail_b64`.
         let thumb_b64 = if let Some(b64) = &metadata.thumb_b64 {
             Some(b64.clone().trim().to_string())
-        } else if let Some(tp) = &metadata.thumbnail_path {
-            if tp.starts_with("data:image") {
-                Some(tp.clone())
-            } else {
-                use base64::Engine;
-                match tokio::fs::read(tp).await {
-                    Ok(bytes) => Some(base64::engine::general_purpose::STANDARD.encode(bytes)),
-                    Err(_) => None,
-                }
-            }
         } else {
-            None
+            metadata.thumbnail_b64.clone()
         };
 
         crate::Thumbnail::get_thumbnail_by_path(&metadata.path)
             .await?
             .unwrap_or_else(|| crate::Thumbnail {
                 id: None,
-                db_created: Utc::now().into(),
+                db_created: Some(Utc::now().into()),
                 path: metadata.path.clone(),
                 filename: metadata.filename.clone(),
                 file_type: metadata.file_type.clone(),
@@ -37,10 +27,13 @@ impl crate::ai::AISearchEngine {
                 caption: None,
                 tags: Vec::new(),
                 category: None,
-                embedding: None,
                 thumbnail_b64: None,
-                modified: metadata.modified.map(|dt| dt.to_utc().into()),
+                modified: metadata.modified.clone(),
                 hash: metadata.hash.clone(),
+                thumb_b64: None,
+                similarity_score: None,
+                clip_embedding: None,
+                clip_similarity_score: None,
             })
             .update_or_create_thumbnail(metadata, thumb_b64)
             .await?;
@@ -57,12 +50,13 @@ impl crate::ai::AISearchEngine {
         let mut count = 0usize;
         match get_thumbnail_paths().await {
             Ok(vals) => {
+                // Replace the entire cached set in one lock scope to avoid clearing each iteration.
+                let mut set_guard = self.cached_paths.lock().await;
+                set_guard.clear();
                 for val in vals.iter() {
-                    let mut set_guard = self.cached_paths.lock().await;
-                    set_guard.clear();
                     set_guard.insert(val.clone());
-                    count += 1;
                 }
+                count = set_guard.len();
             }
             Err(e) => {
                 log::warn!("[AI] failed path-only cache load: {e}");

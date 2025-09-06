@@ -40,7 +40,6 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
         DEFINE FIELD IF NOT EXISTS category ON thumbnails TYPE option<string> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS db_created ON thumbnails TYPE option<datetime> DEFAULT time::now() PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS description ON thumbnails TYPE option<string> PERMISSIONS FULL;
-        DEFINE FIELD IF NOT EXISTS embedding ON thumbnails TYPE option<array<float>> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS file_type ON thumbnails TYPE option<string> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS filename ON thumbnails TYPE string PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS hash ON thumbnails TYPE option<string> PERMISSIONS FULL;
