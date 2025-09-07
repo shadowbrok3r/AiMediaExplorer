@@ -25,8 +25,7 @@ pub const DB_BACKUP_PATH: &str = "./db/backup.surql";
 pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
     let capabilities = Capabilities::all().with_all_experimental_features_allowed();
     let config = Config::new().capabilities(capabilities);
-    DB.connect::<surrealdb::engine::local::SurrealKv>(("./db/ai_search", config))
-        .await?;
+    DB.connect::<surrealdb::engine::local::SurrealKv>(("./db/ai_search", config)).await?;
     DB.use_ns(NS).use_db(DB_NAME).await?;
 
     // DEFINE BUCKET userfiles BACKEND "memory";
@@ -48,6 +47,7 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
         DEFINE FIELD IF NOT EXISTS size ON thumbnails TYPE number PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS tags ON thumbnails TYPE option<array<string>> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS thumbnail_b64 ON thumbnails TYPE option<string> PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS parent_dir ON thumbnails TYPE string;
 
         DEFINE FIELD IF NOT EXISTS thumb_ref ON clip_embeddings TYPE option<record<thumbnails>> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS path ON clip_embeddings TYPE string PERMISSIONS FULL;
@@ -87,13 +87,17 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
         DEFINE FIELD IF NOT EXISTS db_excluded_exts ON user_settings TYPE option<array<string>> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS auto_clip_embeddings ON user_settings TYPE bool PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS clip_augment_with_text ON user_settings TYPE bool PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS clip_overwrite_embeddings ON user_settings TYPE bool PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS clip_model ON user_settings TYPE option<string> PERMISSIONS FULL;
-
+        DEFINE FIELD IF NOT EXISTS recent_paths ON user_settings TYPE array<string> PERMISSIONS FULL;
+        
         DEFINE INDEX IF NOT EXISTS category_idx ON thumbnails FIELDS category;
         DEFINE INDEX IF NOT EXISTS tags_idx ON thumbnails FIELDS tags;
         DEFINE INDEX IF NOT EXISTS path_idx ON thumbnails FIELDS path UNIQUE;
         DEFINE INDEX IF NOT EXISTS clip_path_idx ON clip_embeddings FIELDS path UNIQUE;
         DEFINE INDEX IF NOT EXISTS clip_thumb_ref_idx ON clip_embeddings FIELDS thumb_ref;
+        DEFINE INDEX IF NOT EXISTS idx_parent_dir ON thumbnails FIELDS parent_dir;
+        DEFINE INDEX IF NOT EXISTS idx_clip_hnsw ON clip_embeddings FIELDS embedding HNSW DIMENSION 1024 TYPE F32 DIST COSINE EFC 120 M 12;
         COMMIT;
     "#;
 

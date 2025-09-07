@@ -40,6 +40,14 @@ pub struct FileTableViewer {
     pub ai_update_tx: Sender<AIUpdate>,
     #[serde(skip)]
     pub clip_embedding_tx: Sender<crate::ClipEmbeddingRow>,
+    // When showing similarity results inline, toggle this to add a scores column
+    pub showing_similarity: bool,
+    // Map path -> similarity score to display/sort when showing_similarity is true
+    #[serde(skip)]
+    pub similar_scores: HashMap<String, f32>,
+    // Track which paths have a CLIP embedding
+    #[serde(skip)]
+    pub clip_presence: std::collections::HashSet<String>,
 }
 
 impl FileTableViewer {
@@ -55,7 +63,10 @@ impl FileTableViewer {
             ui_settings: UiSettings::default(),
             bulk_cancel_requested: false,
             clip_embedding_tx,
-            ai_update_tx
+            ai_update_tx,
+            showing_similarity: false,
+            similar_scores: HashMap::new(),
+            clip_presence: std::collections::HashSet::new(),
         }
     }
 }
@@ -83,32 +94,22 @@ impl RowViewer<Thumbnail> for FileTableViewer {
     }
 
     fn num_columns(&mut self) -> usize {
-        match self.mode {
-            ExplorerMode::FileSystem => 8,
-            ExplorerMode::Database => 10,
-        }
+        // Base + CLIP column
+        let base_no_clip = match self.mode { ExplorerMode::FileSystem => 9, ExplorerMode::Database => 10 };
+        let with_clip = base_no_clip + 1;
+        if self.showing_similarity { with_clip + 1 } else { with_clip }
     }
 
     fn column_name(&mut self, column: usize) -> std::borrow::Cow<'static, str> {
-        match self.mode {
-            ExplorerMode::FileSystem => [
-                "", "Name", "Path", "Category", "Tags", "Modified", "Size", "Type",
-            ][column]
-                .into(),
-            ExplorerMode::Database => [
-                "",
-                "Name",
-                "Path",
-                "Category",
-                "Tags",
-                "Modified",
-                "Size",
-                "Type",
-                "Hash",
-                "DB Created",
-            ][column]
-                .into(),
-        }
+        let names_fs = ["", "Name", "Path", "Category", "Tags", "Modified", "Size", "Type", "DB Created"]; // 9
+        let names_db = ["", "Name", "Path", "Category", "Tags", "Modified", "Size", "Type", "Hash", "DB Created"]; // 10
+        let mut vec: Vec<Cow<'static, str>> = match self.mode {
+            ExplorerMode::FileSystem => names_fs.iter().map(|s| (*s).into()).collect(),
+            ExplorerMode::Database => names_db.iter().map(|s| (*s).into()).collect(),
+        };
+        vec.push("CLIP".into());
+        if self.showing_similarity { vec.push("Similarity".into()); }
+        vec[column].clone()
     }
 
     fn is_sortable_column(&mut self, column: usize) -> bool {
@@ -152,6 +153,22 @@ impl RowViewer<Thumbnail> for FileTableViewer {
     }
 
     fn show_cell_view(&mut self, ui: &mut egui::Ui, row: &Thumbnail, column: usize) {
+        // Dynamic columns appended: first CLIP, then optional Similarity
+        let base_no_clip = match self.mode { ExplorerMode::FileSystem => 9, ExplorerMode::Database => 10 };
+        if column == base_no_clip {
+            // CLIP presence column
+            let has = self.clip_presence.contains(&row.path);
+            ui.label(if has { "Yes" } else { "No" });
+            return;
+        }
+        if self.showing_similarity && column == base_no_clip + 1 {
+            if let Some(score) = self.similar_scores.get(&row.path) {
+                ui.label(format!("{score:.4}"));
+            } else {
+                ui.label("-");
+            }
+            return;
+        }
         match column {
             0 => {
                 // Thumbnail (mode-agnostic currently)
@@ -269,9 +286,16 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                 ui.label(&row.file_type);
             }
             8 => {
-                // Hash (DB mode only)
+                // Database: Hash; FileSystem: DB Created
                 if self.mode == ExplorerMode::Database {
                     ui.label(row.hash.as_deref().unwrap_or("-"));
+                } else {
+                    if let Some(c) = &row.db_created {
+                        use chrono::Datelike;
+                        ui.label(format!("{}/{}/{}", c.month(), c.day(), c.year()));
+                    } else {
+                        ui.label("-");
+                    }
                 }
             }
             9 => {
@@ -280,6 +304,13 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                     if let Some(c) = &row.db_created {
                         use chrono::Datelike;
                         ui.label(format!("{}/{}/{}", c.month(), c.day(), c.year()));
+                    }
+                } else if self.mode == ExplorerMode::FileSystem {
+                    if let Some(c) = &row.db_created {
+                        use chrono::Datelike;
+                        ui.label(format!("{}/{}/{}", c.month(), c.day(), c.year()));
+                    } else {
+                        ui.label("-");
                     }
                 }
             }
@@ -293,7 +324,10 @@ impl RowViewer<Thumbnail> for FileTableViewer {
         row: &mut Thumbnail,
         column: usize,
     ) -> Option<egui::Response> {
-        match column {
+    // No data to set for CLIP/Similarity appended columns
+    let base_no_clip = match self.mode { ExplorerMode::FileSystem => 9, ExplorerMode::Database => 10 };
+    if column == base_no_clip || (self.showing_similarity && column == base_no_clip + 1) { return None; }
+    match column {
             0 => {
                 let cache_key = row.path.clone();
                 if row.thumbnail_b64.is_none() {
@@ -375,8 +409,13 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                         // In DB mode, disable on-demand generation attempts (no filesystem walk triggers)
                     } else {
                         if row.thumbnail_b64.is_none() {
-                            match row.file_type.as_str() {
-                                "video" => {
+                            // Determine media kind from file extension
+                            let ext_opt = std::path::Path::new(&row.path)
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .map(|s| s.to_ascii_lowercase());
+                            if let Some(ext) = ext_opt {
+                                if crate::is_video(ext.as_str()) {
                                     if let Ok(b64) = generate_video_thumb_data(Path::new(&row.path))
                                     {
                                         let thumb = Thumbnail {
@@ -384,13 +423,8 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                                             ..row.clone()
                                         };
                                         let _ = self.thumbnail_tx.try_send(thumb.clone());
-                                        let tx = self.clip_embedding_tx.clone();
-                                        tokio::spawn(async move {
-                                            let _ = tx.try_send(thumb.get_embedding().await.unwrap_or_default());
-                                        });
                                     }
-                                }
-                                "image" => {
+                                } else if crate::is_image(ext.as_str()) {
                                     if let Ok(b64) = generate_image_thumb_data(Path::new(&row.path))
                                     {
                                         // embedding presence is tracked via clip embeddings table now
@@ -405,11 +439,17 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                                         });
                                     }
                                 }
-                                _ => {}
+                            } else {
+                                // no extension, do nothing
                             }
                         }
                     }
                     let _ = self.thumbnail_tx.try_send(row.clone());
+                    let tx = self.clip_embedding_tx.clone();
+                    let thumb = row.clone();
+                    tokio::spawn(async move {
+                        let _ = tx.try_send(thumb.get_embedding().await.unwrap_or_default());
+                    });
                 }
             }
         }
@@ -426,7 +466,13 @@ impl RowViewer<Thumbnail> for FileTableViewer {
             5 => dst.modified = src.modified.clone(),
             6 => dst.size = src.size,
             7 => dst.file_type = src.file_type.clone(),
-            8 => dst.hash = src.hash.clone(),
+            8 => {
+                if self.mode == ExplorerMode::Database {
+                    dst.hash = src.hash.clone();
+                } else {
+                    dst.db_created = src.db_created.clone();
+                }
+            },
             9 => dst.db_created = src.db_created.clone(),
             _ => unreachable!(),
         }
@@ -434,8 +480,21 @@ impl RowViewer<Thumbnail> for FileTableViewer {
 
     fn compare_cell(&self, l: &Thumbnail, r: &Thumbnail, column: usize) -> std::cmp::Ordering {
         use std::cmp::Ordering::*;
+        // Appended columns: CLIP then Similarity
+        let base_no_clip = match self.mode { ExplorerMode::FileSystem => 9, ExplorerMode::Database => 10 };
+        if column == base_no_clip {
+            // Sort CLIP presence (Yes before No)
+            let sl = self.clip_presence.contains(&l.path) as u8;
+            let sr = self.clip_presence.contains(&r.path) as u8;
+            return sr.cmp(&sl);
+        }
+        if self.showing_similarity && column == base_no_clip + 1 {
+            let sl = self.similar_scores.get(&l.path).copied().unwrap_or(f32::MIN);
+            let sr = self.similar_scores.get(&r.path).copied().unwrap_or(f32::MIN);
+            return sr.partial_cmp(&sl).unwrap_or(Equal);
+        }
         match column {
-            0 => std::cmp::Ordering::Equal, // thumbnail not sortable
+            0 => Equal, // thumbnail not sortable
             1 => l.filename.cmp(&r.filename),
             2 => l.path.cmp(&r.path),
             3 => l.category.cmp(&r.category),
@@ -443,7 +502,13 @@ impl RowViewer<Thumbnail> for FileTableViewer {
             5 => l.modified.cmp(&r.modified),
             6 => l.size.cmp(&r.size),
             7 => l.file_type.cmp(&r.file_type),
-            8 => l.hash.cmp(&r.hash),
+            8 => {
+                if self.mode == ExplorerMode::Database {
+                    l.hash.cmp(&r.hash)
+                } else {
+                    l.db_created.cmp(&r.db_created)
+                }
+            },
             9 => l.db_created.cmp(&r.db_created),
             _ => Equal,
         }
@@ -465,7 +530,7 @@ impl RowViewer<Thumbnail> for FileTableViewer {
             6 => base.at_least(70.).at_most(70.),                 // size
             7 => base.at_least(50.).at_most(60.),                 // type
             8 => base.at_least(140.).at_most(200.).clip(true),    // hash
-            9 => base.at_least(110.).at_most(130.),               // db created
+            9 => base.at_least(100.).at_most(120.),               // db created
             _ => base,
         }
     }

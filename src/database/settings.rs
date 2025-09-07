@@ -58,9 +58,14 @@ pub struct UiSettings {
     pub auto_clip_embeddings: bool, // automatically generate CLIP embeddings during indexing
     #[serde(default)]
     pub clip_augment_with_text: bool, // blend image + textual metadata into a joint CLIP vector
+    // Overwrite existing CLIP embeddings when auto generation runs
+    #[serde(default)]
+    pub clip_overwrite_embeddings: bool,
     // Selected CLIP/SigLIP model key
     #[serde(default)]
     pub clip_model: Option<String>,
+    #[serde(default)]
+    pub recent_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,8 +118,23 @@ impl Default for UiSettings {
             db_excluded_exts: None,
             auto_clip_embeddings: false,
             clip_augment_with_text: true,
+            clip_overwrite_embeddings: false,
             clip_model: Some("unicom-vit-b32".into()),
+            recent_paths: Vec::new(),
         }
+    }
+}
+
+impl UiSettings {
+    pub fn push_recent_path(&mut self, p: String) {
+        if p.trim().is_empty() { return; }
+        // Move to front if exists
+        if let Some(idx) = self.recent_paths.iter().position(|x| *x == p) {
+            self.recent_paths.remove(idx);
+        }
+        self.recent_paths.insert(0, p);
+        // Cap at 20
+        if self.recent_paths.len() > 20 { self.recent_paths.truncate(20); }
     }
 }
 // In-memory snapshot (optional) to avoid extra DB selects for callers that load early.

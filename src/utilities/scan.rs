@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use crate::utilities::types::{DateField, Filters, FoundFile, MediaKind, is_image, is_video};
+use crate::utilities::types::{DateField, Filters, FoundFile, MediaKind, DirItem, is_image, is_video};
 use chrono::{DateTime, Local}; 
 use crossbeam::channel::Sender;
 // (rayon iter traits no longer needed directly here)
@@ -29,6 +29,8 @@ fn clear_cancel(id: u64) {
 pub enum ScanMsg {
     Found(FoundFile),
     FoundBatch(Vec<FoundFile>),
+    FoundDir(DirItem),
+    FoundDirBatch(Vec<DirItem>),
     UpdateThumb {
         path: std::path::PathBuf,
         thumb: String,
@@ -199,13 +201,20 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
     } else {
         if let Ok(rd) = std::fs::read_dir(&root) {
             let mut batch: Vec<FoundFile> = Vec::with_capacity(BATCH_TARGET);
+            let mut dir_batch: Vec<DirItem> = Vec::with_capacity(128);
             for dent in rd.flatten() {
                 if is_cancelled(scan_id) {
                     let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::Done });
                     clear_cancel(scan_id);
                     return;
                 }
-                if let Ok(ft) = dent.file_type() { if !ft.is_file() { continue; } } else { continue; }
+                if let Ok(ft) = dent.file_type() {
+                    if ft.is_dir() {
+                        dir_batch.push(DirItem { path: dent.path() });
+                        continue;
+                    }
+                    if !ft.is_file() { continue; }
+                } else { continue; }
                 let path = dent.path();
                 if let Some(found) = process_path_collect(&path, &filters, after, before) {
                     batch.push(found);
@@ -216,6 +225,7 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
                 if scanned % 25 == 0 { let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::Progress { scanned: display_scanned, total } }); }
                 if scanned % 200 == 0 { std::thread::yield_now(); }
             }
+            if !dir_batch.is_empty() { let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::FoundDirBatch(dir_batch) }); }
             if !batch.is_empty() { let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::FoundBatch(batch) }); }
         }
     }

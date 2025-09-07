@@ -17,7 +17,7 @@ impl crate::ai::AISearchEngine {
         crate::Thumbnail::get_thumbnail_by_path(&metadata.path)
             .await?
             .unwrap_or_else(|| crate::Thumbnail {
-                id: None,
+                id: None, // FIX THIS. // !TODO!!
                 db_created: Some(Utc::now().into()),
                 path: metadata.path.clone(),
                 filename: metadata.filename.clone(),
@@ -30,6 +30,7 @@ impl crate::ai::AISearchEngine {
                 thumbnail_b64: None,
                 modified: metadata.modified.clone(),
                 hash: metadata.hash.clone(),
+                parent_dir: metadata.parent_dir.clone()
             })
             .update_or_create_thumbnail(metadata, thumb_b64)
             .await?;

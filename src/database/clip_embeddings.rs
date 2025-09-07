@@ -1,5 +1,14 @@
 use chrono::Utc;
+use surrealdb::RecordId;
 
+#[derive(Debug, serde::Deserialize)]
+pub struct SimilarHit {
+    pub id: RecordId,
+    pub thumb_ref: Option<crate::Thumbnail>,
+    pub path: String,
+    pub dist: f32, // cosine distance from Surreal (lower is better)
+
+}
 
 impl super::ClipEmbeddingRow {
     // Load all clip embedding rows and return mapping path -> (embedding, hash, thumb_ref)
@@ -13,13 +22,49 @@ impl super::ClipEmbeddingRow {
         path: &str,
     ) -> anyhow::Result<Vec<Self>, anyhow::Error> {
         let rows: Vec<super::ClipEmbeddingRow> = super::DB
-            .query("SELECT * FROM clip_embeddings WHERE path == $path")
+            .query("SELECT * FROM clip_embeddings WHERE path = $path")
             .bind(("path", path.to_string()))
             .await?
             .take(0)?;
 
         Ok(rows)
     }
+
+    /// KNN search using the HNSW index on clip_embeddings.embedding
+    /// Returns the top-K nearest neighbours to `query_vec`.
+    pub async fn find_similar_by_embedding(
+        query_vec: &[f32],
+        k: usize,
+        ef: usize,
+    ) -> anyhow::Result<Vec<SimilarHit>, anyhow::Error> {
+        log::info!("find_similar_by_embedding");
+        // let ef = ef_for(top_n);
+        let res: Vec<SimilarHit> = super::DB
+            .query(
+                r#"
+                SELECT id, thumb_ref, path, vector::distance::knn() AS dist
+                FROM clip_embeddings
+                WHERE embedding <| 24, 64 |> $vec
+                ORDER BY dist
+                LIMIT $k
+                FETCH thumb_ref
+                "#,
+            )
+            .bind(("vec", query_vec.to_vec()))
+            .bind(("k", k as i64))
+            .bind(("ef", ef as i64))
+            .await?
+            .take(0)?;
+
+        log::info!("find_similar_by_embedding len: {}", res.len());
+        Ok(res)
+    }
+
+}
+
+fn _ef_for(k: usize) -> usize {
+    // good starting heuristic for HNSW recall vs. latency
+    (k * 4).clamp(32, 256)
 }
 
 // Upsert a clip embedding row (match on path). Optionally sets thumb_ref if missing.
@@ -30,12 +75,15 @@ pub async fn upsert_clip_embedding(
 ) -> anyhow::Result<(), anyhow::Error> {
     log::info!("upsert_clip_embedding");
     let thumbnail_id = crate::Thumbnail::get_thumbnail_id_by_path(path).await?;
-    // Check whether row exists; if not, create it
-    let existing: Option<surrealdb::RecordId> = super::DB
-        .query("SELECT VALUE id FROM clip_embeddings WHERE path = $path")
-        .bind(("path", path.to_string()))
-        .await?
-        .take(0)?;
+    let query = if let Some(id) = &thumbnail_id {
+        let _ = super::DB.set("id", id.clone()).await;
+        "SELECT VALUE id FROM clip_embeddings WITH INDEX clip_thumb_ref_idx WHERE thumb_ref = $id"
+    } else {
+        let _ = super::DB.set("path", path.to_string()).await;
+        "SELECT VALUE id FROM clip_embeddings WHERE path = $path"
+    };
+
+    let existing: Option<surrealdb::RecordId> = super::DB.query(query).await?.take(0)?;
 
     if let Some(id) = existing {
         log::info!("Existing clip_embeddings");

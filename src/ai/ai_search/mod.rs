@@ -99,36 +99,23 @@ impl AISearchEngine {
                         // Use DB modified timestamp directly (surreal Datetime)
                         let modified_surreal = thumb.modified.clone();
 
-                        // Normalize file_type from extension to a coarse kind expected by the engine (image/video/other)
-                        let norm_kind = thumb
-                            .file_type
-                            .as_str()
-                            .to_ascii_lowercase();
-                        let norm_kind = if crate::is_image(&norm_kind) {
-                            "image".to_string()
-                        } else if crate::is_video(&norm_kind) {
-                            "video".to_string()
-                        } else {
-                            "other".to_string()
-                        };
-
                         let fm = crate::Thumbnail {
                             id: thumb.id.clone(),
                             db_created: thumb.db_created.clone(),
                             path: thumb.path.clone(),
                             filename: thumb.filename.clone(),
-                            file_type: norm_kind,
+                            // Preserve the actual extension stored in DB
+                            file_type: thumb.file_type.to_ascii_lowercase(),
                             size: thumb.size,
                             modified: modified_surreal,
                             thumbnail_b64: None,
-                            
+                            parent_dir: thumb.parent_dir.clone(),
                             hash: thumb.hash.clone(),
                             description: thumb.description.clone(),
                             caption: thumb.caption.clone(),
                             tags: thumb.tags.clone(),
                             category: thumb.category.clone(),
                         };
-                        log::error!("self.files + 1: {fm:?}");
                         files_guard.push(fm);
                         inserted += 1;
                     }
@@ -177,21 +164,15 @@ impl AISearchEngine {
                         "[AI] apply_vision_description: metadata missing and restore failed for {} (creating minimal stub)",
                         path
                     );
+                    // Use the raw extension (lowercase) for file_type
                     let ftype = std::path::Path::new(path)
                         .extension()
                         .and_then(|e| e.to_str())
                         .map(|s| s.to_ascii_lowercase())
-                        .map(|ext| {
-                            if crate::is_image(&ext) {
-                                "image"
-                            } else if crate::is_video(&ext) {
-                                "video"
-                            } else {
-                                "other"
-                            }
-                        })
-                        .unwrap_or("other")
-                        .to_string();
+                        .unwrap_or_else(|| String::new());
+
+                    let parent_dir = std::path::Path::new(path).parent().map(|p| p.to_string_lossy().to_string().clone()).unwrap_or_default();
+
                     let stub = crate::Thumbnail {
                         id: None,
                         db_created: None,
@@ -205,7 +186,7 @@ impl AISearchEngine {
                         size: 0,
                         modified: None,
                         thumbnail_b64: None,
-                        
+                        parent_dir,
                         hash: None,
                         description: Some(vd.description.clone()),
                         caption: Some(vd.caption.clone()),
@@ -250,20 +231,9 @@ impl AISearchEngine {
         let Some(row) = crate::Thumbnail::get_thumbnail_by_path(path).await? else {
             return Ok(None);
         };
+        let parent_dir = std::path::Path::new(path).parent().map(|p| p.to_string_lossy().to_string().clone()).unwrap_or_default();
         // Build Thumbnail (leave hash/clip/embedding empty; they will be filled later by indexing)
     // Note: keep timestamps as surreal Datetime in memory; convert to UI types at render time.
-        // Normalize file_type from extension value stored in DB into coarse kind
-        let ft_norm = row
-            .file_type
-            .to_ascii_lowercase();
-        let ft_norm = if crate::is_image(&ft_norm) {
-            "image".to_string()
-        } else if crate::is_video(&ft_norm) {
-            "video".to_string()
-        } else {
-            "other".to_string()
-        };
-
         let fm = crate::Thumbnail {
             id: row.id.clone(),
             db_created: row.db_created.clone(),
@@ -273,7 +243,8 @@ impl AISearchEngine {
                 .and_then(|n| n.to_str())
                 .unwrap_or("")
                 .to_string(),
-            file_type: ft_norm,
+            // Preserve stored extension (lowercase)
+            file_type: row.file_type.to_ascii_lowercase(),
             size: row.size,
             modified: row.modified.clone(),
             thumbnail_b64: row.thumbnail_b64.clone(),
@@ -282,6 +253,7 @@ impl AISearchEngine {
             caption: row.caption.clone(),
             tags: row.tags.clone(),
             category: row.category.clone(),
+            parent_dir,
         };
         Ok(Some(fm))
     }
@@ -331,6 +303,7 @@ impl AISearchEngine {
         }
         .to_string();
         let size = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+        let parent_dir = p.parent().map(|p| p.to_string_lossy().to_string().clone()).unwrap_or_default();
         let stub = crate::Thumbnail {
             id: None,
             db_created: None,
@@ -340,12 +313,12 @@ impl AISearchEngine {
             size,
             modified: None,
             thumbnail_b64: None,
-            
             hash: None,
             description: None,
             caption: None,
             tags: Vec::new(),
             category: None,
+            parent_dir
         };
         let mut files = self.files.lock().await;
         files.push(stub);
@@ -360,9 +333,16 @@ impl AISearchEngine {
             files
                 .iter()
                 .filter(|f| {
-                    f.file_type == "image"
+                    // Determine image by extension
+                    std::path::Path::new(&f.path)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|s| s.to_ascii_lowercase())
+                        .map(|ext| crate::is_image(ext.as_str()))
+                        .unwrap_or(false)
                         && (f.description.is_none()
-                            || f.description
+                            || f
+                                .description
                                 .as_ref()
                                 .map(|d| d.trim().len() < 12)
                                 .unwrap_or(true))
@@ -397,9 +377,15 @@ impl AISearchEngine {
         files
             .iter()
             .filter(|f| {
-                f.file_type == "image"
+                std::path::Path::new(&f.path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|s| s.to_ascii_lowercase())
+                    .map(|ext| crate::is_image(ext.as_str()))
+                    .unwrap_or(false)
                     && (f.description.is_none()
-                        || f.description
+                        || f
+                            .description
                             .as_ref()
                             .map(|d| d.trim().len() < 12)
                             .unwrap_or(true))
@@ -464,7 +450,7 @@ impl AISearchEngine {
             if let Some(entry) = files.iter_mut().find(|f| f.path == path) {
                 entry.description = Some(desc.to_string());
             } else {
-                // If we don't have it yet, create a minimal placeholder so enrichment won't re-trigger.
+                let parent_dir = std::path::Path::new(path).parent().map(|p| p.to_string_lossy().to_string().clone()).unwrap_or_default();
                 files.push(crate::Thumbnail {
                     id: None,
                     db_created: None,
@@ -483,6 +469,7 @@ impl AISearchEngine {
                     caption: None,
                     tags: Vec::new(),
                     category: None,
+                    parent_dir
                 });
             }
         }
@@ -773,11 +760,13 @@ pub fn found_file_to_metadata(
             .and_then(|n| n.to_str())
             .unwrap_or("")
             .to_string(),
-        file_type: match found_file.kind {
-            crate::utilities::types::MediaKind::Image => "image".to_string(),
-            crate::utilities::types::MediaKind::Video => "video".to_string(),
-            crate::utilities::types::MediaKind::Other => "other".to_string(),
-        },
+        // Store actual extension (lowercase) instead of coarse kind
+        file_type: found_file
+            .path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_else(|| String::new()),
         size: found_file.size.unwrap_or(0),
         modified: None,
         thumbnail_b64: found_file.thumb_data.clone(),
@@ -786,6 +775,7 @@ pub fn found_file_to_metadata(
         caption: None,
         tags: Vec::new(),
         category: None,
+        parent_dir: std::path::Path::new(&found_file.path).parent().map(|p| p.to_string_lossy().to_string().clone()).unwrap_or_default()
     }
 }
 

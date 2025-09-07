@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use crate::DB;
 use surrealdb::RecordId;
 
@@ -12,6 +14,21 @@ impl crate::Thumbnail {
             .bind(("path", path.to_string()))
             .await?
             .take(0)?;
+        log::warn!("SELECT * FROM thumbnails WHERE path = $path: {:?}", resp.is_some());
+        Ok(resp)
+    }
+
+    // Fetch a single thumbnail row by exact path (leverages UNIQUE index on path)
+    pub async fn get_all_thumbnails_from_directory(
+        path: &str,
+    ) -> anyhow::Result<Vec<Self>, anyhow::Error> {
+        let now = Instant::now();
+        let resp: Vec<Self> = DB
+            .query("SELECT * FROM thumbnails WITH INDEX idx_parent_dir WHERE parent_dir = $parent_directory")
+            .bind(("parent_directory", path.to_string()))
+            .await?
+            .take(0)?;
+        log::warn!("get_all_thumbnails_from_directory is empty: {:?}\nTime for query: {:?}", resp.is_empty(), now.elapsed().as_secs_f32());
         Ok(resp)
     }
 
@@ -29,13 +46,14 @@ impl crate::Thumbnail {
     }
 
     pub async fn get_embedding(self) -> anyhow::Result<super::ClipEmbeddingRow, anyhow::Error> {
+        log::info!("Checking embedding with thumb_ref == {:?}", self.id.clone());
         let embedding: Option<super::ClipEmbeddingRow> = DB
-            .query("SELECT * FROM clip_embeddings WHERE thumb_ref == $id")
+            .query("SELECT * FROM clip_embeddings WITH INDEX clip_thumb_ref_idx WHERE thumb_ref = $id")
             .bind(("id", self.id.clone()))
             .await?
             .take(0)?;
 
-        log::info!("Got embedding ");
+        log::info!("Embedding for image is Some: {:?}", embedding.is_some());
         Ok(embedding.unwrap_or_default())
     }
 
@@ -49,62 +67,6 @@ impl crate::Thumbnail {
         .take(0)?;
 
         Ok(thumbs)
-    }
-
-    // Paged DB thumbnail retrieval without ordering. Applies optional filters.
-    pub async fn load_thumbnails_page(
-        offset: usize,
-        limit: usize,
-        min_size: Option<u64>,
-        max_size: Option<u64>,
-        modified_after: Option<&str>,
-        modified_before: Option<&str>,
-        excluded_exts: Option<&[String]>,
-        path_prefix: Option<&str>,
-    ) -> anyhow::Result<Vec<Self>, anyhow::Error> {
-        let mut clauses: Vec<String> = Vec::new();
-        if let Some(ms) = min_size {
-            clauses.push(format!("size >= {}", ms));
-        }
-        if let Some(mx) = max_size {
-            clauses.push(format!("size <= {}", mx));
-        }
-        if let Some(a) = modified_after {
-            clauses.push(format!("modified >= <datetime>'{}'", a));
-        }
-        if let Some(b) = modified_before {
-            clauses.push(format!("modified <= <datetime>'{}'", b));
-        }
-        if let Some(exts) = excluded_exts {
-            if !exts.is_empty() {
-                let joined = exts
-                    .iter()
-                    .map(|e| format!("'{}'", e))
-                    .collect::<Vec<_>>()
-                    .join(",");
-                clauses.push(format!("file_type NOT IN [{}]", joined));
-            }
-        }
-        if let Some(prefix) = path_prefix {
-            if !prefix.trim().is_empty() {
-                // simple prefix filter (string starts-with)
-                // SurrealDB lacks direct STARTSWITH; use string::starts_with function if available or fallback to LIKE
-                // Using LIKE with escaped %; ensure prefix sanitized (no % introduced by user). For large datasets an index on path exists.
-                let safe = prefix.replace('%', "");
-                clauses.push(format!("path LIKE '{}%'", safe));
-            }
-        }
-        let where_sql = if clauses.is_empty() {
-            String::new()
-        } else {
-            format!(" WHERE {}", clauses.join(" AND "))
-        };
-        let sql = format!(
-            "SELECT * FROM thumbnails{where_sql} LIMIT {limit} START {offset}"
-        );
-        let mut resp = DB.query(sql).await?;
-        let rows: Vec<Self> = resp.take(0)?;
-        Ok(rows)
     }
 
     // Save (insert) a single thumbnail row (best-effort). Does not deduplicate existing rows.

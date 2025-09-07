@@ -1,7 +1,7 @@
 use std::{borrow::Cow, collections::HashMap, sync::Arc};
 use crossbeam::channel::{Receiver, Sender};
-use egui::containers::menu::MenuConfig;
-use crate::{ScanEnvelope, Thumbnail};
+use egui::{containers::menu::{MenuButton, MenuConfig}, style::StyleModifier};
+use crate::{ScanEnvelope, Thumbnail, utilities::windows::{gpu_mem_mb, system_mem_mb, smoothed_cpu01, smoothed_ram01, smoothed_vram01}};
 use egui_data_table::Renderer;
 use viewer::FileTableViewer;
 use humansize::DECIMAL;
@@ -39,13 +39,23 @@ pub enum AIUpdate {
     },
 }
 
-#[derive(Debug, Clone)]
-struct AIMetadataUpdate {
-    path: String,
-    description: Option<String>,
-    caption: Option<String>,
-    category: Option<String>,
-    tags: Vec<String>,
+fn _load_png_as_white_lineart(path: &std::path::Path) -> ColorImage {
+    use image::GenericImageView;
+    let dyn_img = image::ImageReader::open(path).unwrap().decode().unwrap();
+    let (w, h) = dyn_img.dimensions();
+    let pixels = vec![Color32::WHITE; w as usize * h as usize]; // fill every pixel
+    let mut out = ColorImage::new([w as usize, h as usize], pixels);
+
+    for (x, y, pixel) in dyn_img.pixels() {
+        let image::Rgba([r, g, b, a]) = pixel;
+        // If it's “near black” but visible, make it white, keep alpha
+        if a > 0 && r < 32 && g < 32 && b < 32 {
+            out[(x as usize, y as usize)] = Color32::from_rgba_unmultiplied(255, 255, 255, a);
+        } else {
+            out[(x as usize, y as usize)] = Color32::from_rgba_unmultiplied(r, g, b, a);
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -63,7 +73,7 @@ pub struct FileExplorer {
     table: egui_data_table::DataTable<Thumbnail>,
     pub viewer: FileTableViewer,
     files: Vec<Thumbnail>,
-    current_path: String,
+    pub current_path: String,
     open_preview_pane: bool,
     open_quick_access: bool,
     file_scan_progress: f32,
@@ -98,22 +108,16 @@ pub struct FileExplorer {
     thumb_semaphore: std::sync::Arc<tokio::sync::Semaphore>,
     // Similar image search UI state
     #[serde(skip)]
-    show_similar_modal: bool,
-    #[serde(skip)]
     similar_origin: Option<String>,
     #[serde(skip)]
     similar_results: Vec<SimilarResult>,
+    // removed legacy similar modal/table flags (now using viewer.showing_similarity)
     // Auto-follow active vision generation updates
     #[serde(skip)]
     pub follow_active_vision: bool,
     // Cache of clip embedding presence per path to avoid frequent async queries in UI thread
     #[serde(skip)]
     clip_presence: std::collections::HashSet<String>,
-    // Channel for async metadata merges
-    #[serde(skip)]
-    meta_tx: Sender<AIMetadataUpdate>,
-    #[serde(skip)]
-    meta_rx: Receiver<AIMetadataUpdate>,
     #[serde(skip)]
     clip_embedding_rx: Receiver<crate::ClipEmbeddingRow>,
     // Vision description generation tracking (bulk vision progress separate from indexing)
@@ -125,16 +129,31 @@ pub struct FileExplorer {
     vision_pending: usize, // scheduled but not yet final
     // Database paging state
     #[serde(skip)]
-    db_offset: usize,
+    pub db_offset: usize,
     #[serde(skip)]
-    db_limit: usize,
+    pub db_limit: usize,
     #[serde(skip)]
-    db_last_batch_len: usize,
+    pub db_last_batch_len: usize,
     #[serde(skip)]
     db_loading: bool,
     // Track current scan id for cancellation
     #[serde(skip)]
     current_scan_id: Option<u64>,
+    // DB rows for current path (by path). Used to merge scan results and reuse existing IDs.
+    #[serde(skip)]
+    db_lookup: std::collections::HashMap<String, crate::database::Thumbnail>,
+    // Channel to receive preloaded DB rows for current path
+    #[serde(skip)]
+    db_preload_rx: Receiver<Vec<crate::database::Thumbnail>>,
+    #[serde(skip)]
+    db_preload_tx: Sender<Vec<crate::database::Thumbnail>>,
+    // Snapshot of the most recent recursive scan so we can restore its view without rescanning
+    #[serde(skip)]
+    last_scan_rows: Vec<Thumbnail>,
+    #[serde(skip)]
+    last_scan_paths: std::collections::HashSet<String>,
+    #[serde(skip)]
+    last_scan_root: Option<String>,
 }
 
 impl Default for FileExplorer {
@@ -142,8 +161,8 @@ impl Default for FileExplorer {
         let (thumbnail_tx, thumbnail_rx) = crossbeam::channel::unbounded();
         let (scan_tx, scan_rx) = crossbeam::channel::unbounded();
         let (ai_update_tx, ai_update_rx) = crossbeam::channel::unbounded();
-        let (meta_tx, meta_rx) = crossbeam::channel::unbounded();
         let (clip_embedding_tx, clip_embedding_rx) = crossbeam::channel::unbounded();
+    let (db_preload_tx, db_preload_rx) = crossbeam::channel::unbounded();
         let current_path = directories::UserDirs::new()
             .unwrap()
             .picture_dir()
@@ -175,13 +194,10 @@ impl Default for FileExplorer {
             streaming_interim: std::collections::HashMap::new(),
             thumb_scheduled: std::collections::HashSet::new(),
             thumb_semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(6)),
-            show_similar_modal: false,
             similar_origin: None,
             similar_results: Vec::new(),
             follow_active_vision: true,
             clip_presence: std::collections::HashSet::new(),
-            meta_tx,
-            meta_rx,
             clip_embedding_rx,
             vision_started: 0,
             vision_completed: 0,
@@ -191,6 +207,12 @@ impl Default for FileExplorer {
             db_last_batch_len: 0,
             db_loading: false,
             current_scan_id: None,
+            db_lookup: std::collections::HashMap::new(),
+            db_preload_rx,
+            db_preload_tx,
+            last_scan_rows: Vec::new(),
+            last_scan_paths: std::collections::HashSet::new(),
+            last_scan_root: None,
         };
         // Initial shallow directory population (non-recursive)
         this.populate_current_directory();
@@ -204,45 +226,31 @@ impl FileExplorer {
         self.preview_pane(ui);
         self.quick_access_pane(ui);
 
+        let style = StyleModifier::default();
+        style.apply(ui.style_mut());
         MenuBar::new()
             .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside))
+            .style(style)
             .ui(ui, |ui| {
                 ui.set_height(25.);
                 ui.horizontal_top(|ui| {
-                    let fs_mode = self.viewer.mode == viewer::ExplorerMode::FileSystem;
-                    if ui
-                        .add_enabled(fs_mode, Button::new("⬅").min_size(vec2(20., 20.)))
-                        .clicked()
-                    {
-                        self.nav_back();
+                    ui.add_space(5.);
+                    if ui.button("⚙").on_hover_text("Open Options side panel").clicked() {
+                        self.open_quick_access = !self.open_quick_access;
                     }
-                    if ui
-                        .add_enabled(fs_mode, Button::new("⬆").min_size(vec2(20., 20.)))
-                        .clicked()
-                    {
-                        self.nav_up();
-                    }
-                    if ui
-                        .add_enabled(fs_mode, Button::new("➡").min_size(vec2(20., 20.)))
-                        .clicked()
-                    {
-                        self.nav_forward();
-                    }
-                    if ui
-                        .add_enabled(fs_mode, Button::new("⟲").min_size(vec2(20., 20.)))
-                        .clicked()
-                    {
-                        self.refresh();
-                    }
-                    if ui
-                        .add_enabled(fs_mode, Button::new("🏠").min_size(vec2(20., 20.)))
-                        .clicked()
-                    {
-                        self.nav_home();
-                    }
+                    ui.add_space(5.);
+                    ui.separator();
+                    ui.add_space(5.);
+                    let err_color = ui.style().visuals.error_fg_color;
+                    let font = FontId::proportional(15.);
+                    let size = vec2(25., 25.);
+                    if Button::new(RichText::new("⬆").font(font.clone()).color(err_color)).min_size(size).ui(ui).clicked() { self.nav_up(); }
+                    if Button::new(RichText::new("⬅").font(font.clone()).color(err_color)).min_size(size).ui(ui).clicked() { self.nav_back(); }
+                    if Button::new(RichText::new("➡").font(font.clone()).color(err_color)).min_size(size).ui(ui).clicked() { self.nav_forward(); }
+                    if Button::new(RichText::new("⟲").font(font.clone()).color(err_color)).min_size(size).ui(ui).clicked() { self.refresh(); }
+                    if Button::new(RichText::new("🏠").font(font).color(err_color)).min_size(size).ui(ui).clicked() { self.nav_home(); }
                     ui.separator();
                     let path_edit = TextEdit::singleline(&mut self.current_path)
-                        .frame(true)
                         .hint_text(if self.viewer.mode == viewer::ExplorerMode::Database {
                             "Path Prefix Filter"
                         } else {
@@ -262,49 +270,187 @@ impl FileExplorer {
                         }
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.button("⚙ Options").clicked() {
-                            self.open_quick_access = true;
-                        }
-                        TextEdit::singleline(&mut self.viewer.filter)
-                            .desired_width(200.0)
-                            .hint_text("Search for files")
-                            .ui(ui);
-                        ui.separator();
-                        egui::ComboBox::new("Table Mode", "")
-                            .selected_text(match self.viewer.mode {
-                                viewer::ExplorerMode::FileSystem => "File Explorer",
-                                viewer::ExplorerMode::Database => "Database Explorer",
-                            })
-                            .show_ui(ui, |ui| {
-                                let prev = self.viewer.mode;
-                                if ui
-                                    .selectable_value(
-                                        &mut self.viewer.mode,
-                                        viewer::ExplorerMode::FileSystem,
-                                        "File Explorer",
-                                    )
-                                    .clicked()
-                                    && prev != viewer::ExplorerMode::FileSystem
-                                {
-                                    self.populate_current_directory();
+                        ui.menu_button("🔻", |ui| {
+                            ui.label(RichText::new("Excluded Terms (substring, case-insensitive)").italics());
+                            ui.horizontal(|ui| {
+                                let resp = TextEdit::singleline(&mut self.excluded_term_input)
+                                    .hint_text("term")
+                                    .desired_width(140.)
+                                    .ui(ui);
+                                let add_clicked = ui.button("Add").clicked();
+                                if (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) || add_clicked {
+                                    let term = self.excluded_term_input.trim().to_ascii_lowercase();
+                                    if !term.is_empty() && !self.excluded_terms.iter().any(|t| t == &term) { self.excluded_terms.push(term); }
+                                    self.excluded_term_input.clear();
                                 }
-                                if ui
-                                    .selectable_value(
-                                        &mut self.viewer.mode,
-                                        viewer::ExplorerMode::Database,
-                                        "Database Explorer",
-                                    )
-                                    .clicked()
-                                    && prev != viewer::ExplorerMode::Database
-                                {
-                                    self.load_database_rows();
+                                if ui.button("Clear All").clicked() { self.excluded_terms.clear(); }
+                            });
+                            ui.horizontal_wrapped(|ui| {
+                                let mut remove_idx: Option<usize> = None;
+                                for (i, term) in self.excluded_terms.iter().enumerate() {
+                                    if ui.add(Button::new(format!("{} ✕", term)).small()).clicked() { remove_idx = Some(i); }
+                                }
+                                if let Some(i) = remove_idx { self.excluded_terms.remove(i); }
+                            });
+                        });
+
+                        TextEdit::singleline(&mut self.viewer.filter)
+                        .desired_width(200.0)
+                        .hint_text("Search for files")
+                        .ui(ui);
+
+                        ui.separator();
+
+                        let style = StyleModifier::default();
+                        style.apply(ui.style_mut());
+                        
+                        MenuButton::new("Scan")
+                        .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside).style(style))
+                        .ui(ui, |ui| {
+                            ui.label(RichText::new("Size Filters (MB)").italics());
+                            ui.horizontal(|ui| {
+                                ui.label("Min:");
+                                // Use parent module statics
+                                let mut min_txt = unsafe { MIN_SIZE_MB.map(|v| (v / 1_000_000).to_string()).unwrap_or_default() };
+                                if ui.add(TextEdit::singleline(&mut min_txt).desired_width(60.)).lost_focus() { /* no-op */ }
+                                ui.label("Max:");
+                                let mut max_txt = unsafe { MAX_SIZE_MB.map(|v| (v / 1_000_000).to_string()).unwrap_or_default() };
+                                if ui.add(TextEdit::singleline(&mut max_txt).desired_width(60.)).lost_focus() { /* no-op */ }
+                                if ui.button("Apply").clicked() {
+                                    unsafe {
+                                        MIN_SIZE_MB = min_txt.trim().parse::<u64>().ok().map(|m| m * 1_000_000);
+                                        MAX_SIZE_MB = max_txt.trim().parse::<u64>().ok().map(|m| m * 1_000_000);
+                                    }
+                                }
+                                if ui.button("Clear").on_hover_text("Clear size constraints").clicked() {
+                                    unsafe { MIN_SIZE_MB = None; MAX_SIZE_MB = None; }
                                 }
                             });
-                        if self.viewer.mode == viewer::ExplorerMode::Database {
-                            if ui.button("🔄 Reload DB").clicked() {
-                                self.load_database_rows();
+                            ui.add_space(4.0);
+                            ui.horizontal_wrapped(|ui| {
+                                if ui.button("💡 Recursive Scan").clicked() {
+                                    self.recursive_scan = true;
+                                    self.scan_done = false;
+                                    self.table.clear();
+                                    // Reset previous scan snapshot
+                                    self.last_scan_rows.clear();
+                                    self.last_scan_paths.clear();
+                                    self.last_scan_root = Some(self.current_path.clone());
+                                    self.file_scan_progress = 0.0;
+                                    let scan_id = crate::next_scan_id();
+                                    let tx = self.scan_tx.clone();
+                                    let recurse = self.recursive_scan.clone();
+                                    let mut filters = crate::Filters::default();
+                                    filters.root = std::path::PathBuf::from(self.current_path.clone());
+                                    unsafe {
+                                        filters.min_size_bytes = MIN_SIZE_MB;
+                                        filters.max_size_bytes = MAX_SIZE_MB;
+                                    }
+                                    filters.excluded_terms = self.excluded_terms.clone();
+                                    // Remember current scan id so cancel can target it
+                                    self.current_scan_id = Some(scan_id);
+                                    tokio::spawn(async move {
+                                        crate::spawn_scan(filters, tx, recurse, scan_id).await;
+                                    });
+                                }
+                                if ui.button("🖩 Bulk Generate Descriptions").on_hover_text("Generate AI descriptions for images missing caption/description").clicked() {
+                                    let engine = std::sync::Arc::new(crate::ai::GLOBAL_AI_ENGINE.clone());
+                                    let prompt = self.viewer.ui_settings.ai_prompt_template.clone();
+                                    let mut scheduled = 0usize;
+                                    for row in self.table.iter() {
+                                        if self.viewer.bulk_cancel_requested { break; }
+                                        if row.file_type == "<DIR>" { continue; }
+                                        if let Some(ext) = std::path::Path::new(&row.path).extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()) { if !crate::is_image(ext.as_str()) { continue; } } else { continue; }
+                                        if row.caption.is_some() || row.description.is_some() { continue; }
+                                        let path_str = row.path.clone();
+                                        let path_str_clone = path_str.clone();
+                                        let tx_updates = self.viewer.ai_update_tx.clone();
+                                        let prompt_clone = prompt.clone();
+                                        let eng = engine.clone();
+                                        tokio::spawn(async move {
+                                            eng.stream_vision_description(std::path::Path::new(&path_str_clone), &prompt_clone, move |interim, final_opt| {
+                                                if let Some(vd) = final_opt {
+                                                    let _ = tx_updates.try_send(AIUpdate::Final {
+                                                        path: path_str.clone(),
+                                                        description: vd.description.clone(),
+                                                        caption: Some(vd.caption.clone()),
+                                                        category: if vd.category.trim().is_empty() { None } else { Some(vd.category.clone()) },
+                                                        tags: vd.tags.clone(),
+                                                    });
+                                                } else {
+                                                    let _ = tx_updates.try_send(AIUpdate::Interim { path: path_str.clone(), text: interim.to_string() });
+                                                }
+                                            }).await;
+                                        });
+                                        self.vision_started += 1;
+                                        self.vision_pending += 1;
+                                        scheduled += 1;
+                                    }
+                                    if scheduled == 0 { log::info!("[AI] Bulk Generate: nothing to schedule"); } else { log::info!("[AI] Bulk Generate scheduled {scheduled} items"); }
+                                    // reset flags after start to allow next run triggers later
+                                    self.viewer.bulk_cancel_requested = false;
+                                    crate::ai::GLOBAL_AI_ENGINE.reset_bulk_cancel();
+                                }
+                                if ui.button("Generate Missing CLIP Embeddings").clicked() {
+                                    // Collect all image paths currently visible in the table (current directory / DB page)
+                                    let paths: Vec<String> = self
+                                        .table
+                                        .iter()
+                                        .map(|r| r.path.clone())
+                                        .collect();
+                                    tokio::spawn(async move {
+                                        // Ensure engine and model are ready
+                                        let _ = crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await;
+                                        match crate::ai::GLOBAL_AI_ENGINE.clip_generate_for_paths(&paths).await {
+                                            Ok(added) => log::info!("[CLIP] Manual generation completed. Added {added} new embeddings from {} images", paths.len()),
+                                            Err(e) => log::error!("[CLIP] Bulk generate failed: {e:?}")
+                                        }
+                                        Ok::<(), anyhow::Error>(())
+                                    });
+                                }
+                                if ui.button("🗙 Cancel Scan").on_hover_text("Cancel active recursive scan").clicked() {
+                                    if let Some(id) = self.current_scan_id.take() { crate::utilities::scan::cancel_scan(id); }
+                                }
+                                if ui.button("↩ Return to Active Scan").on_hover_text("Restore the last recursive scan results without rescanning").clicked() {
+                                    if !self.last_scan_rows.is_empty() {
+                                        self.table.clear();
+                                        for r in self.last_scan_rows.clone().into_iter() {
+                                            self.table.push(r);
+                                        }
+                                        self.viewer.showing_similarity = false;
+                                        self.viewer.similar_scores.clear();
+                                        self.scan_done = true;
+                                        self.file_scan_progress = 1.0;
+                                    }
+                                }
+                                if ui.button("🛑 Cancel Bulk Descriptions").on_hover_text("Stop scheduling/streaming new vision descriptions").clicked() {
+                                    crate::ai::GLOBAL_AI_ENGINE.cancel_bulk_descriptions();
+                                    crate::ai::GLOBAL_AI_ENGINE.auto_descriptions_enabled.store(false, std::sync::atomic::Ordering::Relaxed);
+                                    self.viewer.bulk_cancel_requested = true;
+                                }
+                            });
+                        });
+
+                        ui.menu_button("👁", |ui| {
+                            ui.checkbox(&mut self.open_preview_pane, "Show Preview Pane");
+                            ui.checkbox(&mut self.open_quick_access, "Show Quick Access (this panel)");
+                            if ui.button("Group by Category").clicked() {
+                                // TODO implement grouping pipeline
                             }
-                        }
+                        });
+                        
+                        ui.menu_button("Table", |ui| {
+                            ui.horizontal(|ui| {
+                                if ui.button("Reload Page").clicked() { self.load_database_rows(); }
+                                if ui.button("Clear Table").clicked() { self.table.clear(); }
+                            });
+
+                            ui.add_space(4.0);
+                            if matches!(self.viewer.mode, viewer::ExplorerMode::Database) {
+                                ui.label(format!("Loaded Rows: {} (offset {})", self.table.len(), self.db_offset));
+                                if self.db_loading { ui.colored_label(Color32::YELLOW, "Loading..."); }
+                            }
+                        });
                     });
                 });
             });
@@ -318,11 +464,15 @@ impl FileExplorer {
                             .animate(true)
                             .desired_width(100.)
                             .show_percentage();
+
                         if self.scan_done {
-                            bar = bar
-                                .text(RichText::new("Scan Complete").color(Color32::LIGHT_GREEN));
+                            self.file_scan_progress = 0.;
+                            bar = bar.text(RichText::new("Scan Complete").color(Color32::LIGHT_GREEN));
                         }
                         bar.ui(ui);
+                        ui.add_space(5.);
+                        ui.separator();
+                        ui.add_space(5.);
                     }
 
                     // AI status & progress
@@ -370,6 +520,10 @@ impl FileExplorer {
                                 total_for_ratio
                             ))
                             .ui(ui);
+                        
+                        ui.add_space(5.);
+                        ui.separator();
+                        ui.add_space(5.);
                     }
                     if vision_started > 0 {
                         let done_ratio = if vision_started == 0 {
@@ -389,51 +543,51 @@ impl FileExplorer {
                         bar.ui(ui);
                     } else if vision_active || vision_pending > 0 {
                         ui.label("Vision: starting...");
-                    } else if !ai_ready {
-                        ui.label("AI: Loading");
                     } else {
                         ui.label("AI: Idle");
                     }
 
-                    ui.add_space(ui.available_width() / 2.5);
-                    // Breadcrumbs (avoid borrow conflicts by cloning path first)
-                    let current_path_clone = self.current_path.clone();
-                    let parts: Vec<String> = current_path_clone
-                        .split(['\\', '/'])
-                        .filter(|s| !s.is_empty())
-                        .map(|s| s.to_string())
-                        .collect();
-                    let root_has_slash = current_path_clone.starts_with('/');
-                    let mut accum = if root_has_slash {
-                        String::from("/")
-                    } else {
-                        String::new()
-                    };
-                    ui.horizontal(|ui| {
-                        for (i, part) in parts.iter().enumerate() {
-                            if !accum.ends_with(std::path::MAIN_SEPARATOR) && !accum.is_empty() {
-                                accum.push(std::path::MAIN_SEPARATOR);
-                            }
-                            accum.push_str(part);
-                            let display = if part.is_empty() {
-                                std::path::MAIN_SEPARATOR.to_string()
-                            } else {
-                                part.clone()
-                            };
-                            if ui
-                                .selectable_label(false, RichText::new(display).underline())
-                                .clicked()
-                            {
-                                self.push_history(accum.clone());
-                                self.populate_current_directory();
-                            }
-                            if i < parts.len() - 1 {
-                                ui.label(RichText::new("›").weak());
-                            }
-                            // Remove trailing segment for next iteration accumulation clone safety
-                        }
-                    });
+                    ui.add_space(5.);
+                    ui.separator();
+                    ui.add_space(5.);
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(300));
+                    let vram01 = smoothed_vram01();
+                    let (v_used, v_total) = gpu_mem_mb().unwrap_or_default();
+                    ui.label(format!("VRAM: {:.0}/{:.0} MiB", v_used, v_total)); 
+                    ProgressBar::new(vram01)
+                    .desired_width(100.)
+                    .desired_height(3.)
+                    .fill(ui.style().visuals.error_fg_color)
+                    .ui(ui);
 
+                    ui.separator();
+
+                    // System metrics (CPU, RAM, VRAM)
+                    let cpu01 = smoothed_cpu01();
+                    ui.label(format!("CPU: {:.2}%", cpu01 * 100.0));
+                    ProgressBar::new(cpu01)
+                    .desired_width(100.)
+                    .desired_height(3.)
+                    .fill(ui.style().visuals.error_fg_color)
+                    .ui(ui);
+
+                    ui.separator(); 
+
+                    let ram01 = smoothed_ram01();
+                    if let Some((used_mb, total_mb)) = system_mem_mb() {
+                        ui.label(format!("RAM: {:.0}/{:.0} MiB", used_mb, total_mb));
+                    } else {
+                        ui.label("RAM: n/a");
+                    }
+                    ProgressBar::new(ram01)
+                    .desired_width(100.)
+                    .desired_height(3.)
+                    .fill(ui.style().visuals.error_fg_color)
+                    .ui(ui);
+                        
+                    ui.separator(); 
+
+                    ui.add_space(10.);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let mut img_cnt = 0usize;
                         let mut vid_cnt = 0usize;
@@ -485,7 +639,7 @@ impl FileExplorer {
                 ui.separator();
                 ui.label(format!("Selected: {}", self.selected.len()));
             }
-            if self.viewer.mode == viewer::ExplorerMode::Database {
+            if self.viewer.mode == viewer::ExplorerMode::Database && !self.viewer.showing_similarity {
                 ui.separator();
                 ui.horizontal(|ui| {
                     if self.db_loading {
@@ -505,66 +659,16 @@ impl FileExplorer {
             }
         });
 
-        // Similar images modal (rendered each frame if active)
-        if self.show_similar_modal {
-            let mut open_flag = true; // represent window open state locally
-            let title = if let Some(orig) = &self.similar_origin {
-                format!(
-                    "Similar To: {}",
-                    std::path::Path::new(orig)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or(orig)
-                )
-            } else {
-                "Similar Images".to_string()
-            };
-            egui::Window::new(title)
-                .open(&mut open_flag)
-                .resizable(true)
-                .vscroll(true)
-                .show(ui.ctx(), |ui| {
-                    if self.similar_results.is_empty() {
-                        ui.label("Searching / No results yet...");
-                    } else {
-                        ui.horizontal(|ui| {
-                            ui.label(format!("{} results", self.similar_results.len()));
-                        });
-                        ui.separator();
-                        for meta in self.similar_results.iter() {
-                            ui.horizontal(|ui| {
-                                if ui.button("Open").clicked() {
-                                    let _ = open::that(meta.thumb.path.clone());
-                                }
-                                ui.label(RichText::new(&meta.thumb.filename).strong());
-                                if let Some(score) = meta.clip_similarity_score.or(meta.similarity_score) {
-                                    ui.label(format!("score: {:.4}", score));
-                                }
-                                if let Some(c) = &meta.created { ui.label(format!("created: {}", c)); }
-                                if let Some(u) = &meta.updated { ui.label(format!("updated: {}", u)); }
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    if ui.button("Preview").clicked() {
-                                        if let Some(row) = self.table.iter().find(|r| r.path == meta.thumb.path)
-                                        {
-                                            self.current_thumb = row.clone();
-                                            self.open_preview_pane = true;
-                                        }
-                                    }
-                                });
-                            });
-                        }
-                    }
-                });
-            if !open_flag {
-                self.show_similar_modal = false;
-            }
-        }
+        // Removed modal; results shown inline in table
     }
 
-    fn load_database_rows(&mut self) {
+    pub fn load_database_rows(&mut self) {
         if self.db_loading {
             return;
         }
+        // Reset similarity state when (re)loading DB pages
+        self.viewer.showing_similarity = false;
+        self.viewer.similar_scores.clear();
         self.db_loading = true;
         // When offset is zero we are (re)loading fresh page; clear existing rows
         if self.db_offset == 0 {
@@ -574,25 +678,10 @@ impl FileExplorer {
         }
         let tx = self.thumbnail_tx.clone();
         let offset = self.db_offset;
-        let limit = self.db_limit;
-        let path_filter = if self.current_path.trim().is_empty() {
-            None
-        } else {
-            Some(self.current_path.clone())
-        };
+    let _limit = self.db_limit; // reserved for future paging reuse
+        let path = self.current_path.clone();
         tokio::spawn(async move {
-            match crate::Thumbnail::load_thumbnails_page(
-                offset,
-                limit,
-                None,
-                None,
-                None,
-                None,
-                None,
-                path_filter.as_deref(),
-            )
-            .await
-            {
+            match crate::Thumbnail::get_all_thumbnails_from_directory(&path).await {
                 Ok(rows) => {
                     for r in rows.iter() {
                         let _ = tx.try_send(r.clone());
@@ -624,5 +713,23 @@ pub fn get_img_ui(
             .ui(ui) // .paint_at(ui, rect);
     } else {
         ui.label("No Image")
+    }
+}
+
+
+pub fn insert_thumbnail(thumb_cache: &mut HashMap<String, Arc<[u8]>>, thumbnail: Thumbnail) {
+    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+    let cache_key = &thumbnail.path;
+    let thumb_b64 = thumbnail.thumbnail_b64;
+    if let Some(mut b64) = thumb_b64 {
+        if !thumb_cache.contains_key(cache_key) {
+            if b64.starts_with("data:image/png;base64,") {
+                let (_, end) =
+                b64.split_once("data:image/png;base64,").unwrap_or_default();
+                b64 = end.to_string();
+            }
+            let decoded_bytes = B64.decode(b64.as_bytes()).unwrap_or_default();
+            thumb_cache.insert(cache_key.clone(), Arc::from(decoded_bytes.into_boxed_slice()));
+        }
     }
 }

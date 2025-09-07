@@ -25,7 +25,7 @@ impl crate::ai::AISearchEngine {
             }
         }
         let path = std::path::PathBuf::from(&metadata.path);
-        log::info!(
+        log::debug!(
             "Indexing file: {} (type: {})",
             metadata.path,
             metadata.file_type
@@ -40,7 +40,13 @@ impl crate::ai::AISearchEngine {
                     let auto_clip = self
                         .auto_clip_enabled
                         .load(std::sync::atomic::Ordering::Relaxed);
-                    let can_skip = if metadata.file_type != "image" {
+                    let is_image = std::path::Path::new(&metadata.path)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|s| s.to_ascii_lowercase())
+                        .map(|ext| crate::is_image(ext.as_str()))
+                        .unwrap_or(false);
+                    let can_skip = if !is_image {
                         true
                     } else {
                         let has_desc = existing.description.is_some();
@@ -53,8 +59,7 @@ impl crate::ai::AISearchEngine {
                             metadata.path
                         );
                         // Still, if auto_clip enabled and clip missing, schedule embedding before returning.
-                        if metadata.file_type == "image"
-                            && auto_clip
+                        if is_image && auto_clip
                             && clip_embedding.embedding.is_empty()
                         {
                             let arc_self = std::sync::Arc::new(self.clone());
@@ -72,9 +77,6 @@ impl crate::ai::AISearchEngine {
             }
         }
 
-        // Normalize thumbnail fields: If thumb_b64 already contains a data URL, leave it.
-        // If thumbnail_path references an on-disk file (not data URL) and we lack thumb_b64, encode it.
-        // Ensure any in-memory thumb_b64 gets mirrored to persisting thumbnail_b64
         if metadata.thumbnail_b64.is_none() {
             metadata.thumbnail_b64 = metadata.thumbnail_b64.clone();
         }
@@ -89,10 +91,16 @@ impl crate::ai::AISearchEngine {
         } else {
             files.push(metadata.clone());
         }
-        log::info!("Finished indexing file");
+        log::debug!("Finished indexing file");
 
         // Now that metadata is in-memory, schedule image enrichment (description + CLIP) if enabled.
-        if metadata.file_type == "image" && path.exists() {
+        let is_image = std::path::Path::new(&metadata.path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .map(|ext| crate::is_image(ext.as_str()))
+            .unwrap_or(false);
+        if is_image && path.exists() {
             let auto_desc = self
                 .auto_descriptions_enabled
                 .load(std::sync::atomic::Ordering::Relaxed);
@@ -114,10 +122,20 @@ impl crate::ai::AISearchEngine {
                 let arc_self2 = std::sync::Arc::new(self.clone());
                 let clip_path = metadata.path.clone();
                 tokio::spawn(async move {
-                    match arc_self2.clip_generate_for_paths(&[clip_path.clone()]).await {
-                        Ok(added) => log::info!("[CLIP] Manual per-item generation: added {added} for {clip_path}"),
-                        Err(e) => log::error!("engine.clip_generate_for_paths: {e:?}")
-                    };
+                    // Respect overwrite flag: only regenerate if missing, unless overwrite is enabled
+                    let overwrite = crate::database::settings::load_settings().clip_overwrite_embeddings;
+                    let mut should_run = overwrite;
+                    if !should_run {
+                        if let Some(meta) = arc_self2.get_file_metadata(&clip_path).await {
+                            if let Ok(emb) = meta.clone().get_embedding().await { should_run = emb.embedding.is_empty(); }
+                        }
+                    }
+                    if should_run {
+                        match arc_self2.clip_generate_for_paths(&[clip_path.clone()]).await {
+                            Ok(added) => log::info!("[CLIP] Manual per-item generation: added {added} for {clip_path}"),
+                            Err(e) => log::error!("engine.clip_generate_for_paths: {e:?}")
+                        }
+                    }
                 });
             }
         }
@@ -179,6 +197,11 @@ impl crate::ai::AISearchEngine {
 
     /// Enqueue a file metadata record for background indexing. Returns false if queue not ready yet.
     pub async fn enqueue_index(&self, meta: Thumbnail) -> bool {
+        // Global gate: only allow enqueue when auto indexing is enabled
+        let auto_on = crate::database::settings::load_settings().auto_indexing;
+        if !auto_on {
+            return false;
+        }
         if self.index_tx.lock().await.is_none() {
             self.ensure_index_worker().await;
         }

@@ -1,8 +1,5 @@
-use crate::{ui::status::{self, GlobalStatusIndicator}, utilities::windows::{gpu_mem_mb, system_mem_mb, smoothed_cpu01, smoothed_ram01, smoothed_vram01}};
-use humansize::{format_size, DECIMAL};
-use std::path::PathBuf;
+use crate::ui::status::{self, GlobalStatusIndicator};
 use eframe::egui::*;
-use crate::list_drive_infos;
 
 // We assume SmartMediaApp has (or will get) a boolean `ai_initializing` and `ai_ready` flags plus `open_settings_modal`.
 // If they don't exist yet, they need to be added to `SmartMediaApp` (app.rs). For now we optimistically reference via super::MainPage's parent.
@@ -78,80 +75,53 @@ impl crate::app::SmartMediaApp {
                     }
                 });
 
-                ui.menu_button("Quick Access", |ui| {
-                    ui.vertical_centered_justified(|ui| {
-                        ui.add_space(5.);
-                        ui.heading("User Directories");
-                        ui.add_space(5.);
-                        for access in crate::quick_access().iter() {
-                            ui.separator();
-                            if Button::new(&access.icon).min_size(vec2(20., 20.)).right_text(&access.label).ui(ui).on_hover_text(&access.label).clicked() {
-                                self.file_explorer.set_path(access.path.to_string_lossy());
+                let current_path_clone = self.file_explorer.current_path.clone();
+                let parts: Vec<String> = current_path_clone
+                    .split(['\\', '/'])
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .collect();
+                let root_has_slash = current_path_clone.starts_with('/');
+                let mut accum = if root_has_slash {
+                    String::from("/")
+                } else {
+                    String::new()
+                };
+                ui.horizontal(|ui| {
+                    for (i, part) in parts.iter().enumerate() {
+                        if !accum.ends_with(std::path::MAIN_SEPARATOR) && !accum.is_empty() {
+                            accum.push(std::path::MAIN_SEPARATOR);
+                        }
+                        accum.push_str(part);
+                        let display = if part.is_empty() {
+                            std::path::MAIN_SEPARATOR.to_string()
+                        } else {
+                            part.clone()
+                        };
+                        if ui
+                            .selectable_label(false, RichText::new(display).underline())
+                            .clicked()
+                        {
+                            self.file_explorer.push_history(accum.clone());
+                            if self.file_explorer.viewer.mode == crate::ui::file_table::viewer::ExplorerMode::Database {
+                                // In DB mode, treat breadcrumbs as path prefix changes
+                                self.file_explorer.db_offset = 0;
+                                self.file_explorer.db_last_batch_len = 0;
+                                self.file_explorer.load_database_rows();
+                            } else {
+                                self.file_explorer.populate_current_directory();
                             }
                         }
-                        ui.add_space(5.);
-                        ui.heading("Drives");
-                        ui.add_space(5.);
-                        for drive in list_drive_infos() {
-                            ui.separator();
-                            let root = drive.root.clone();
-                            let display = format!("{} - {}", drive.drive_type, drive.root);
-                            let path = PathBuf::from(root.clone());
-                            let free = format_size(drive.free, DECIMAL);
-                            let total = format_size(drive.total, DECIMAL);
-
-                            let response = Button::new(display)
-                            .right_text(&drive.label)
-                            .ui(ui).on_hover_text(format!("{free} free of {total}"));
-
-
-                            if response.clicked() {
-                                self.file_explorer.set_path(path.to_string_lossy());
-                            }
+                        if i < parts.len() - 1 {
+                            ui.label(RichText::new("›").weak());
                         }
-                    });
-                });
-                
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ctx.request_repaint_after(std::time::Duration::from_millis(300));
-                    ui.checkbox(&mut self.open_log_window, "View Logs");
-                    ui.separator();
-                    // System metrics (CPU, RAM, VRAM)
-                    let cpu01 = smoothed_cpu01();
-                    ProgressBar::new(cpu01)
-                    .desired_width(100.)
-                    .desired_height(3.)
-                    .fill(ui.style().visuals.error_fg_color)
-                    .ui(ui);
-
-                    ui.label(format!("CPU: {:.2}%", cpu01 * 100.0));
-                    ui.separator(); 
-
-                    let ram01 = smoothed_ram01();
-                    ProgressBar::new(ram01)
-                    .desired_width(100.)
-                    .desired_height(3.)
-                    .fill(ui.style().visuals.error_fg_color)
-                    .ui(ui);
-
-                    if let Some((used_mb, total_mb)) = system_mem_mb() {
-                        ui.label(format!("RAM: {:.0}/{:.0} MiB", used_mb, total_mb));
-                    } else {
-                        ui.label("RAM: n/a");
+                        // Remove trailing segment for next iteration accumulation clone safety
                     }
+                });
+
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.checkbox(&mut self.open_log_window, "View Logs");
                     ui.separator(); 
-
-                    let vram01 = smoothed_vram01();
-                    ProgressBar::new(vram01)
-                    .desired_width(100.)
-                    .desired_height(3.)
-                    .fill(ui.style().visuals.error_fg_color)
-                    .ui(ui);
-
-                    let (v_used, v_total) = gpu_mem_mb().unwrap_or_default();
-                    ui.label(format!("VRAM: {:.0}/{:.0} MiB", v_used, v_total)); 
-                    ui.separator(); 
-
                     status::status_bar_inline(ui);
                 });
             });

@@ -10,7 +10,13 @@ impl crate::ai::AISearchEngine {
         let files = self.files.lock().await.clone();
         let mut missing = 0usize;
         for f in files.iter() {
-            if f.file_type != "image" { continue; }
+            let is_image = std::path::Path::new(&f.path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|s| s.to_ascii_lowercase())
+                .map(|ext| crate::is_image(ext.as_str()))
+                .unwrap_or(false);
+            if !is_image { continue; }
             match f.clone().get_embedding().await {
                 Ok(emb) => if emb.embedding.is_empty() { missing += 1; },
                 Err(_) => { missing += 1; },
@@ -160,10 +166,13 @@ impl crate::ai::AISearchEngine {
             format!("Embedding {} images", paths.len()),
         );
         CLIP_STATUS.set_progress(0, paths.len() as u64);
+        let mut processed: usize = 0;
         for p in paths {
             let pb = std::path::Path::new(p);
             if !pb.exists() {
                 log::warn!("[CLIP] Skip missing path {p}");
+                processed += 1;
+                CLIP_STATUS.set_progress(processed as u64, paths.len() as u64);
                 continue;
             }
             // Ensure there is an in-memory metadata entry so get_file_metadata works below
@@ -179,8 +188,13 @@ impl crate::ai::AISearchEngine {
             };
 
             if already_embedded {
+                let overwrite = crate::database::settings::load_settings().clip_overwrite_embeddings;
+                if !overwrite {
                 log::warn!("[CLIP] Skip already embedded {p}");
+                processed += 1;
+                CLIP_STATUS.set_progress(processed as u64, paths.len() as u64);
                 continue;
+                }
             }
             log::warn!("[CLIP] Embedding image {p}");
             let mut emb_opt = {
@@ -196,44 +210,35 @@ impl crate::ai::AISearchEngine {
                 let settings = crate::database::settings::load_settings();
                 if settings.clip_augment_with_text {
                     if let Some(meta) = &maybe_meta {
-                        log::warn!("[CLIP] Augmenting with text for {p}");
-                        let mut text_pieces: Vec<String> = Vec::new();
+                        // Only augment when description is present and non-empty
                         if let Some(desc) = &meta.description {
-                            if desc.len() > 12 {
+                            if !desc.trim().is_empty() {
+                                log::warn!("[CLIP] Augmenting with text for {p}");
+                                let mut text_pieces: Vec<String> = Vec::new();
                                 text_pieces.push(desc.clone());
-                            }
-                        }
-                        if let Some(caption) = &meta.caption {
-                            text_pieces.push(caption.clone());
-                        }
-                        if !meta.tags.is_empty() {
-                            text_pieces.push(meta.tags.join(", "));
-                        }
-                        if let Some(cat) = &meta.category {
-                            text_pieces.push(cat.clone());
-                        }
-                        if !text_pieces.is_empty() {
-                            let joined = text_pieces.join(" | ");
-                            log::warn!("[CLIP] Text blend input for {p}: {}", joined);
-                            let text_vec = {
-                                let mut guard = self.clip_engine.lock().await;
-                                if let Some(engine) = guard.as_mut() {
-                                    engine.embed_text(&joined).ok()
-                                } else {
-                                    None
-                                }
-                            };
-                            if let (Some(img_vec), Some(txt_vec)) =
-                                (emb_opt.as_ref(), text_vec.as_ref())
-                            {
-                                if img_vec.len() == txt_vec.len() {
-                                    let blended: Vec<f32> = img_vec
-                                        .iter()
-                                        .zip(txt_vec.iter())
-                                        .map(|(a, b)| (a + b) * 0.5)
-                                        .collect();
-                                    log::warn!("[CLIP] Blended image+text embedding for {p}");
-                                    emb_opt = Some(blended);
+                                if let Some(caption) = &meta.caption { if !caption.trim().is_empty() { text_pieces.push(caption.clone()); } }
+                                if !meta.tags.is_empty() { text_pieces.push(meta.tags.join(", ")); }
+                                if let Some(cat) = &meta.category { if !cat.trim().is_empty() { text_pieces.push(cat.clone()); } }
+                                let joined = text_pieces.join(" | ");
+                                log::warn!("[CLIP] Text blend input for {p}: {}", joined);
+                                let text_vec = {
+                                    let mut guard = self.clip_engine.lock().await;
+                                    if let Some(engine) = guard.as_mut() {
+                                        engine.embed_text(&joined).ok()
+                                    } else {
+                                        None
+                                    }
+                                };
+                                if let (Some(img_vec), Some(txt_vec)) = (emb_opt.as_ref(), text_vec.as_ref()) {
+                                    if img_vec.len() == txt_vec.len() {
+                                        let blended: Vec<f32> = img_vec
+                                            .iter()
+                                            .zip(txt_vec.iter())
+                                            .map(|(a, b)| (a + b) * 0.5)
+                                            .collect();
+                                        log::warn!("[CLIP] Blended image+text embedding for {p}");
+                                        emb_opt = Some(blended);
+                                    }
                                 }
                             }
                         }
@@ -280,8 +285,9 @@ impl crate::ai::AISearchEngine {
                 added += 1;
                 log::info!("[CLIP] Embedded {p}");
             }
-            // progress update
-            CLIP_STATUS.set_progress(added as u64, paths.len() as u64);
+            // progress update should reflect processed count, not only added
+            processed += 1;
+            CLIP_STATUS.set_progress(processed as u64, paths.len() as u64);
         }
         log::info!("[CLIP] Generation complete. Added {} new embeddings", added);
         CLIP_STATUS.set_state(StatusState::Idle, format!("Added {added}"));
@@ -292,11 +298,25 @@ impl crate::ai::AISearchEngine {
         let (targets, total, image_total, missing) = {
             let files = self.files.lock().await;
             let total = files.len();
-            let image_total = files.iter().filter(|f| f.file_type == "image").count();
+            let image_total = files
+                .iter()
+                .filter(|f| std::path::Path::new(&f.path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|s| s.to_ascii_lowercase())
+                    .map(|ext| crate::is_image(ext.as_str()))
+                    .unwrap_or(false))
+                .count();
             // let clip_embedding = fm.get_embedding().await?;
             let mut missing_vec: Vec<String> = Vec::new();
             for f in files.iter() {
-                if f.file_type != "image" { continue; }
+                let is_image = std::path::Path::new(&f.path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|s| s.to_ascii_lowercase())
+                    .map(|ext| crate::is_image(ext.as_str()))
+                    .unwrap_or(false);
+                if !is_image { continue; }
                 match f.clone().get_embedding().await {
                     Ok(emb) => { if emb.embedding.is_empty() { missing_vec.push(f.path.clone()); } },
                     Err(_) => missing_vec.push(f.path.clone()),

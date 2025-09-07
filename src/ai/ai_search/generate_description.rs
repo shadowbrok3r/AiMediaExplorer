@@ -98,6 +98,7 @@ impl crate::ai::AISearchEngine {
             prompt
         );
 
+        let parent_dir = out_path.parent().map(|p| p.to_string_lossy().to_string().clone()).unwrap_or_default();
         // Index generated image metadata
         let meta = crate::Thumbnail {
             id: None,
@@ -108,7 +109,12 @@ impl crate::ai::AISearchEngine {
                 .and_then(|n| n.to_str())
                 .unwrap_or("")
                 .to_string(),
-            file_type: "image".to_string(),
+            // Store actual extension (png)
+            file_type: out_path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|s| s.to_ascii_lowercase())
+                .unwrap_or_else(|| String::new()),
             size: std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0),
             modified: None,
             thumbnail_b64: None,
@@ -117,6 +123,7 @@ impl crate::ai::AISearchEngine {
             caption: Some(format!("generated image: {}", prompt)),
             tags: vec!["generated".into()],
             category: Some("generated".into()),
+            parent_dir
         };
         // Ignore errors silently for now
         let _ = self.index_file(meta).await;

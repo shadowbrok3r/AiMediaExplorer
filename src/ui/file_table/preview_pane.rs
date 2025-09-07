@@ -1,5 +1,7 @@
 use eframe::egui::*;
 use humansize::DECIMAL;
+
+use crate::ui::file_table::insert_thumbnail;
 // use surrealdb::RecordId; // no longer needed: presence check relies on in-memory metadata only
 
 impl super::FileExplorer {
@@ -26,27 +28,12 @@ impl super::FileExplorer {
                 }
                 ui.vertical_centered(|ui| {
                     let name = &self.current_thumb.filename;
-                    let cache_key = &self.current_thumb.path;
-                    let thumb_cache = &self.viewer.thumb_cache;
+                    let thumb_cache = &mut self.viewer.thumb_cache;
                     ui.heading(name);
 
-                    super::get_img_ui(&self.current_thumb.thumbnail_b64, cache_key, ui);
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("Size:").underline().strong());
-                        ui.label(humansize::format_size(self.current_thumb.size, DECIMAL));
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.label(&self.current_thumb.file_type);
-                                
-                            let badge = if self.clip_presence.get(&self.current_thumb.path).is_some() { 
-                                RichText::new("CLIP ✓").color(Color32::LIGHT_GREEN) 
-                            } else { 
-                                RichText::new("CLIP X").color(ui.style().visuals.error_fg_color) 
-                            };
-
-                            ui.label(badge);
-                            ui.label(RichText::new("Type:").underline().strong());
-                        });
-                    });
+                    insert_thumbnail(thumb_cache, self.current_thumb.clone());
+                    super::get_img_ui(&thumb_cache, &self.current_thumb.path, ui);
+                    
                     ui.horizontal(|ui| {
                         if ui.button("Open").clicked() {
                             let _ = open::that(self.current_thumb.path.clone());
@@ -58,7 +45,23 @@ impl super::FileExplorer {
                             }
                         });        
                     });
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Size:").underline().strong());
+                        ui.label(humansize::format_size(self.current_thumb.size, DECIMAL));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.label(&self.current_thumb.file_type.to_uppercase());
+                                
+                            let badge = if self.clip_presence.get(&self.current_thumb.path).is_some() { 
+                                RichText::new("CLIP").color(Color32::LIGHT_GREEN) 
+                            } else { 
+                                RichText::new("CLIP").color(ui.style().visuals.error_fg_color) 
+                            };
 
+                            ui.label(badge);
+                            ui.label(RichText::new("Type:").underline().strong());
+                        });
+                    });
                     ScrollArea::vertical()
                         .auto_shrink(false)
                         .show(ui, |ui| {
@@ -207,55 +210,83 @@ impl super::FileExplorer {
                                         });
                                     }
                                     
-                                    // Similarity search button (requires clip embedding availability; will fall back to generating on-demand)
+                                    // Similarity search (use DB-wide KNN via clip_embeddings)
                                     if ui.button("Find Similar").clicked() {
+                                        log::info!("Finding similar");
                                         let sel_path = path_key.clone();
                                         let engine = std::sync::Arc::new(crate::ai::GLOBAL_AI_ENGINE.clone());
                                         let tx_updates = self.viewer.ai_update_tx.clone();
-                                        let path = self.current_thumb.path.clone();
-                                        let has_embedding = self.clip_presence.get(&path).is_some();
-                                        self.similar_results.clear();
-                                        self.show_similar_modal = true;
                                         tokio::spawn(async move {
-                                            // Ensure embedding exists; generate if missing
-                                            if let Some(meta) = engine.get_file_metadata(&sel_path).await {
-                                                if !has_embedding && (meta.path == path) {
-                                                    let _ = engine.clip_generate_for_paths(&[sel_path.clone()]).await;
-                                                }
-                                            }
-                                            // Get top matches (thumbnails only)
-                                            let thumbs = engine.clip_search_image(&sel_path, 50).await;
-                                            // Compute query embedding once (best-effort)
+                                            // Compute query embedding once
                                             let q_vec_opt: Option<Vec<f32>> = {
                                                 let mut guard = engine.clip_engine.lock().await;
                                                 if let Some(eng) = guard.as_mut() { eng.embed_image_path(&sel_path).ok() } else { None }
                                             };
-                                            // Build rich results with created/updated and scores
-                                            let mut results: Vec<super::SimilarResult> = Vec::with_capacity(thumbs.len());
-                                            for t in thumbs.into_iter() {
+                                            let mut results: Vec<super::SimilarResult> = Vec::new();
+                                            if let Some(q) = q_vec_opt {
+                                                
+                                                // Try DB-side KNN first
+                                                match crate::database::ClipEmbeddingRow::find_similar_by_embedding(&q, 24, 64).await {
+                                                    Ok(hits) => {
+                                                        for hit in hits.into_iter() {
+                                                            // Get thumbnail record (prefer embedded thumb_ref)
+                                                            let thumb = if let Some(t) = hit.thumb_ref { t } else { crate::Thumbnail::get_thumbnail_by_path(&hit.path).await.unwrap_or(None).unwrap_or_default() };
+                                                            // Enrich with created/updated and stored sims from this path's embedding row
+                                                            let (mut created, mut updated, mut stored_sim, mut clip_sim) = (None, None, None, None);
+                                                            if let Ok(rows) = crate::database::ClipEmbeddingRow::load_clip_embeddings_for_path(&hit.path).await {
+                                                                if let Some(row) = rows.into_iter().next() {
+                                                                    created = row.created;
+                                                                    updated = row.updated;
+                                                                    stored_sim = row.similarity_score.or(row.clip_similarity_score);
+                                                                    if !row.embedding.is_empty() && row.embedding.len() == q.len() {
+                                                                        clip_sim = Some(crate::ai::clip::dot(&q, &row.embedding));
+                                                                    }
+                                                                }
+                                                            }
+                                                            results.push(super::SimilarResult { thumb, created, updated, similarity_score: stored_sim, clip_similarity_score: clip_sim });
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        log::error!("find_similar_by_embedding failed: {e:?}");
+                                                    }
+                                                }
+                                            }
+                                            let _ = tx_updates.try_send(super::AIUpdate::SimilarResults { origin_path: sel_path.clone(), results });
+                                        });
+                                    }
+                                    // Alternate in-memory engine similarity (for comparison)
+                                    if ui.button("Find Similar (Engine)").on_hover_text("Compare with in-memory engine scoring").clicked() {
+                                        let sel_path = path_key.clone();
+                                        let tx_updates = self.viewer.ai_update_tx.clone();
+                                        tokio::spawn(async move {
+                                            let top = 24usize;
+                                            // Use the existing engine helper
+                                            let hits = crate::ai::GLOBAL_AI_ENGINE.clip_search_image(&sel_path, top).await;
+                                            // Build SimilarResults with score computed vs each hit's embedding
+                                            let mut results: Vec<super::SimilarResult> = Vec::new();
+                                            // Compute the query embedding once
+                                            let q_vec_opt: Option<Vec<f32>> = {
+                                                let mut guard = crate::ai::GLOBAL_AI_ENGINE.clip_engine.lock().await;
+                                                if let Some(eng) = guard.as_mut() { eng.embed_image_path(&sel_path).ok() } else { None }
+                                            };
+                                            for thumb in hits.into_iter() {
                                                 let mut created = None;
                                                 let mut updated = None;
-                                                let mut stored_sim = None;
+                                                let mut sim = None;
                                                 let mut clip_sim = None;
-                                                if let Ok(rows) = crate::database::ClipEmbeddingRow::load_clip_embeddings_for_path(&t.path).await {
+                                                if let Ok(rows) = crate::database::ClipEmbeddingRow::load_clip_embeddings_for_path(&thumb.path).await {
                                                     if let Some(row) = rows.into_iter().next() {
                                                         created = row.created;
                                                         updated = row.updated;
-                                                        stored_sim = row.similarity_score.or(row.clip_similarity_score);
-                                                        if let Some(ref q) = q_vec_opt {
-                                                            if !row.embedding.is_empty() && row.embedding.len() == q.len() {
-                                                                clip_sim = Some(crate::ai::clip::dot(q, &row.embedding));
+                                                        sim = row.similarity_score.or(row.clip_similarity_score);
+                                                        if let (Some(q), emb) = (q_vec_opt.as_ref(), row.embedding) {
+                                                            if !emb.is_empty() && emb.len() == q.len() {
+                                                                clip_sim = Some(crate::ai::clip::dot(q, &emb));
                                                             }
                                                         }
                                                     }
                                                 }
-                                                results.push(super::SimilarResult {
-                                                    thumb: t,
-                                                    created,
-                                                    updated,
-                                                    similarity_score: stored_sim,
-                                                    clip_similarity_score: clip_sim,
-                                                });
+                                                results.push(super::SimilarResult { thumb, created, updated, similarity_score: sim, clip_similarity_score: clip_sim });
                                             }
                                             let _ = tx_updates.try_send(super::AIUpdate::SimilarResults { origin_path: sel_path.clone(), results });
                                         });

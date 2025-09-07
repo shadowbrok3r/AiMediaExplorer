@@ -130,14 +130,16 @@ unsafe fn hbitmap_to_png_data_url(
 // Helper: convert a FoundFile (basic scan result) into a minimal Thumbnail row for persistence
 pub fn file_to_thumbnail(f: &crate::utilities::types::FoundFile) -> Option<crate::Thumbnail> {
     use chrono::Utc;
-    let file_type = f.path.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase());
-    let ft_string = if let Some(ext) = file_type.clone() {
-        if crate::utilities::types::IMAGE_EXTS.iter().any(|e| *e == ext) { "image".to_string() }
-        else if crate::utilities::types::VIDEO_EXTS.iter().any(|e| *e == ext) { "video".to_string() }
-        else { ext }
-    } else { "other".into() };
+    // Store the actual file extension (lowercase) in file_type, not a coarse kind.
+    let ft_string = f
+        .path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_else(|| String::new());
     let md = std::fs::metadata(&f.path).ok();
     let modified = md.as_ref().and_then(|m| m.modified().ok()).map(|st| chrono::DateTime::<chrono::Utc>::from(st));
+    let parent_dir = f.path.parent().map(|p| p.to_string_lossy().to_string().clone()).unwrap_or_default();
     Some(crate::Thumbnail {
         id: None,
         db_created: Some(Utc::now().into()),
@@ -152,5 +154,6 @@ pub fn file_to_thumbnail(f: &crate::utilities::types::FoundFile) -> Option<crate
         thumbnail_b64: f.thumb_data.clone(), 
         modified: if let Some(date) = modified { Some(date.into()) } else { Some(Utc::now().into()) },
         hash: None,
+        parent_dir
     })
 }

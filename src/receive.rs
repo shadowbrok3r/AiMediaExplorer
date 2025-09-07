@@ -34,16 +34,17 @@ impl crate::app::SmartMediaApp {
             // Keep FileExplorer's cached settings in sync with the latest from DB
             self.file_explorer.viewer.ui_settings = self.ui_settings.clone();
             // Sync atomics to current settings
-            let enable_clip = self.ui_settings.auto_clip_embeddings;
+            let enable_clip = self.ui_settings.auto_clip_embeddings.clone();
             crate::ai::GLOBAL_AI_ENGINE.auto_descriptions_enabled.store(self.ui_settings.auto_indexing, std::sync::atomic::Ordering::Relaxed);
             crate::ai::GLOBAL_AI_ENGINE.auto_clip_enabled.store(enable_clip, std::sync::atomic::Ordering::Relaxed);
-            if enable_clip {
-                tokio::spawn(async move {
+            tokio::spawn(async move {
+                let _ = crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await;
+                if enable_clip {
                     let added = crate::ai::GLOBAL_AI_ENGINE.clip_generate_recursive().await?;
                     log::info!("[CLIP] Auto backfill scheduled on settings load: added {added}");
-                    Ok::<(), anyhow::Error>(())
-                });
-            }
+                }
+                Ok::<(), anyhow::Error>(())
+            });
             if self.ui_settings.auto_indexing && !self.ai_ready {
                 self.ai_initializing = true;
                 tokio::spawn(async move { crate::ai::init_global_ai_engine_async().await; });
@@ -71,7 +72,7 @@ impl crate::app::SmartMediaApp {
                 crate::ui::status::JOY_STATUS.set_state(crate::ui::status::StatusState::Idle, "Ready");
             }
         }
-        // Settings modal placeholder (will be replaced with a richer UI form)
+   
         if self.open_settings_modal {
             if self.settings_draft.is_none() { self.settings_draft = Some(self.ui_settings.clone()); }
             ctx
@@ -105,6 +106,12 @@ impl crate::app::SmartMediaApp {
                                 ui.label("Blend Image + Text Embeddings");
                                 ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {  
                                     ui.checkbox(&mut d.clip_augment_with_text, "Enable");
+                                });
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Overwrite existing CLIP embeddings (auto)");
+                                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {  
+                                    ui.checkbox(&mut d.clip_overwrite_embeddings, "Enable");
                                 });
                             });
                             ui.checkbox(&mut d.overwrite_descriptions, "Overwrite existing descriptions");

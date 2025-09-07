@@ -87,7 +87,13 @@ fn setup_custom_fonts(ctx: &Context) {
         .families
         .get_mut(&FontFamily::Monospace)
         .unwrap()
-        .insert(0, "UbuntuMonoNerdFont".to_owned());
+        .insert(0, "UbuntuSansMono".to_owned());
+
+    fonts
+        .families
+        .get_mut(&FontFamily::Monospace)
+        .unwrap()
+        .insert(1, "UbuntuMonoNerdFont".to_owned());
 
     fonts.font_data.insert(
         "Regular".to_owned(),
