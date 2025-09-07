@@ -186,7 +186,7 @@ pub async fn save_settings_in_db(s: UiSettings) -> anyhow::Result<(), anyhow::Er
 
 pub async fn get_settings() -> anyhow::Result<UiSettings, anyhow::Error> {
     let settings_res: Option<UiSettings> = super::DB.select(UiSettings::default().id).await?;
-    log::info!("Got settings: {:?}", settings_res.is_some());
+    // log::info!("Got settings: {:?}", settings_res.is_some());
     if let Some(settings) = settings_res {
         return Ok(settings);
     } else {
