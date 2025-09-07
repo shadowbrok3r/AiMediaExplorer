@@ -35,7 +35,7 @@ pub enum AIUpdate {
     },
     SimilarResults {
         origin_path: String,
-        results: Vec<crate::database::Thumbnail>,
+        results: Vec<SimilarResult>,
     },
 }
 
@@ -46,6 +46,15 @@ struct AIMetadataUpdate {
     caption: Option<String>,
     category: Option<String>,
     tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SimilarResult {
+    pub thumb: crate::database::Thumbnail,
+    pub created: Option<surrealdb::sql::Datetime>,
+    pub updated: Option<surrealdb::sql::Datetime>,
+    pub similarity_score: Option<f32>,
+    pub clip_similarity_score: Option<f32>,
 }
 
 #[derive(Serialize)]
@@ -93,26 +102,20 @@ pub struct FileExplorer {
     #[serde(skip)]
     similar_origin: Option<String>,
     #[serde(skip)]
-    similar_results: Vec<crate::database::Thumbnail>,
+    similar_results: Vec<SimilarResult>,
     // Auto-follow active vision generation updates
     #[serde(skip)]
     pub follow_active_vision: bool,
     // Cache of clip embedding presence per path to avoid frequent async queries in UI thread
     #[serde(skip)]
-    clip_presence: std::collections::HashMap<String, bool>,
-    // Throttle for re-checking clip presence per path
-    #[serde(skip)]
-    clip_presence_last_check: std::collections::HashMap<String, std::time::Instant>,
+    clip_presence: std::collections::HashSet<String>,
     // Channel for async metadata merges
     #[serde(skip)]
     meta_tx: Sender<AIMetadataUpdate>,
     #[serde(skip)]
     meta_rx: Receiver<AIMetadataUpdate>,
-    // Channel for clip presence updates (path -> has_clip)
     #[serde(skip)]
-    clip_presence_tx: Sender<(String, bool)>,
-    #[serde(skip)]
-    clip_presence_rx: Receiver<(String, bool)>,
+    clip_embedding_rx: Receiver<crate::ClipEmbeddingRow>,
     // Vision description generation tracking (bulk vision progress separate from indexing)
     #[serde(skip)]
     vision_started: usize,
@@ -140,7 +143,7 @@ impl Default for FileExplorer {
         let (scan_tx, scan_rx) = crossbeam::channel::unbounded();
         let (ai_update_tx, ai_update_rx) = crossbeam::channel::unbounded();
         let (meta_tx, meta_rx) = crossbeam::channel::unbounded();
-        let (clip_presence_tx, clip_presence_rx) = crossbeam::channel::unbounded();
+        let (clip_embedding_tx, clip_embedding_rx) = crossbeam::channel::unbounded();
         let current_path = directories::UserDirs::new()
             .unwrap()
             .picture_dir()
@@ -149,7 +152,7 @@ impl Default for FileExplorer {
             .to_string();
         let mut this = Self {
             table: Default::default(),
-            viewer: FileTableViewer::new(thumbnail_tx.clone(), ai_update_tx),
+            viewer: FileTableViewer::new(thumbnail_tx.clone(), ai_update_tx, clip_embedding_tx.clone()),
             files: Default::default(),
             open_preview_pane: false,
             open_quick_access: false,
@@ -176,12 +179,10 @@ impl Default for FileExplorer {
             similar_origin: None,
             similar_results: Vec::new(),
             follow_active_vision: true,
-            clip_presence: std::collections::HashMap::new(),
-            clip_presence_last_check: std::collections::HashMap::new(),
+            clip_presence: std::collections::HashSet::new(),
             meta_tx,
             meta_rx,
-            clip_presence_tx,
-            clip_presence_rx,
+            clip_embedding_rx,
             vision_started: 0,
             vision_completed: 0,
             vision_pending: 0,
@@ -523,8 +524,6 @@ impl FileExplorer {
                 .resizable(true)
                 .vscroll(true)
                 .show(ui.ctx(), |ui| {
-                    if ui.button("Close").clicked() { /* set after closure */ }
-                    ui.separator();
                     if self.similar_results.is_empty() {
                         ui.label("Searching / No results yet...");
                     } else {
@@ -535,19 +534,17 @@ impl FileExplorer {
                         for meta in self.similar_results.iter() {
                             ui.horizontal(|ui| {
                                 if ui.button("Open").clicked() {
-                                    let _ = open::that(meta.path.clone());
+                                    let _ = open::that(meta.thumb.path.clone());
                                 }
-                                ui.label(RichText::new(&meta.filename).strong());
-                                if let Some(score) =
-                                    meta.clip_similarity_score.or(meta.similarity_score)
-                                {
+                                ui.label(RichText::new(&meta.thumb.filename).strong());
+                                if let Some(score) = meta.clip_similarity_score.or(meta.similarity_score) {
                                     ui.label(format!("score: {:.4}", score));
                                 }
+                                if let Some(c) = &meta.created { ui.label(format!("created: {}", c)); }
+                                if let Some(u) = &meta.updated { ui.label(format!("updated: {}", u)); }
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                     if ui.button("Preview").clicked() {
-                                        // Attempt to load thumbnail row for this path into current_thumb (FileSystem mode only currently)
-                                        if let Some(row) =
-                                            self.table.iter().find(|r| r.path == meta.path)
+                                        if let Some(row) = self.table.iter().find(|r| r.path == meta.thumb.path)
                                         {
                                             self.current_thumb = row.clone();
                                             self.open_preview_pane = true;

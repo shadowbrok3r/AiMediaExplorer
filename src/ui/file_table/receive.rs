@@ -44,6 +44,20 @@ impl super::FileExplorer {
                 self.db_offset += self.db_last_batch_len;
             }
             self.db_loading = false;
+            // After loading a DB page, hydrate minimal AI metadata for these paths into the engine
+            // so that CLIP searches have in-memory candidates.
+            let engine = std::sync::Arc::new(crate::ai::GLOBAL_AI_ENGINE.clone());
+            let paths: Vec<String> = self
+                .table
+                .iter()
+                .filter(|r| r.file_type != "<DIR>")
+                .map(|r| r.path.clone())
+                .collect();
+            if !paths.is_empty() {
+                tokio::spawn(async move {
+                    let _ = engine.hydrate_directory_paths(&paths).await;
+                });
+            }
         }
 
         while let Ok(env) = self.scan_rx.try_recv() {
@@ -85,6 +99,7 @@ impl super::FileExplorer {
                                 "other".to_string()
                             }
                         };
+
                         let meta = crate::database::Thumbnail {
                             id: None,
                             db_created: None,
@@ -105,10 +120,8 @@ impl super::FileExplorer {
                             caption: None,
                             tags: Vec::new(),
                             category: None,
-                            similarity_score: None,
-                            clip_embedding: None,
-                            clip_similarity_score: None,
                         };
+
                         tokio::spawn(async move {
                             let _ = crate::ai::GLOBAL_AI_ENGINE.enqueue_index(meta).await;
                         });
@@ -195,9 +208,6 @@ impl super::FileExplorer {
                                 caption: None,
                                 tags: Vec::new(),
                                 category: None,
-                                similarity_score: None,
-                                clip_embedding: None,
-                                clip_similarity_score: None,
                             });
                         }
                         if self.pending_thumb_rows.len() >= 32 {
@@ -219,7 +229,6 @@ impl super::FileExplorer {
                     if !newly_enqueued.is_empty() {
                         let scan_tx = self.scan_tx.clone();
                         let sem = self.thumb_semaphore.clone();
-                        // Use a dedicated scan id for these thumb updates
                         let scan_id_for_updates = next_scan_id();
                         for path_str in newly_enqueued.into_iter() {
                             let permit_fut = sem.clone().acquire_owned();
@@ -231,21 +240,15 @@ impl super::FileExplorer {
                                     .extension()
                                     .and_then(|e| e.to_str())
                                     .map(|s| s.to_ascii_lowercase());
+
                                 let mut thumb: Option<String> = None;
                                 if let Some(ext) = ext {
                                     let is_img = crate::is_image(ext.as_str());
                                     let is_vid = crate::is_video(ext.as_str());
                                     if is_img {
-                                        thumb =
-                                            crate::utilities::thumbs::generate_image_thumb_data(
-                                                &path_buf,
-                                            )
-                                            .ok();
+                                        thumb =crate::utilities::thumbs::generate_image_thumb_data(&path_buf).ok();
                                     } else if is_vid {
-                                        #[cfg(windows)]
-                                        {
-                                            thumb = crate::utilities::thumbs::generate_video_thumb_data(&path_buf).ok();
-                                        }
+                                        thumb = crate::utilities::thumbs::generate_video_thumb_data(&path_buf).ok();
                                     }
                                 }
                                 if let Some(t) = thumb {
@@ -499,9 +502,14 @@ impl super::FileExplorer {
             }
         }
 
-        // Process clip presence updates
-        while let Ok((path, has)) = self.clip_presence_rx.try_recv() {
-            self.clip_presence.insert(path, has);
+        // Process clip presence updates (embedding rows)
+        while let Ok(clip_embedding) = self.clip_embedding_rx.try_recv() {
+            let has = !clip_embedding.embedding.is_empty();
+            if has {
+                self.clip_presence.insert(clip_embedding.path.clone());
+            } else {
+                self.clip_presence.remove(&clip_embedding.path);
+            }
             ctx.request_repaint();
         }
     }

@@ -152,9 +152,6 @@ pub fn file_to_thumbnail(f: &crate::utilities::types::FoundFile) -> Option<crate
         thumbnail_b64: f.thumb_data.clone(), // may be None; raw data URL string stored earlier version
         modified: if let Some(date) = modified { Some(date.into()) } else { Some(Utc::now().into()) },
         hash: None,
-    thumb_b64: None,
-    similarity_score: None,
-    clip_embedding: None,
-    clip_similarity_score: None,
+        thumb_b64: None,
     })
 }

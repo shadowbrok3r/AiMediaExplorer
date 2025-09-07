@@ -38,10 +38,12 @@ pub struct FileTableViewer {
     pub ui_settings: crate::UiSettings,
     #[serde(skip)]
     pub ai_update_tx: Sender<AIUpdate>,
+    #[serde(skip)]
+    pub clip_embedding_tx: Sender<crate::ClipEmbeddingRow>,
 }
 
 impl FileTableViewer {
-    pub fn new(thumbnail_tx: Sender<Thumbnail>, ai_update_tx: Sender<AIUpdate>) -> Self {
+    pub fn new(thumbnail_tx: Sender<Thumbnail>, ai_update_tx: Sender<AIUpdate>, clip_embedding_tx: Sender<crate::ClipEmbeddingRow>) -> Self {
         Self {
             filter: Default::default(),
             row_protection: false,
@@ -52,6 +54,7 @@ impl FileTableViewer {
             mode: ExplorerMode::default(),
             ui_settings: UiSettings::default(),
             bulk_cancel_requested: false,
+            clip_embedding_tx,
             ai_update_tx
         }
     }
@@ -360,34 +363,6 @@ impl RowViewer<Thumbnail> for FileTableViewer {
         column: usize,
         resp: &egui::Response,
     ) -> Option<Box<Thumbnail>> {
-        // Context menu: per-row actions (e.g., generate CLIP embedding)
-        resp.context_menu(|ui| {
-            let is_image = row.file_type.eq_ignore_ascii_case("image");
-            let label_img = "Generate CLIP Embedding";
-            let label_non = "Generate CLIP Embedding (images only)";
-            let mut clicked = false;
-            if is_image {
-                if ui.button(label_img).clicked() {
-                    clicked = true;
-                }
-            } else {
-                // Disabled look for non-images
-                ui.add_enabled(false, egui::Button::new(label_non));
-            }
-            if clicked {
-                let path = row.path.clone();
-                tokio::spawn(async move {
-                    // Ensure engine and model are ready
-                    let _ = crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await;
-                    match crate::ai::GLOBAL_AI_ENGINE.clip_generate_for_paths(&[path.clone()]).await {
-                        Ok(added) => log::info!("[CLIP] Manual per-item generation: added {added} for {path}"),
-                        Err(e) => log::error!("engine.clip_generate_for_paths: {e:?}")
-                    }
-                    Ok::<(), anyhow::Error>(())
-                });
-            }
-        });
-
         match column {
             2 => {
                 if resp.hovered() {
@@ -404,9 +379,14 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                                 "video" => {
                                     if let Ok(b64) = generate_video_thumb_data(Path::new(&row.path))
                                     {
-                                        let _ = self.thumbnail_tx.try_send(Thumbnail {
+                                        let thumb = Thumbnail {
                                             thumbnail_b64: Some(b64),
                                             ..row.clone()
+                                        };
+                                        let _ = self.thumbnail_tx.try_send(thumb.clone());
+                                        let tx = self.clip_embedding_tx.clone();
+                                        tokio::spawn(async move {
+                                            let _ = tx.try_send(thumb.get_embedding().await.unwrap_or_default());
                                         });
                                     }
                                 }
@@ -414,9 +394,14 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                                     if let Ok(b64) = generate_image_thumb_data(Path::new(&row.path))
                                     {
                                         // embedding presence is tracked via clip embeddings table now
-                                        let _ = self.thumbnail_tx.try_send(Thumbnail {
+                                        let thumb = Thumbnail {
                                             thumbnail_b64: Some(b64),
                                             ..row.clone()
+                                        };
+                                        let _ = self.thumbnail_tx.try_send(thumb.clone());
+                                        let tx = self.clip_embedding_tx.clone();
+                                        tokio::spawn(async move {
+                                            let _ = tx.try_send(thumb.get_embedding().await.unwrap_or_default());
                                         });
                                     }
                                 }
@@ -546,12 +531,15 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                 }
             }
             "generate_clip_embeddings" => {
-                for (_, row) in ctx.selection.selected_rows.iter() {
+                for (_, row) in ctx.selection.selected_rows.clone() {
                     let path = row.path.clone();
+                    let thumb = row.clone();
+                    let tx = self.clip_embedding_tx.clone();
                     tokio::spawn(async move {
                         // Ensure engine and model are ready
                         let _ = crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await;
                         let added = crate::ai::GLOBAL_AI_ENGINE.clip_generate_for_paths(&[path.clone()]).await?;
+                        let _ = tx.try_send(thumb.get_embedding().await?);
                         log::info!("[CLIP] Manual per-item generation: added {added} for {path}");
                         Ok::<(), anyhow::Error>(())
                     });

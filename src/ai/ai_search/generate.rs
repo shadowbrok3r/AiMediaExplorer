@@ -7,11 +7,16 @@ impl crate::ai::AISearchEngine {
 
     // Count images missing a CLIP embedding (for UI diagnostics)
     pub async fn clip_missing_count(&self) -> usize {
-        let files = self.files.lock().await;
-        files
-            .iter()
-            .filter(|f| f.file_type == "image" && f.clip_embedding.is_none())
-            .count()
+        let files = self.files.lock().await.clone();
+        let mut missing = 0usize;
+        for f in files.iter() {
+            if f.file_type != "image" { continue; }
+            match f.clone().get_embedding().await {
+                Ok(emb) => if emb.embedding.is_empty() { missing += 1; },
+                Err(_) => { missing += 1; },
+            }
+        }
+        missing
     }
 
     pub async fn clip_search_text(
@@ -36,26 +41,17 @@ impl crate::ai::AISearchEngine {
                 return Vec::new();
             }
         };
-        let mut scored: Vec<(f32, crate::database::Thumbnail)> = {
-            let files = self.files.lock().await;
-            files
-                .iter()
-                .filter_map(|f| {
-                    f.clip_embedding
-                        .as_ref()
-                        .map(|emb| (crate::ai::clip::dot(&query_vec, emb), f.clone()))
-                })
-                .collect()
-        };
+        let files = self.files.lock().await.clone();
+        let mut scored: Vec<(f32, crate::database::Thumbnail)> = Vec::new();
+        for f in files.iter() {
+            if let Ok(emb) = f.clone().get_embedding().await {
+                if !emb.embedding.is_empty() {
+                    scored.push((crate::ai::clip::dot(&query_vec, &emb.embedding), f.clone()));
+                }
+            }
+        }
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        scored
-            .into_iter()
-            .take(top_k)
-            .map(|(s, mut m)| {
-                m.clip_similarity_score = Some(s);
-                m
-            })
-            .collect()
+        scored.into_iter().take(top_k).map(|(_, m)| m).collect()
     }
 
     pub async fn clip_search_image(
@@ -80,26 +76,17 @@ impl crate::ai::AISearchEngine {
                 return Vec::new();
             }
         };
-        let mut scored: Vec<(f32, crate::database::Thumbnail)> = {
-            let files = self.files.lock().await;
-            files
-                .iter()
-                .filter_map(|f| {
-                    f.clip_embedding
-                        .as_ref()
-                        .map(|emb| (crate::ai::clip::dot(&image_vec, emb), f.clone()))
-                })
-                .collect()
-        };
+        let files = self.files.lock().await.clone();
+        let mut scored: Vec<(f32, crate::database::Thumbnail)> = Vec::new();
+        for f in files.iter() {
+            if let Ok(emb) = f.clone().get_embedding().await {
+                if !emb.embedding.is_empty() {
+                    scored.push((crate::ai::clip::dot(&image_vec, &emb.embedding), f.clone()));
+                }
+            }
+        }
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        scored
-            .into_iter()
-            .take(top_k)
-            .map(|(s, mut m)| {
-                m.clip_similarity_score = Some(s);
-                m
-            })
-            .collect()
+        scored.into_iter().take(top_k).map(|(_, m)| m).collect()
     }
 
     // Persist and attach CLIP embedding for list of paths
@@ -184,11 +171,14 @@ impl crate::ai::AISearchEngine {
                 log::warn!("[CLIP] ensure_file_metadata_entry failed for {p}: {e}");
             }
             let maybe_meta = self.get_file_metadata(p).await;
-            if maybe_meta
-                .as_ref()
-                .map(|m| m.clip_embedding.is_some())
-                .unwrap_or(false)
-            {
+            let already_embedded = if let Some(thumb) = &maybe_meta {
+                let embedding = thumb.clone().get_embedding().await?;
+                !embedding.embedding.is_empty()
+            } else {
+                false
+            };
+
+            if already_embedded {
                 log::warn!("[CLIP] Skip already embedded {p}");
                 continue;
             }
@@ -254,11 +244,11 @@ impl crate::ai::AISearchEngine {
                 {
                     let mut files = self.files.lock().await;
                     if let Some(fm) = files.iter_mut().find(|f| f.path == *p) {
-                        fm.clip_embedding = Some(vec.clone());
+                        let mut clip_embedding = fm.clone().get_embedding().await?;
+                        clip_embedding.embedding = vec.clone();
                         if let Some(engine) = self.clip_engine.lock().await.as_mut() {
                             if fm.tags.len() < 2 {
-                                let mut tags =
-                                    engine.zero_shot_tags(fm.clip_embedding.as_ref().unwrap(), 3);
+                                let mut tags = engine.zero_shot_tags(&clip_embedding.embedding, 3);
                                 for t in tags.drain(..) {
                                     if !fm.tags.iter().any(|et| et == &t) {
                                         fm.tags.push(t);
@@ -267,21 +257,25 @@ impl crate::ai::AISearchEngine {
                             }
                             if fm.category.is_none() {
                                 fm.category =
-                                    engine.zero_shot_category(fm.clip_embedding.as_ref().unwrap());
+                                    engine.zero_shot_category(&clip_embedding.embedding);
                             }
                         }
                     }
                 }
                 // Persist embedding row
                 if let Some(meta2) = self.get_file_metadata(p).await {
+                    log::info!("Got a thumbnail: {:?}", meta2.id);
                     crate::database::upsert_clip_embedding(&meta2.path, meta2.hash.as_deref(), &vec).await?;
+                } else {
+                    log::error!("get_file_metadata() returned NONE for path: {p:?}");
                 }
 
                 if let Some(updated) = self.get_file_metadata(p).await {
+                    log::info!("Got a thumbnail: {:?}\nRunning cache_thumbnail_and_metadata()", updated.id);
                     let result = self.cache_thumbnail_and_metadata(&updated).await;
                     log::error!("self.cache_thumbnail_and_metadata: {result:?}");
                 } else {
-                    log::error!("get_file_metadata returned NONE");
+                    log::error!("get_file_metadata() returned NONE for path: {p:?}");
                 }
                 added += 1;
                 log::info!("[CLIP] Embedded {p}");
@@ -299,11 +293,15 @@ impl crate::ai::AISearchEngine {
             let files = self.files.lock().await;
             let total = files.len();
             let image_total = files.iter().filter(|f| f.file_type == "image").count();
-            let missing_vec: Vec<String> = files
-                .iter()
-                .filter(|f| f.file_type == "image" && f.clip_embedding.is_none())
-                .map(|f| f.path.clone())
-                .collect();
+            // let clip_embedding = fm.get_embedding().await?;
+            let mut missing_vec: Vec<String> = Vec::new();
+            for f in files.iter() {
+                if f.file_type != "image" { continue; }
+                match f.clone().get_embedding().await {
+                    Ok(emb) => { if emb.embedding.is_empty() { missing_vec.push(f.path.clone()); } },
+                    Err(_) => missing_vec.push(f.path.clone()),
+                }
+            }
             let missing = missing_vec.len();
             (missing_vec, total, image_total, missing)
         };

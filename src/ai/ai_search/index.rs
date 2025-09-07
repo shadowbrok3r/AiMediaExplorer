@@ -34,6 +34,7 @@ impl crate::ai::AISearchEngine {
         metadata.hash = self.compute_file_hash(&path).ok();
         if !force {
             if let Some(existing) = self.get_file_metadata(&metadata.path).await {
+                let clip_embedding = existing.clone().get_embedding().await?;
                 if existing.hash.is_some() && existing.hash == metadata.hash {
                     // Determine whether we can safely skip: only skip if (a) non-image OR (b) image already has description AND either clip embedding present OR auto clip disabled.
                     let auto_clip = self
@@ -43,7 +44,7 @@ impl crate::ai::AISearchEngine {
                         true
                     } else {
                         let has_desc = existing.description.is_some();
-                        let has_clip = existing.clip_embedding.is_some();
+                        let has_clip = !clip_embedding.embedding.is_empty();
                         has_desc && (has_clip || !auto_clip)
                     };
                     if can_skip {
@@ -54,7 +55,7 @@ impl crate::ai::AISearchEngine {
                         // Still, if auto_clip enabled and clip missing, schedule embedding before returning.
                         if metadata.file_type == "image"
                             && auto_clip
-                            && existing.clip_embedding.is_none()
+                            && clip_embedding.embedding.is_empty()
                         {
                             let arc_self = std::sync::Arc::new(self.clone());
                             let p_clone = metadata.path.clone();

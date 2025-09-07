@@ -113,7 +113,7 @@ impl AISearchEngine {
                         };
 
                         let fm = crate::Thumbnail {
-                            id: None,
+                            id: thumb.id.clone(),
                             db_created: thumb.db_created.clone(),
                             path: thumb.path.clone(),
                             filename: thumb.filename.clone(),
@@ -127,9 +127,6 @@ impl AISearchEngine {
                             caption: thumb.caption.clone(),
                             tags: thumb.tags.clone(),
                             category: thumb.category.clone(),
-                            similarity_score: None,
-                            clip_embedding: None,
-                            clip_similarity_score: None,
                         };
                         log::error!("self.files + 1: {fm:?}");
                         files_guard.push(fm);
@@ -218,9 +215,6 @@ impl AISearchEngine {
                         } else {
                             Some(vd.category.clone())
                         },
-                        similarity_score: None,
-                        clip_embedding: None,
-                        clip_similarity_score: None,
                     };
                     let mut files3 = self.files.lock().await;
                     files3.push(stub);
@@ -289,9 +283,6 @@ impl AISearchEngine {
             caption: row.caption.clone(),
             tags: row.tags.clone(),
             category: row.category.clone(),
-            similarity_score: None,
-            clip_embedding: None,
-            clip_similarity_score: None,
         };
         Ok(Some(fm))
     }
@@ -356,9 +347,6 @@ impl AISearchEngine {
             caption: None,
             tags: Vec::new(),
             category: None,
-            similarity_score: None,
-            clip_embedding: None,
-            clip_similarity_score: None,
         };
         let mut files = self.files.lock().await;
         files.push(stub);
@@ -497,9 +485,6 @@ impl AISearchEngine {
                     caption: None,
                     tags: Vec::new(),
                     category: None,
-                    similarity_score: None,
-                    clip_embedding: None,
-                    clip_similarity_score: None,
                 });
             }
         }
@@ -805,9 +790,6 @@ pub fn found_file_to_metadata(
         caption: None,
         tags: Vec::new(),
         category: None,
-        similarity_score: None,
-        clip_embedding: None,
-        clip_similarity_score: None,
     }
 }
 

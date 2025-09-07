@@ -118,9 +118,6 @@ impl crate::ai::AISearchEngine {
             caption: Some(format!("generated image: {}", prompt)),
             tags: vec!["generated".into()],
             category: Some("generated".into()),
-            similarity_score: None,
-            clip_embedding: None,
-            clip_similarity_score: None,
         };
         // Ignore errors silently for now
         let _ = self.index_file(meta).await;

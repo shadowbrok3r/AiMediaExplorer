@@ -1,3 +1,6 @@
+use chrono::Utc;
+
+
 impl super::ClipEmbeddingRow {
     // Load all clip embedding rows and return mapping path -> (embedding, hash, thumb_ref)
     pub async fn load_all_clip_embeddings()
@@ -25,22 +28,30 @@ pub async fn upsert_clip_embedding(
     hash: Option<&str>,
     embedding: &[f32],
 ) -> anyhow::Result<(), anyhow::Error> {
+    log::info!("upsert_clip_embedding");
     let thumbnail_id = crate::Thumbnail::get_thumbnail_id_by_path(path).await?;
-    let _ = super::DB
-        .query("UPDATE clip_embeddings SET embedding = $embedding, hash = $hash, updated = time::now() WHERE path = $path")
-        .bind(("embedding", embedding.to_vec()))
-        .bind(("hash", hash.map(|h| h.to_string())))
-        .bind(("path", path.to_string()))
-        .await?;
-
     // Check whether row exists; if not, create it
     let existing: Option<surrealdb::RecordId> = super::DB
-        .query("SELECT id FROM clip_embeddings WHERE path = $path LIMIT 1")
+        .query("SELECT VALUE id FROM clip_embeddings WHERE path = $path")
         .bind(("path", path.to_string()))
         .await?
         .take(0)?;
-    if existing.is_none() {
-        let _: Option<super::ClipEmbeddingRow> = super::DB
+
+    if let Some(id) = existing {
+        log::info!("Existing clip_embeddings");
+        let record: Option<crate::ClipEmbeddingRow> = super::DB
+            .query("UPDATE clip_embeddings SET embedding = $embedding, hash = $hash, updated = time::now() WHERE id == $id")
+            .bind(("embedding", embedding.to_vec()))
+            .bind(("hash", hash.map(|h| h.to_string())))
+            .bind(("path", path.to_string()))
+            .bind(("id", id))
+            .await?
+            .take(0)?;
+
+        log::info!("Record is Some: {:?}", record.is_some());
+    } else {
+        log::error!("existing.is_none()");
+        let new: Option<super::ClipEmbeddingRow> = super::DB
             .create("clip_embeddings")
             .content(super::ClipEmbeddingRow {
                 id: None,
@@ -48,14 +59,15 @@ pub async fn upsert_clip_embedding(
                 path: path.to_string(),
                 hash: hash.map(|h| h.to_string()),
                 embedding: embedding.to_vec(),
-                created: None,
-                updated: None,
+                created: Some(Utc::now().into()),
+                updated: Some(Utc::now().into()),
                 similarity_score: None,
-                clip_embedding: None,
                 clip_similarity_score: None,
             })
             .await?;
+        log::info!("New clip_embeddings: {:?}", new.is_some());
     }
+
     Ok(())
 }
 

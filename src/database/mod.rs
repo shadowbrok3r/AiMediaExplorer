@@ -55,7 +55,9 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
         DEFINE FIELD IF NOT EXISTS embedding ON clip_embeddings TYPE array<float> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS created ON clip_embeddings TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS updated ON clip_embeddings TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
-
+        DEFINE FIELD IF NOT EXISTS similarity_score ON clip_embeddings TYPE option<float> PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS clip_similarity_score ON clip_embeddings TYPE option<float> PERMISSIONS FULL;
+        
         DEFINE FIELD IF NOT EXISTS qa_collapsed ON user_settings TYPE bool PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS drives_collapsed ON user_settings TYPE bool PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS preview_collapsed ON user_settings TYPE bool PERMISSIONS FULL;

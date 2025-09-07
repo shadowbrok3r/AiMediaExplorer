@@ -15,14 +15,7 @@ pub struct Thumbnail {
     pub thumbnail_b64: Option<String>,
     pub modified: Option<surrealdb::sql::Datetime>,
     pub hash: Option<String>,
-    // In-memory fields used for UI/AI operations (not always persisted)
-    // Base64 data URL of thumbnail for quick UI rendering
     pub thumb_b64: Option<String>,
-    // For search ranking in-memory
-    pub similarity_score: Option<f32>,
-    // CLIP embedding (in-memory only; persisted separately in clip_embeddings)
-    pub clip_embedding: Option<Vec<f32>>,
-    pub clip_similarity_score: Option<f32>,
 }
 
 // This avoids bloating the core thumbnails row and lets us regenerate embeddings independently.
@@ -35,8 +28,6 @@ pub struct ClipEmbeddingRow {
     pub embedding: Vec<f32>,
     pub created: Option<surrealdb::sql::Datetime>,
     pub updated: Option<surrealdb::sql::Datetime>,
-    // Convenience fields for in-memory/UI (optional) and scoring
     pub similarity_score: Option<f32>,
-    pub clip_embedding: Option<Vec<f32>>, // duplicate of embedding for API parity
     pub clip_similarity_score: Option<f32>,
 }

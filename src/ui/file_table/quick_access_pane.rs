@@ -106,9 +106,19 @@ impl super::FileExplorer {
                                         crate::ai::GLOBAL_AI_ENGINE.reset_bulk_cancel();
                                     }
                                     if ui.button("Generate Missing CLIP Embeddings").clicked() {
+                                        // Collect all image paths currently visible in the table (current directory / DB page)
+                                        let paths: Vec<String> = self
+                                            .table
+                                            .iter()
+                                            .map(|r| r.path.clone())
+                                            .collect();
                                         tokio::spawn(async move {
-                                            let count = crate::ai::GLOBAL_AI_ENGINE.clip_generate_recursive().await?;
-                                            log::info!("[CLIP] Manual generation completed for {count} images");
+                                            // Ensure engine and model are ready
+                                            let _ = crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await;
+                                            match crate::ai::GLOBAL_AI_ENGINE.clip_generate_for_paths(&paths).await {
+                                                Ok(added) => log::info!("[CLIP] Manual generation completed. Added {added} new embeddings from {} images", paths.len()),
+                                                Err(e) => log::error!("[CLIP] Bulk generate failed: {e:?}")
+                                            }
                                             Ok::<(), anyhow::Error>(())
                                         });
                                     }

@@ -18,19 +18,32 @@ impl crate::Thumbnail {
     pub async fn get_thumbnail_id_by_path(
         path: &str,
     ) -> anyhow::Result<Option<RecordId>, anyhow::Error> {
+        log::info!("Getting thumbnail for path: {path:?}");
         let resp: Option<RecordId> = DB
-            .query("SELECT id FROM thumbnails WHERE path = $path")
+            .query("SELECT VALUE id FROM thumbnails WHERE path = $path")
             .bind(("path", path.to_string()))
             .await?
             .take(0)?;
+        log::info!("Thumbnail for path is Some(): {resp:?}");
         Ok(resp)
+    }
+
+    pub async fn get_embedding(self) -> anyhow::Result<super::ClipEmbeddingRow, anyhow::Error> {
+        let embedding: Option<super::ClipEmbeddingRow> = DB
+            .query("SELECT * FROM clip_embeddings WHERE thumb_ref == $id")
+            .bind(("id", self.id.clone()))
+            .await?
+            .take(0)?;
+
+        log::info!("Got embedding ");
+        Ok(embedding.unwrap_or_default())
     }
 
     pub async fn find_thumbs_from_paths(
         chunk_vec: Vec<String>,
     ) -> anyhow::Result<Vec<Self>, anyhow::Error> {
         let thumbs: Vec<Self> = DB
-        .query("SELECT path, filename, file_type, size, modified, hash, description, caption, tags, category FROM thumbnails WHERE array::find($paths, path) != NONE")
+        .query("SELECT id, db_created, path, filename, file_type, size, modified, hash, description, caption, tags, category FROM thumbnails WHERE array::find($paths, path) != NONE")
         .bind(("paths", chunk_vec))
         .await?
         .take(0)?;
@@ -193,7 +206,7 @@ pub async fn save_thumbnail_batch(
 }
 
 pub async fn get_thumbnail_paths() -> anyhow::Result<Vec<String>, anyhow::Error> {
-    let paths: Vec<String> = DB.query("SELECT path FROM thumbnails").await?.take(0)?;
+    let paths: Vec<String> = DB.query("SELECT VALUE path FROM thumbnails").await?.take(0)?;
     Ok(paths)
 }
 

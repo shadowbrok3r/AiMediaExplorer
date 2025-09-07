@@ -31,9 +31,6 @@ impl crate::ai::AISearchEngine {
                 modified: metadata.modified.clone(),
                 hash: metadata.hash.clone(),
                 thumb_b64: None,
-                similarity_score: None,
-                clip_embedding: None,
-                clip_similarity_score: None,
             })
             .update_or_create_thumbnail(metadata, thumb_b64)
             .await?;

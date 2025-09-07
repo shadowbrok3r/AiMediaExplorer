@@ -23,10 +23,6 @@ impl super::FileExplorer {
                             }
                         });
                     }
-                    // Consume any updated thumb from channel (non-blocking)
-                    while let Ok(new_thumb) = self.thumbnail_rx.try_recv() {
-                        if new_thumb.path != self.current_thumb.path { self.current_thumb = new_thumb; }
-                    }
                 }
                 ui.vertical_centered(|ui| {
                     let name = &self.current_thumb.filename;
@@ -40,30 +36,8 @@ impl super::FileExplorer {
                         ui.label(humansize::format_size(self.current_thumb.size, DECIMAL));
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             ui.label(&self.current_thumb.file_type);
-                            // CLIP embedding presence indicator (use in-memory metadata only)
-                            // Refresh clip presence cache asynchronously, throttled to ~1s per path
-                            let path_for_clip = self.current_thumb.path.clone();
-                            if !path_for_clip.is_empty() {
-                                let should_check = match self.clip_presence_last_check.get(&path_for_clip) {
-                                    Some(last) => last.elapsed() > std::time::Duration::from_millis(1000),
-                                    None => true,
-                                };
-                                if should_check {
-                                    self.clip_presence_last_check.insert(path_for_clip.clone(), std::time::Instant::now());
-                                    let tx = self.clip_presence_tx.clone();
-                                    let p = path_for_clip.clone();
-                                    tokio::spawn(async move {
-                                        let has = crate::ai::GLOBAL_AI_ENGINE
-                                            .get_file_metadata(&p)
-                                            .await
-                                            .map(|m| m.clip_embedding.is_some())
-                                            .unwrap_or(false);
-                                        let _ = tx.try_send((p, has));
-                                    });
-                                }
-                            }
-                                let have_clip = *self.clip_presence.get(&path_for_clip).unwrap_or(&false);
-                            let badge = if have_clip { 
+                                
+                            let badge = if self.clip_presence.get(&self.current_thumb.path).is_some() { 
                                 RichText::new("CLIP ✓").color(Color32::LIGHT_GREEN) 
                             } else { 
                                 RichText::new("CLIP X").color(ui.style().visuals.error_fg_color) 
@@ -238,17 +212,51 @@ impl super::FileExplorer {
                                         let sel_path = path_key.clone();
                                         let engine = std::sync::Arc::new(crate::ai::GLOBAL_AI_ENGINE.clone());
                                         let tx_updates = self.viewer.ai_update_tx.clone();
+                                        let path = self.current_thumb.path.clone();
+                                        let has_embedding = self.clip_presence.get(&path).is_some();
                                         self.similar_results.clear();
                                         self.show_similar_modal = true;
                                         tokio::spawn(async move {
                                             // Ensure embedding exists; generate if missing
                                             if let Some(meta) = engine.get_file_metadata(&sel_path).await {
-                                                if meta.clip_embedding.is_none() { 
-                                                    let res = engine.clip_generate_for_paths(&[sel_path.clone()]).await; 
-                                                    log::error!("engine.clip_generate_for_paths: {res:?}");
+                                                if !has_embedding && (meta.path == path) {
+                                                    let _ = engine.clip_generate_for_paths(&[sel_path.clone()]).await;
                                                 }
                                             }
-                                            let results = engine.clip_search_image(&sel_path, 50).await;
+                                            // Get top matches (thumbnails only)
+                                            let thumbs = engine.clip_search_image(&sel_path, 50).await;
+                                            // Compute query embedding once (best-effort)
+                                            let q_vec_opt: Option<Vec<f32>> = {
+                                                let mut guard = engine.clip_engine.lock().await;
+                                                if let Some(eng) = guard.as_mut() { eng.embed_image_path(&sel_path).ok() } else { None }
+                                            };
+                                            // Build rich results with created/updated and scores
+                                            let mut results: Vec<super::SimilarResult> = Vec::with_capacity(thumbs.len());
+                                            for t in thumbs.into_iter() {
+                                                let mut created = None;
+                                                let mut updated = None;
+                                                let mut stored_sim = None;
+                                                let mut clip_sim = None;
+                                                if let Ok(rows) = crate::database::ClipEmbeddingRow::load_clip_embeddings_for_path(&t.path).await {
+                                                    if let Some(row) = rows.into_iter().next() {
+                                                        created = row.created;
+                                                        updated = row.updated;
+                                                        stored_sim = row.similarity_score.or(row.clip_similarity_score);
+                                                        if let Some(ref q) = q_vec_opt {
+                                                            if !row.embedding.is_empty() && row.embedding.len() == q.len() {
+                                                                clip_sim = Some(crate::ai::clip::dot(q, &row.embedding));
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                results.push(super::SimilarResult {
+                                                    thumb: t,
+                                                    created,
+                                                    updated,
+                                                    similarity_score: stored_sim,
+                                                    clip_similarity_score: clip_sim,
+                                                });
+                                            }
                                             let _ = tx_updates.try_send(super::AIUpdate::SimilarResults { origin_path: sel_path.clone(), results });
                                         });
                                     }
