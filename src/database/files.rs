@@ -15,7 +15,6 @@ pub struct Thumbnail {
     pub thumbnail_b64: Option<String>,
     pub modified: Option<surrealdb::sql::Datetime>,
     pub hash: Option<String>,
-    pub thumb_b64: Option<String>,
 }
 
 // This avoids bloating the core thumbnails row and lets us regenerate embeddings independently.

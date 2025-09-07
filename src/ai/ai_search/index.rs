@@ -76,7 +76,7 @@ impl crate::ai::AISearchEngine {
         // If thumbnail_path references an on-disk file (not data URL) and we lack thumb_b64, encode it.
         // Ensure any in-memory thumb_b64 gets mirrored to persisting thumbnail_b64
         if metadata.thumbnail_b64.is_none() {
-            metadata.thumbnail_b64 = metadata.thumb_b64.clone();
+            metadata.thumbnail_b64 = metadata.thumbnail_b64.clone();
         }
         if let Err(e) = self.cache_thumbnail_and_metadata(&metadata).await {
             log::warn!("Thumbnail cache failed: {}", e);

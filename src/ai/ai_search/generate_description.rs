@@ -112,7 +112,6 @@ impl crate::ai::AISearchEngine {
             size: std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0),
             modified: None,
             thumbnail_b64: None,
-            thumb_b64: None,
             hash: self.compute_file_hash(&out_path).ok(),
             description: Some(format!("Placeholder generated for prompt: {}", prompt)),
             caption: Some(format!("generated image: {}", prompt)),

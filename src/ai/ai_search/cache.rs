@@ -8,7 +8,7 @@ impl crate::ai::AISearchEngine {
         metadata: &crate::Thumbnail,
     ) -> Result<(), anyhow::Error> {
         // Prefer in-memory `thumb_b64`; else use already-persisted `thumbnail_b64`.
-        let thumb_b64 = if let Some(b64) = &metadata.thumb_b64 {
+        let thumb_b64 = if let Some(b64) = &metadata.thumbnail_b64 {
             Some(b64.clone().trim().to_string())
         } else {
             metadata.thumbnail_b64.clone()
@@ -30,7 +30,6 @@ impl crate::ai::AISearchEngine {
                 thumbnail_b64: None,
                 modified: metadata.modified.clone(),
                 hash: metadata.hash.clone(),
-                thumb_b64: None,
             })
             .update_or_create_thumbnail(metadata, thumb_b64)
             .await?;

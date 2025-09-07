@@ -121,7 +121,7 @@ impl AISearchEngine {
                             size: thumb.size,
                             modified: modified_surreal,
                             thumbnail_b64: None,
-                            thumb_b64: None,
+                            
                             hash: thumb.hash.clone(),
                             description: thumb.description.clone(),
                             caption: thumb.caption.clone(),
@@ -205,7 +205,7 @@ impl AISearchEngine {
                         size: 0,
                         modified: None,
                         thumbnail_b64: None,
-                        thumb_b64: None,
+                        
                         hash: None,
                         description: Some(vd.description.clone()),
                         caption: Some(vd.caption.clone()),
@@ -277,7 +277,6 @@ impl AISearchEngine {
             size: row.size,
             modified: row.modified.clone(),
             thumbnail_b64: row.thumbnail_b64.clone(),
-            thumb_b64: row.thumbnail_b64.clone(),
             hash: row.hash.clone(),
             description: row.description.clone(),
             caption: row.caption.clone(),
@@ -341,7 +340,7 @@ impl AISearchEngine {
             size,
             modified: None,
             thumbnail_b64: None,
-            thumb_b64: None,
+            
             hash: None,
             description: None,
             caption: None,
@@ -479,7 +478,6 @@ impl AISearchEngine {
                     size: 0,
                     modified: None,
                     thumbnail_b64: None,
-                    thumb_b64: None,
                     hash: None,
                     description: Some(desc.to_string()),
                     caption: None,
@@ -767,7 +765,7 @@ pub fn found_file_to_metadata(
 ) -> crate::Thumbnail {
     crate::Thumbnail {
         id: None,
-    db_created: None,
+        db_created: None,
         path: found_file.path.display().to_string(),
         filename: found_file
             .path
@@ -781,10 +779,8 @@ pub fn found_file_to_metadata(
             crate::utilities::types::MediaKind::Other => "other".to_string(),
         },
         size: found_file.size.unwrap_or(0),
-    modified: None,
-    // Only set in-memory thumb; DB field mirrored by indexer persist
-    thumbnail_b64: found_file.thumb_data.clone(),
-        thumb_b64: found_file.thumb_data.clone(),
+        modified: None,
+        thumbnail_b64: found_file.thumb_data.clone(),
         hash: None,
         description: None,
         caption: None,

@@ -149,9 +149,8 @@ pub fn file_to_thumbnail(f: &crate::utilities::types::FoundFile) -> Option<crate
         caption: None,
         tags: Vec::new(),
         category: None,
-        thumbnail_b64: f.thumb_data.clone(), // may be None; raw data URL string stored earlier version
+        thumbnail_b64: f.thumb_data.clone(), 
         modified: if let Some(date) = modified { Some(date.into()) } else { Some(Utc::now().into()) },
         hash: None,
-        thumb_b64: None,
     })
 }

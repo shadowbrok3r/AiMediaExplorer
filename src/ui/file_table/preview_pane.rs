@@ -30,7 +30,7 @@ impl super::FileExplorer {
                     let thumb_cache = &self.viewer.thumb_cache;
                     ui.heading(name);
 
-                    super::get_img_ui(thumb_cache, cache_key, ui);
+                    super::get_img_ui(&self.current_thumb.thumbnail_b64, cache_key, ui);
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("Size:").underline().strong());
                         ui.label(humansize::format_size(self.current_thumb.size, DECIMAL));
