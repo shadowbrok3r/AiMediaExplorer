@@ -1,21 +1,6 @@
-use crate::utilities::types::{DirItem, QuickAccess};
+use crate::utilities::types::QuickAccess;
 use directories::UserDirs;
 use std::path::{Path, PathBuf};
-
-pub async fn list_dir_items(root: PathBuf) -> anyhow::Result<Vec<DirItem>, anyhow::Error> {
-    let mut out = Vec::new();
-    let mut rd = tokio::fs::read_dir(root).await?;
-    while let Ok(Some(e)) = rd.next_entry().await {
-        let p = e.path();
-        if let Ok(ft) = e.file_type().await {
-            if ft.is_dir() {
-                out.push(DirItem { path: p });
-            }
-        }
-    }
-    out.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(out)
-}
 
 pub fn quick_access() -> Vec<QuickAccess> {
     let mut v = Vec::new();
@@ -190,21 +175,4 @@ pub fn list_drive_infos() -> Vec<DriveInfo> {
 #[cfg(not(windows))]
 pub fn list_drive_infos() -> Vec<DriveInfo> {
     Vec::new()
-}
-
-#[cfg(windows)]
-pub fn drive_icon_for_root(root: &str) -> &'static str {
-    let wide: Vec<u16> = std::ffi::OsStr::new(root)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    let kind = unsafe { GetDriveTypeW(PCWSTR(wide.as_ptr())) };
-    match kind {
-        3 => "dns", // fixed
-        2 => "usb",        // removable
-        5 => "album",      // cd/dvd
-        4 => "cloud_done",      // network
-        6 => "memory",     // ramdisk
-        _ => "hard_disk",
-    }
 }

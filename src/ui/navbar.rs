@@ -1,5 +1,6 @@
-use crate::ui::status::{self, GlobalStatusIndicator};
+use crate::ui::{status::{self, GlobalStatusIndicator}, tabs::TABS};
 use eframe::egui::*;
+use egui_dock::SurfaceIndex;
 
 // We assume SmartMediaApp has (or will get) a boolean `ai_initializing` and `ai_ready` flags plus `open_settings_modal`.
 // If they don't exist yet, they need to be added to `SmartMediaApp` (app.rs). For now we optimistically reference via super::MainPage's parent.
@@ -47,7 +48,7 @@ impl crate::app::SmartMediaApp {
                             });
                         }
                         if ui.button("Generate CLIP (Selected)").clicked() {
-                            let path = self.file_explorer.current_thumb.path.clone();
+                            let path = self.context.file_explorer.current_thumb.path.clone();
                             if !path.is_empty() {
                                 status::CLIP_STATUS.set_state(status::StatusState::Running, "Selected path");
                                 tokio::spawn(async move {
@@ -75,7 +76,27 @@ impl crate::app::SmartMediaApp {
                     }
                 });
 
-                let current_path_clone = self.file_explorer.current_path.clone();
+                ui.menu_button("View", |ui| {
+                    // allow certain tabs to be toggled
+                    for tab in TABS {
+                        if ui
+                            .selectable_label(self.context.open_tabs.contains(tab), tab)
+                            .clicked()
+                        {
+                            if let Some(index) = self.tree.find_tab(&tab.to_string()) {
+                                self.tree.remove_tab(index);
+                                self.context.open_tabs.remove(tab);
+                            } else {
+                                self.tree[SurfaceIndex::main()]
+                                    .push_to_focused_leaf(tab.to_string());
+                            }
+
+                            ui.close();
+                        }
+                    }
+                });
+
+                let current_path_clone = self.context.file_explorer.current_path.clone();
                 let parts: Vec<String> = current_path_clone
                     .split(['\\', '/'])
                     .filter(|s| !s.is_empty())
@@ -102,14 +123,14 @@ impl crate::app::SmartMediaApp {
                             .selectable_label(false, RichText::new(display).underline())
                             .clicked()
                         {
-                            self.file_explorer.push_history(accum.clone());
-                            if self.file_explorer.viewer.mode == crate::ui::file_table::viewer::ExplorerMode::Database {
+                            self.context.file_explorer.push_history(accum.clone());
+                            if self.context.file_explorer.viewer.mode == crate::ui::file_table::viewer::ExplorerMode::Database {
                                 // In DB mode, treat breadcrumbs as path prefix changes
-                                self.file_explorer.db_offset = 0;
-                                self.file_explorer.db_last_batch_len = 0;
-                                self.file_explorer.load_database_rows();
+                                self.context.file_explorer.db_offset = 0;
+                                self.context.file_explorer.db_last_batch_len = 0;
+                                self.context.file_explorer.load_database_rows();
                             } else {
-                                self.file_explorer.populate_current_directory();
+                                self.context.file_explorer.populate_current_directory();
                             }
                         }
                         if i < parts.len() - 1 {
@@ -120,8 +141,6 @@ impl crate::app::SmartMediaApp {
                 });
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.checkbox(&mut self.open_log_window, "View Logs");
-                    ui.separator(); 
                     status::status_bar_inline(ui);
                 });
             });

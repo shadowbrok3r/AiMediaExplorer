@@ -60,6 +60,8 @@ pub struct Filters {
     pub date_field: DateField,
     pub only_with_thumb: bool, // UI-only filter (applied client-side) to show only items that already have a loaded thumbnail
     pub only_with_description: bool, // UI-only: only show items that have an AI description
+    // Heuristic: skip tiny icon/asset images and common app icons during scans
+    pub skip_icons: bool,
     pub category_filter: Option<String>, // If Some(cat) show only that category
     pub category_filters: std::collections::BTreeSet<String>, // Multi-select categories (union filter); empty => all
     // Size filters (bytes). If set, file must satisfy both bounds.
@@ -87,6 +89,7 @@ impl Default for Filters {
             date_field: DateField::Modified,
             only_with_thumb: false,
             only_with_description: false,
+            skip_icons: false,
             category_filter: None,
             category_filters: std::collections::BTreeSet::new(),
             min_size_bytes: None,

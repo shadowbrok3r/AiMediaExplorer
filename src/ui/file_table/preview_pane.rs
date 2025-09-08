@@ -82,9 +82,10 @@ impl super::FileExplorer {
                                 // Description editor
                                 if let Some(desc) = &mut self.current_thumb.description {
                                     let resp = TextEdit::multiline(desc)
-                                        .desired_width(ui.available_width())
-                                        .desired_rows(6)
-                                        .ui(ui);
+                                    .desired_width(ui.available_width())
+                                    .desired_rows(6)
+                                    .ui(ui);
+                                
                                     if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                                         let path_clone = path_key.clone();
                                         let desc_clone = desc.clone();
@@ -98,33 +99,13 @@ impl super::FileExplorer {
                                     }
                                 } else if self.streaming_interim.get(&path_key).is_none() {
                                     ui.label("No Description yet");
+                                    ui.add_space(30.);
                                 }
-
-                                ui.add_space(8.);
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new("Category:").underline().strong());
-                                    let mut cat = self.current_thumb.category.clone().unwrap_or_default();
-                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        let cat_resp = TextEdit::singleline(&mut cat).desired_width(ui.available_width()).ui(ui);
-                                        if cat_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                                            self.current_thumb.category = if cat.trim().is_empty() { None } else { Some(cat.clone()) };
-                                            let path_clone = path_key.clone();
-                                            let cat_opt = self.current_thumb.category.clone();
-                                            tokio::spawn(async move {
-                                                if let Some(meta) = crate::ai::GLOBAL_AI_ENGINE.get_file_metadata(&path_clone).await {
-                                                    let mut new_meta = meta.clone();
-                                                    new_meta.category = cat_opt.clone();
-                                                    if let Err(e) = crate::ai::GLOBAL_AI_ENGINE.cache_thumbnail_and_metadata(&new_meta).await { log::warn!("Persist edited category failed: {e}"); }
-                                                }
-                                            });
-                                        }
-                                    });
-                                });
 
                                 ui.add_space(8.);
                                 ui.label(RichText::new("Caption:").underline().strong());
                                 let mut cap = self.current_thumb.caption.clone().unwrap_or_default();
-                                let cap_resp = TextEdit::multiline(&mut cap).desired_width(ui.available_width()).desired_rows(2).ui(ui);
+                                let cap_resp = TextEdit::singleline(&mut cap).desired_width(ui.available_width()).ui(ui);
                                 if cap_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                                     self.current_thumb.caption = if cap.trim().is_empty() { None } else { Some(cap.clone()) };
                                     let path_clone = path_key.clone();
@@ -134,6 +115,23 @@ impl super::FileExplorer {
                                             let mut new_meta = meta.clone();
                                             new_meta.caption = cap_opt.clone();
                                             if let Err(e) = crate::ai::GLOBAL_AI_ENGINE.cache_thumbnail_and_metadata(&new_meta).await { log::warn!("Persist edited caption failed: {e}"); }
+                                        }
+                                    });
+                                }
+
+                                ui.add_space(8.);
+                                ui.label(RichText::new("Category:").underline().strong());
+                                let mut cat = self.current_thumb.category.clone().unwrap_or_default();
+                                let cat_resp = TextEdit::singleline(&mut cat).desired_width(ui.available_width()).ui(ui);
+                                if cat_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                    self.current_thumb.category = if cat.trim().is_empty() { None } else { Some(cat.clone()) };
+                                    let path_clone = path_key.clone();
+                                    let cat_opt = self.current_thumb.category.clone();
+                                    tokio::spawn(async move {
+                                        if let Some(meta) = crate::ai::GLOBAL_AI_ENGINE.get_file_metadata(&path_clone).await {
+                                            let mut new_meta = meta.clone();
+                                            new_meta.category = cat_opt.clone();
+                                            if let Err(e) = crate::ai::GLOBAL_AI_ENGINE.cache_thumbnail_and_metadata(&new_meta).await { log::warn!("Persist edited category failed: {e}"); }
                                         }
                                     });
                                 }

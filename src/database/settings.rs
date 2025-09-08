@@ -43,6 +43,9 @@ pub struct UiSettings {
     pub filter_only_with_thumb: bool,
     #[serde(default)]
     pub filter_only_with_description: bool,
+    // Skip likely icon/asset images in scans (small sizes/dimensions, .ico, etc.)
+    #[serde(default)]
+    pub filter_skip_icons: bool,
     #[serde(default)]
     pub last_root: Option<String>,
     #[serde(default)]
@@ -111,9 +114,11 @@ impl Default for UiSettings {
             filter_category_multi: None,
             filter_only_with_thumb: false,
             filter_only_with_description: false,
+            filter_skip_icons: false,
             last_root: None,
             show_progress_overlay: true,
-            db_min_size_bytes: None,
+            // Default lower bound: 10 KiB to avoid tiny files
+            db_min_size_bytes: Some(10 * 1024),
             db_max_size_bytes: None,
             db_excluded_exts: None,
             auto_clip_embeddings: false,

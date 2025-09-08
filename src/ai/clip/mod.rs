@@ -53,12 +53,17 @@ pub(crate) async fn ensure_clip_engine(engine_slot: &std::sync::Arc<tokio::sync:
     let mut guard = engine_slot.lock().await;
     if guard.is_none() {
         CLIP_STATUS.set_state(StatusState::Initializing, "Loading model");
-        // Prefer DB-backed settings to avoid picking the default due to async cache hydration.
-        let model_key = match crate::database::get_settings().await {
-            Ok(s) => s.clip_model.unwrap_or_else(|| "siglip2-large-patch16-512".to_string()),
-            Err(e) => {
-                log::warn!("[CLIP] get_settings() failed: {e}. Falling back to cached settings/default.");
-                crate::database::settings::load_settings().clip_model.unwrap_or_else(|| "siglip2-large-patch16-512".to_string())
+        // Prefer cached settings (updated immediately on save) to avoid races with async DB save.
+        let cached = crate::database::settings::load_settings();
+    let model_key = if let Some(m) = cached.clip_model.clone() {
+            m
+        } else {
+            match crate::database::get_settings().await {
+        Ok(s) => s.clip_model.unwrap_or_else(|| "unicom-vit-b32".to_string()),
+                Err(e) => {
+                    log::warn!("[CLIP] get_settings() failed: {e}. Falling back to default.");
+            "unicom-vit-b32".to_string()
+                }
             }
         };
         CLIP_STATUS.set_model(&model_key);

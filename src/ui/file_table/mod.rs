@@ -17,6 +17,12 @@ pub mod receive;
 pub mod viewer;
 pub mod codec;
 
+// Request to open a new filtered tab in the dock
+#[derive(Clone, Debug)]
+pub enum FilterRequest {
+    NewTab { title: String, rows: Vec<crate::database::Thumbnail> },
+}
+
 // AI streaming update messages (interim + final)
 #[derive(Debug, Clone)]
 pub enum AIUpdate {
@@ -134,6 +140,9 @@ pub struct FileExplorer {
     pub db_last_batch_len: usize,
     #[serde(skip)]
     db_loading: bool,
+    // Toggle: when true and in Database mode, the path input performs AI semantic search over the whole DB
+    #[serde(skip)]
+    ai_search_enabled: bool,
     // Track current scan id for cancellation
     #[serde(skip)]
     current_scan_id: Option<u64>,
@@ -209,6 +218,7 @@ impl Default for FileExplorer {
             db_limit: 500,
             db_last_batch_len: 0,
             db_loading: false,
+            ai_search_enabled: false,
             current_scan_id: None,
             db_lookup: std::collections::HashMap::new(),
             db_preload_rx,
@@ -226,6 +236,18 @@ impl Default for FileExplorer {
 }
 
 impl FileExplorer {
+    pub fn set_rows(&mut self, rows: Vec<crate::database::Thumbnail>) {
+        self.viewer.mode = viewer::ExplorerMode::Database;
+        self.table.clear();
+        for r in rows.into_iter() { self.table.push(r); }
+    }
+    // Set the table rows from DB results and switch to Database viewing mode
+    pub fn set_rows_from_db(&mut self, rows: Vec<crate::database::Thumbnail>) {
+        self.viewer.mode = viewer::ExplorerMode::Database;
+        self.table.clear();
+        for r in rows.into_iter() { self.table.push(r); }
+    }
+
     pub fn ui(&mut self, ui: &mut Ui) {
         self.receive(ui.ctx());
         self.preview_pane(ui);
@@ -257,21 +279,89 @@ impl FileExplorer {
                     ui.separator();
                     let path_edit = TextEdit::singleline(&mut self.current_path)
                         .hint_text(if self.viewer.mode == viewer::ExplorerMode::Database {
-                            "Path Prefix Filter"
+                            if self.ai_search_enabled { "AI Search (text prompt)" } else { "Path Prefix Filter" }
                         } else {
                             "Current Directory"
                         })
                         .desired_width(300.)
                         .ui(ui);
                     if self.viewer.mode == viewer::ExplorerMode::Database {
+                        let mut ai_box = self.ai_search_enabled;
+                        if ui.checkbox(&mut ai_box, "AI").on_hover_text("Use AI semantic search across the database (text prompt)").clicked() {
+                            self.ai_search_enabled = ai_box;
+                        }
+                    }
+                    if self.viewer.mode == viewer::ExplorerMode::Database {
                         // Apply filter on Enter
                         if (path_edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)))
                             || ui.button("Apply Filter").clicked()
                         {
-                            // Reset paging and reload
-                            self.db_offset = 0;
-                            self.db_last_batch_len = 0;
-                            self.load_database_rows();
+                            if self.ai_search_enabled {
+                                // Run AI semantic search over the whole DB using text prompt in current_path
+                                let query = self.current_path.trim().to_string();
+                                if !query.is_empty() {
+                                    let tx_updates = self.viewer.ai_update_tx.clone();
+                                    let types_show_images = self.viewer.types_show_images;
+                                    let types_show_videos = self.viewer.types_show_videos;
+                                    let minb = self.viewer.ui_settings.db_min_size_bytes;
+                                    let maxb = self.viewer.ui_settings.db_max_size_bytes;
+                                    tokio::spawn(async move {
+                                        // Ensure engine ready
+                                        let _ = crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await;
+                                        // Embed query text
+                                        let q_vec_opt = {
+                                            let mut guard = crate::ai::GLOBAL_AI_ENGINE.clip_engine.lock().await;
+                                            if let Some(engine) = guard.as_mut() {
+                                                engine.embed_text(&query).ok()
+                                            } else { None }
+                                        };
+                                        if let Some(q) = q_vec_opt {
+                                            let mut results: Vec<crate::ui::file_table::SimilarResult> = Vec::new();
+                                            match crate::database::ClipEmbeddingRow::find_similar_by_embedding(&q, 48, 96).await {
+                                                Ok(hits) => {
+                                                    for hit in hits.into_iter() {
+                                                        // Get thumbnail record (prefer embedded thumb_ref on hit)
+                                                        let thumb = if let Some(t) = hit.thumb_ref { t } else { crate::Thumbnail::get_thumbnail_by_path(&hit.path).await.unwrap_or(None).unwrap_or_default() };
+                                                        // Optional: filter by type and size
+                                                        let ext_ok = std::path::Path::new(&thumb.path)
+                                                            .extension()
+                                                            .and_then(|e| e.to_str())
+                                                            .map(|s| s.to_ascii_lowercase());
+                                                        let mut type_ok = true;
+                                                        if let Some(ext) = ext_ok.as_ref() {
+                                                            if crate::is_image(ext.as_str()) { type_ok = types_show_images; }
+                                                            else if crate::is_video(ext.as_str()) { type_ok = types_show_videos; }
+                                                            else { type_ok = false; }
+                                                        }
+                                                        if !type_ok { continue; }
+                                                        if let Some(mn) = minb { if thumb.size < mn { continue; } }
+                                                        if let Some(mx) = maxb { if thumb.size > mx { continue; } }
+
+                                                        // Compute similarity vs stored embedding (prefer clip_similarity_score)
+                                                        let (mut created, mut updated, mut stored_sim, mut clip_sim) = (None, None, None, None);
+                                                        if let Ok(rows) = crate::database::ClipEmbeddingRow::load_clip_embeddings_for_path(&thumb.path).await {
+                                                            for row in rows.iter() {
+                                                                created = row.created.clone();
+                                                                updated = row.updated.clone();
+                                                                stored_sim = row.similarity_score.or(row.clip_similarity_score);
+                                                                if clip_sim.is_none() && !row.embedding.is_empty() { clip_sim = Some(crate::ai::clip::dot(&q, &row.embedding)); }
+                                                            }
+                                                        }
+                                                        results.push(crate::ui::file_table::SimilarResult { thumb, created, updated, similarity_score: stored_sim, clip_similarity_score: clip_sim });
+                                                    }
+                                                }
+                                                Err(e) => log::error!("[AI] text knn failed: {e:?}"),
+                                            }
+                                            let _ = tx_updates.try_send(crate::ui::file_table::AIUpdate::SimilarResults { origin_path: format!("query:{query}"), results });
+                                        }
+                                    });
+                                }
+                            } else {
+                                // Reset paging and reload
+                                self.db_offset = 0;
+                                self.db_last_batch_len = 0;
+                                self.load_database_rows();
+                            }
                         }
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -312,29 +402,31 @@ impl FileExplorer {
                         MenuButton::new("Scan")
                         .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside).style(style))
                         .ui(ui, |ui| {
-                            ui.label(RichText::new("Size Filters (MB)").italics());
+                            ui.label(RichText::new("Size Filters (KB)").italics());
                             ui.horizontal(|ui| {
                                 ui.label("Min:");
-                                if self.min_size_mb_input.is_empty() {
-                                    if let Some(b) = self.viewer.ui_settings.db_min_size_bytes {
-                                        self.min_size_mb_input = (b / 1_000_000).to_string();
-                                    }
-                                }
-                                let _ = ui.add(TextEdit::singleline(&mut self.min_size_mb_input).desired_width(60.));
+                                let mut min_kb: i64 = self.viewer.ui_settings.db_min_size_bytes
+                                    .map(|b| (b / 1024) as i64)
+                                    .unwrap_or(0);
+                                let mut max_kb: i64 = self.viewer.ui_settings.db_max_size_bytes
+                                    .map(|b| (b / 1024) as i64)
+                                    .unwrap_or(0);
+                                let min_resp = ui.add(egui::DragValue::new(&mut min_kb).speed(1).range(0..=i64::MAX).suffix(" KB")).on_hover_text("Minimum file size in KiB");
                                 ui.label("Max:");
-                                if self.max_size_mb_input.is_empty() {
-                                    if let Some(b) = self.viewer.ui_settings.db_max_size_bytes {
-                                        self.max_size_mb_input = (b / 1_000_000).to_string();
-                                    }
-                                }
-                                let _ = ui.add(TextEdit::singleline(&mut self.max_size_mb_input).desired_width(60.));
-                                if ui.button("Apply").clicked() {
-                                    let min_parsed = self.min_size_mb_input.trim().parse::<u64>().ok().map(|m| m * 1_000_000);
-                                    let max_parsed = self.max_size_mb_input.trim().parse::<u64>().ok().map(|m| m * 1_000_000);
-                                    self.viewer.ui_settings.db_min_size_bytes = min_parsed;
-                                    self.viewer.ui_settings.db_max_size_bytes = max_parsed;
+                                let max_resp = ui.add(egui::DragValue::new(&mut max_kb).speed(10).range(0..=i64::MAX).suffix(" KB")).on_hover_text("Maximum file size in KiB (0 = no max)");
+                                let changed = min_resp.changed() || max_resp.changed();
+                                if changed || ui.button("Apply").clicked() {
+                                    let min_b = if min_kb <= 0 { None } else { Some(min_kb as u64 * 1024) };
+                                    let max_b = if max_kb <= 0 { None } else { Some(max_kb as u64 * 1024) };
+                                    // Enforce min <= max if both set
+                                    let (min_b, max_b) = match (min_b, max_b) {
+                                        (Some(a), Some(b)) if a > b => (Some(b), Some(a)),
+                                        other => other,
+                                    };
+                                    self.viewer.ui_settings.db_min_size_bytes = min_b;
+                                    self.viewer.ui_settings.db_max_size_bytes = max_b;
                                     crate::database::settings::save_settings(&self.viewer.ui_settings);
-                                    // Immediately apply to current table by removing out-of-range rows
+                                    // Apply to current table view
                                     let minb = self.viewer.ui_settings.db_min_size_bytes;
                                     let maxb = self.viewer.ui_settings.db_max_size_bytes;
                                     self.table.retain(|r| {
@@ -359,6 +451,13 @@ impl FileExplorer {
                                 ui.checkbox(&mut self.viewer.types_show_videos, "Videos");
                                 ui.checkbox(&mut self.viewer.types_show_dirs, "Folders");
                             });
+                            ui.horizontal(|ui| {
+                                let mut skip_icons = self.viewer.ui_settings.filter_skip_icons;
+                                if ui.checkbox(&mut skip_icons, "Skip likely icons").on_hover_text("Filter out tiny images (.ico, <= 16–64px, very small files)").changed() {
+                                    self.viewer.ui_settings.filter_skip_icons = skip_icons;
+                                    crate::database::settings::save_settings(&self.viewer.ui_settings);
+                                }
+                            });
                             ui.add_space(4.0);
                             ui.horizontal_wrapped(|ui| {
                                 if ui.button("💡 Recursive Scan").clicked() {
@@ -379,6 +478,7 @@ impl FileExplorer {
                                     filters.max_size_bytes = self.viewer.ui_settings.db_max_size_bytes;
                                     filters.include_images = self.viewer.types_show_images;
                                     filters.include_videos = self.viewer.types_show_videos;
+                                    filters.skip_icons = self.viewer.ui_settings.filter_skip_icons;
                                     filters.excluded_terms = self.excluded_terms.clone();
                                     // Remember current scan id so cancel can target it
                                     self.current_scan_id = Some(scan_id);
@@ -474,6 +574,28 @@ impl FileExplorer {
                                     crate::ai::GLOBAL_AI_ENGINE.cancel_bulk_descriptions();
                                     crate::ai::GLOBAL_AI_ENGINE.auto_descriptions_enabled.store(false, std::sync::atomic::Ordering::Relaxed);
                                     self.viewer.bulk_cancel_requested = true;
+                                }
+                                if ui.button("🔄 Re-scan Current Folder").on_hover_text("Shallow scan with current filters (applies 'Skip likely icons')").clicked() {
+                                    self.recursive_scan = false;
+                                    self.scan_done = false;
+                                    self.table.clear();
+                                    self.last_scan_rows.clear();
+                                    self.last_scan_paths.clear();
+                                    self.last_scan_root = Some(self.current_path.clone());
+                                    self.file_scan_progress = 0.0;
+                                    let scan_id = crate::next_scan_id();
+                                    let tx = self.scan_tx.clone();
+                                    let recurse = false;
+                                    let mut filters = crate::Filters::default();
+                                    filters.root = std::path::PathBuf::from(self.current_path.clone());
+                                    filters.min_size_bytes = self.viewer.ui_settings.db_min_size_bytes;
+                                    filters.max_size_bytes = self.viewer.ui_settings.db_max_size_bytes;
+                                    filters.include_images = self.viewer.types_show_images;
+                                    filters.include_videos = self.viewer.types_show_videos;
+                                    filters.skip_icons = self.viewer.ui_settings.filter_skip_icons;
+                                    filters.excluded_terms = self.excluded_terms.clone();
+                                    self.current_scan_id = Some(scan_id);
+                                    tokio::spawn(async move { crate::spawn_scan(filters, tx, recurse, scan_id).await; });
                                 }
                             });
                         });
@@ -691,6 +813,40 @@ impl FileExplorer {
                     s.auto_shrink = [false, false].into();
                 })
                 .ui(ui);
+            // Check for tag/category open-tab actions requested by the viewer
+            if !self.viewer.requested_tabs.is_empty() {
+                let actions = std::mem::take(&mut self.viewer.requested_tabs);
+                for act in actions.into_iter() {
+                    match act {
+                        crate::ui::file_table::viewer::TabAction::OpenCategory(cat) => {
+                            let title = format!("Category: {}", cat);
+                            let rows: Vec<crate::database::Thumbnail> = self
+                                .table
+                                .iter()
+                                .filter(|r| r.category.as_deref() == Some(cat.as_str()))
+                                .cloned()
+                                .collect();
+                            crate::app::OPEN_TAB_REQUESTS
+                                .lock()
+                                .unwrap()
+                                .push(crate::ui::file_table::FilterRequest::NewTab { title, rows });
+                        }
+                        crate::ui::file_table::viewer::TabAction::OpenTag(tag) => {
+                            let title = format!("Tag: {}", tag);
+                            let rows: Vec<crate::database::Thumbnail> = self
+                                .table
+                                .iter()
+                                .filter(|r| r.tags.iter().any(|t| t.eq_ignore_ascii_case(&tag)))
+                                .cloned()
+                                .collect();
+                            crate::app::OPEN_TAB_REQUESTS
+                                .lock()
+                                .unwrap()
+                                .push(crate::ui::file_table::FilterRequest::NewTab { title, rows });
+                        }
+                    }
+                }
+            }
             // Summary inline (counts) if selection active
             if !self.selected.is_empty() {
                 ui.separator();

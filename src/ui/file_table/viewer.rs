@@ -52,7 +52,14 @@ pub struct FileTableViewer {
     pub types_show_images: bool,
     pub types_show_videos: bool,
     pub types_show_dirs: bool,
+    // Requests to open tabs based on user clicks in cells
+    #[serde(skip)]
+    pub requested_tabs: Vec<TabAction>,
 }
+
+// Actions requested from table cells
+#[derive(Clone, Debug)]
+pub enum TabAction { OpenCategory(String), OpenTag(String) }
 
 impl FileTableViewer {
     pub fn new(thumbnail_tx: Sender<Thumbnail>, ai_update_tx: Sender<AIUpdate>, clip_embedding_tx: Sender<crate::ClipEmbeddingRow>) -> Self {
@@ -74,6 +81,7 @@ impl FileTableViewer {
             types_show_images: true,
             types_show_videos: true,
             types_show_dirs: true,
+            requested_tabs: Vec::new(),
         }
     }
 }
@@ -243,8 +251,15 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                 };
             }
             3 => {
-                // Category
-                ui.label(row.category.as_deref().unwrap_or("-"));
+                // Category (click to open in new tab)
+                if let Some(cat) = row.category.as_ref() {
+                    let resp = ui.selectable_label(false, egui::RichText::new(cat).underline());
+                    if resp.clicked() {
+                        self.requested_tabs.push(TabAction::OpenCategory(cat.clone()));
+                    }
+                } else {
+                    ui.label("-");
+                }
             }
             4 => {
                 // Tags as chips
@@ -263,7 +278,7 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                             );
                             let (rect, resp) = ui.allocate_exact_size(
                                 galley.rect.size() + pad * 2.0,
-                                egui::Sense::hover(),
+                                egui::Sense::click(),
                             );
                             ui.painter().rect_filled(rect, 6.0, color);
                             ui.painter().galley(rect.min + pad, galley, Color32::WHITE);
@@ -276,6 +291,9 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                                 .rect_stroke(rect, 6.0, stroke, egui::StrokeKind::Outside);
                             if resp.hovered() {
                                 ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                            }
+                            if resp.clicked() {
+                                self.requested_tabs.push(TabAction::OpenTag(tag.clone()));
                             }
                         }
                     });

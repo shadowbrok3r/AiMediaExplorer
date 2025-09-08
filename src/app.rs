@@ -1,16 +1,26 @@
 use eframe::{egui::{Context, FontData, FontDefinitions, FontFamily}};
 use crossbeam::channel::{Receiver, Sender};
+use egui_dock::{DockState, SurfaceIndex};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use once_cell::sync::Lazy;
+use std::sync::Mutex;
 use crate::UiSettings;
 
 // Global atomic flag to request opening the settings modal from anywhere (e.g., navbar without direct &mut SmartMediaApp access)
 pub static OPEN_SETTINGS_REQUEST: Lazy<std::sync::atomic::AtomicBool> = Lazy::new(|| std::sync::atomic::AtomicBool::new(false));
+// Global queue for dynamic tab open requests
+pub static OPEN_TAB_REQUESTS: Lazy<Mutex<Vec<crate::ui::file_table::FilterRequest>>> = Lazy::new(|| Mutex::new(Vec::new()));
 pub const DEFAULT_JOYCAPTION_PATH: &str = r#"G:\Users\Owner\Desktop\llama-joycaption-beta-one-hf-llava"#;
 pub const MAX_NEW_TOKENS: usize = 200;
 pub const TEMPERATURE: f32 = 0.5;
 
 pub struct SmartMediaApp {
+    pub tree: DockState<String>,
+    pub context: SmartMediaContext,
+}
+
+pub struct SmartMediaContext {
     pub first_run: bool,
     pub page: Page,
     pub ui_settings: UiSettings,
@@ -27,7 +37,9 @@ pub struct SmartMediaApp {
     // Draft copy of settings while editing in modal
     pub settings_draft: Option<UiSettings>,
     pub file_explorer: crate::ui::file_table::FileExplorer,
-    pub open_log_window: bool
+    pub open_tabs: HashSet<String>,
+    // Map of dynamic tab title -> a dedicated FileExplorer instance with filters applied
+    pub filtered_tabs: std::collections::HashMap<String, crate::ui::file_table::FileExplorer>,
 }
 
 #[derive(PartialEq, Debug, Serialize, Deserialize, Default)]
@@ -41,7 +53,33 @@ impl SmartMediaApp {
         setup_custom_fonts(&cc.egui_ctx);
         let (ui_settings_tx, ui_settings_rx) = crossbeam::channel::bounded(1);
         let (db_ready_tx, db_ready_rx) = crossbeam::channel::bounded(1);
-        Self {
+        
+        let mut tree = DockState::new(vec![
+            "File Explorer".to_owned(),
+            "Logs".to_owned()
+        ]);
+
+        "Undock".clone_into(&mut tree.translations.tab_context_menu.eject_button);
+
+        // let [a, b] = tree.main_surface_mut().split_left(
+        //     NodeIndex::root(),
+        //     0.3,
+        //     vec![
+        //         "Inspector".to_owned()
+        //     ],
+        // );
+
+        let mut open_tabs = HashSet::new();
+
+        for node in tree[SurfaceIndex::main()].iter() {
+            if let Some(tabs) = node.tabs() {
+                for tab in tabs {
+                    open_tabs.insert(tab.clone());
+                }
+            }
+        }
+
+        let context = SmartMediaContext {
             first_run: true,
             page: Default::default(),
             ui_settings: UiSettings::default(),
@@ -53,7 +91,13 @@ impl SmartMediaApp {
             ai_ready: false,
             settings_draft: None,
             file_explorer: Default::default(),
-            open_log_window: Default::default(),
+            open_tabs,
+            filtered_tabs: std::collections::HashMap::new(),
+        };
+
+        Self {
+            context,
+            tree,
         }
     }
 }
