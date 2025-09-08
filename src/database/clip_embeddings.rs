@@ -46,9 +46,9 @@ impl super::ClipEmbeddingRow {
                 FROM clip_embeddings
                 WHERE embedding <| 24, 64 |> $vec
                 ORDER BY dist
-                LIMIT $k
+                
                 FETCH thumb_ref
-                "#,
+                "#, // LIMIT $k
             )
             .bind(("vec", query_vec.to_vec()))
             .bind(("k", k as i64))
