@@ -5,7 +5,7 @@ use std::path::PathBuf;
 // Supported media extensions
 pub static IMAGE_EXTS: Lazy<Vec<&'static str>> = Lazy::new(|| {
     vec![
-        "jpg", "jpeg", "png", "gif", "bmp", "tiff", "webp", "heic", "heif", "avif",
+        "jpg", "jpeg", "png", "gif", "bmp", "tiff", "webp", "heic", "heif", "avif", "arw"
     ]
 });
 

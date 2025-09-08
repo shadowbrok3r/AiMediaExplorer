@@ -110,6 +110,23 @@ impl super::FileExplorer {
                     let _ = engine.hydrate_directory_paths(&paths).await;
                 });
             }
+            // Also check CLIP embeddings for the visible rows and update presence column
+            {
+                let rows: Vec<crate::database::Thumbnail> = self
+                    .table
+                    .iter()
+                    .filter(|r| r.file_type != "<DIR>")
+                    .cloned()
+                    .collect();
+                if !rows.is_empty() {
+                    let tx_clip = self.viewer.clip_embedding_tx.clone();
+                    tokio::spawn(async move {
+                        for r in rows.into_iter() {
+                            let _ = tx_clip.try_send(r.get_embedding().await.unwrap_or_default());
+                        }
+                    });
+                }
+            }
         }
 
         while let Ok(env) = self.scan_rx.try_recv() {
@@ -413,6 +430,21 @@ impl super::FileExplorer {
                         tokio::spawn(async move {
                             if let Err(e) = crate::database::save_thumbnail_batch(batch).await {
                                 log::error!("final scan batch persistence failed: {e}");
+                            }
+                        });
+                    }
+                    // Refresh CLIP presence for all visible rows now that thumbnails are ready
+                    let rows: Vec<crate::database::Thumbnail> = self
+                        .table
+                        .iter()
+                        .filter(|r| r.file_type != "<DIR>")
+                        .cloned()
+                        .collect();
+                    if !rows.is_empty() {
+                        let tx_clip = self.viewer.clip_embedding_tx.clone();
+                        tokio::spawn(async move {
+                            for r in rows.into_iter() {
+                                let _ = tx_clip.try_send(r.get_embedding().await.unwrap_or_default());
                             }
                         });
                     }

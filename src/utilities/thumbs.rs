@@ -5,22 +5,62 @@ use std::path::Path;
 
 pub fn generate_image_thumb_data(path: &Path) -> Result<String, String> {
     log::debug!("[thumb] generating image thumb: {}", path.display());
-    let img = image::open(path)
-    .map_err(|e| { 
-        log::warn!("[thumb] open image failed {}: {}", path.display(), e); e.to_string() 
-    })?;
+    let img = match image::open(path) {
+        Ok(img) => img,
+        Err(e) => {
+            // If the Rust image crate can't decode (e.g., RAW like .arw), try Windows Shell thumbnail as a fallback.
+            log::warn!(
+                "[thumb] open image failed {}: {}",
+                path.display(),
+                e
+            );
+            #[cfg(windows)]
+            {
+                match generate_shell_thumb_data(path) {
+                    Ok(data) => {
+                        log::debug!(
+                            "[thumb] windows shell fallback success for image: {}",
+                            path.display()
+                        );
+                        return Ok(data);
+                    }
+                    Err(fe) => {
+                        log::warn!(
+                            "[thumb] windows shell fallback failed {}: {}",
+                            path.display(),
+                            fe
+                        );
+                    }
+                }
+            }
+            return Err(e.to_string());
+        }
+    };
     let thumb = img.thumbnail(256, 256);
     let mut buf = Vec::new();
     thumb
         .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
-        .map_err(|e| { log::warn!("[thumb] encode png failed {}: {}", path.display(), e); e.to_string() })?;
+        .map_err(|e| {
+            log::warn!("[thumb] encode png failed {}: {}", path.display(), e);
+            e.to_string()
+        })?;
     let b64 = BASE64.encode(&buf);
-    log::debug!("[thumb] image thumb success: {} ({} bytes)", path.display(), buf.len());
+    log::debug!(
+        "[thumb] image thumb success: {} ({} bytes)",
+        path.display(),
+        buf.len()
+    );
     Ok(format!("data:image/png;base64,{}", b64))
 }
 
 #[cfg(windows)]
 pub fn generate_video_thumb_data(path: &Path) -> Result<String, String> {
+    generate_shell_thumb_data(path)
+}
+
+// Windows Shell generic thumbnail generator to cover formats not handled by the image crate (e.g., RAW like .arw)
+#[cfg(windows)]
+fn generate_shell_thumb_data(path: &Path) -> Result<String, String> {
     use std::os::windows::ffi::OsStrExt;
     use windows::{
         Win32::{
@@ -40,9 +80,8 @@ pub fn generate_video_thumb_data(path: &Path) -> Result<String, String> {
             .encode_wide()
             .chain(std::iter::once(0))
             .collect();
-        let shell_item: IShellItem =
-            SHCreateItemFromParsingName(PCWSTR(wide.as_ptr()), None::<&IBindCtx>)
-                .map_err(|e| format!("SHCreateItemFromParsingName: {e}"))?;
+        let shell_item: IShellItem = SHCreateItemFromParsingName(PCWSTR(wide.as_ptr()), None::<&IBindCtx>)
+            .map_err(|e| format!("SHCreateItemFromParsingName: {e}"))?;
         let factory: IShellItemImageFactory = shell_item
             .cast()
             .map_err(|e| format!("cast IShellItemImageFactory: {e}"))?;
@@ -50,7 +89,7 @@ pub fn generate_video_thumb_data(path: &Path) -> Result<String, String> {
             .GetImage(SIZE { cx: 256, cy: 256 }, SIIGBF(0))
             .map_err(|e| format!("GetImage: {e}"))?;
         let data = hbitmap_to_png_data_url(hbmp)?;
-        log::warn!("[thumb] video thumb success: {}", path.display());
+        log::debug!("[thumb] shell thumb success: {}", path.display());
         Ok(data)
     }
 }

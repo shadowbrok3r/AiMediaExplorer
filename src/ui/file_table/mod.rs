@@ -434,6 +434,9 @@ impl FileExplorer {
                         ui.menu_button("👁", |ui| {
                             ui.checkbox(&mut self.open_preview_pane, "Show Preview Pane");
                             ui.checkbox(&mut self.open_quick_access, "Show Quick Access (this panel)");
+                            ui.separator();
+                            ui.checkbox(&mut self.follow_active_vision, "Follow active vision (auto-select)")
+                                .on_hover_text("When enabled, the preview auto-selects the image currently being described.");
                             if ui.button("Group by Category").clicked() {
                                 // TODO implement grouping pipeline
                             }
@@ -520,7 +523,7 @@ impl FileExplorer {
                                 total_for_ratio
                             ))
                             .ui(ui);
-                        
+
                         ui.add_space(5.);
                         ui.separator();
                         ui.add_space(5.);
