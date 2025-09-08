@@ -8,9 +8,7 @@ use humansize::DECIMAL;
 use serde::Serialize;
 use eframe::egui::*;
 
-// Temporary global size filter placeholders (to be replaced by settings persistence)
-pub(super) static mut MIN_SIZE_MB: Option<u64> = None; // value stored in bytes (converted from MB input)
-pub(super) static mut MAX_SIZE_MB: Option<u64> = None; // value stored in bytes (converted from MB input)
+// Size filter inputs are now persisted via UiSettings; temporary globals removed.
 
 pub mod quick_access_pane;
 pub mod preview_pane;
@@ -154,6 +152,11 @@ pub struct FileExplorer {
     last_scan_paths: std::collections::HashSet<String>,
     #[serde(skip)]
     last_scan_root: Option<String>,
+    // Temporary text inputs for size filters (MB). Persisted to UiSettings on Apply.
+    #[serde(skip)]
+    pub min_size_mb_input: String,
+    #[serde(skip)]
+    pub max_size_mb_input: String,
 }
 
 impl Default for FileExplorer {
@@ -213,6 +216,8 @@ impl Default for FileExplorer {
             last_scan_rows: Vec::new(),
             last_scan_paths: std::collections::HashSet::new(),
             last_scan_root: None,
+            min_size_mb_input: String::new(),
+            max_size_mb_input: String::new(),
         };
         // Initial shallow directory population (non-recursive)
         this.populate_current_directory();
@@ -310,21 +315,49 @@ impl FileExplorer {
                             ui.label(RichText::new("Size Filters (MB)").italics());
                             ui.horizontal(|ui| {
                                 ui.label("Min:");
-                                // Use parent module statics
-                                let mut min_txt = unsafe { MIN_SIZE_MB.map(|v| (v / 1_000_000).to_string()).unwrap_or_default() };
-                                if ui.add(TextEdit::singleline(&mut min_txt).desired_width(60.)).lost_focus() { /* no-op */ }
-                                ui.label("Max:");
-                                let mut max_txt = unsafe { MAX_SIZE_MB.map(|v| (v / 1_000_000).to_string()).unwrap_or_default() };
-                                if ui.add(TextEdit::singleline(&mut max_txt).desired_width(60.)).lost_focus() { /* no-op */ }
-                                if ui.button("Apply").clicked() {
-                                    unsafe {
-                                        MIN_SIZE_MB = min_txt.trim().parse::<u64>().ok().map(|m| m * 1_000_000);
-                                        MAX_SIZE_MB = max_txt.trim().parse::<u64>().ok().map(|m| m * 1_000_000);
+                                if self.min_size_mb_input.is_empty() {
+                                    if let Some(b) = self.viewer.ui_settings.db_min_size_bytes {
+                                        self.min_size_mb_input = (b / 1_000_000).to_string();
                                     }
                                 }
-                                if ui.button("Clear").on_hover_text("Clear size constraints").clicked() {
-                                    unsafe { MIN_SIZE_MB = None; MAX_SIZE_MB = None; }
+                                let _ = ui.add(TextEdit::singleline(&mut self.min_size_mb_input).desired_width(60.));
+                                ui.label("Max:");
+                                if self.max_size_mb_input.is_empty() {
+                                    if let Some(b) = self.viewer.ui_settings.db_max_size_bytes {
+                                        self.max_size_mb_input = (b / 1_000_000).to_string();
+                                    }
                                 }
+                                let _ = ui.add(TextEdit::singleline(&mut self.max_size_mb_input).desired_width(60.));
+                                if ui.button("Apply").clicked() {
+                                    let min_parsed = self.min_size_mb_input.trim().parse::<u64>().ok().map(|m| m * 1_000_000);
+                                    let max_parsed = self.max_size_mb_input.trim().parse::<u64>().ok().map(|m| m * 1_000_000);
+                                    self.viewer.ui_settings.db_min_size_bytes = min_parsed;
+                                    self.viewer.ui_settings.db_max_size_bytes = max_parsed;
+                                    crate::database::settings::save_settings(&self.viewer.ui_settings);
+                                    // Immediately apply to current table by removing out-of-range rows
+                                    let minb = self.viewer.ui_settings.db_min_size_bytes;
+                                    let maxb = self.viewer.ui_settings.db_max_size_bytes;
+                                    self.table.retain(|r| {
+                                        if r.file_type == "<DIR>" { return true; }
+                                        let ok_min = minb.map(|m| r.size >= m).unwrap_or(true);
+                                        let ok_max = maxb.map(|m| r.size <= m).unwrap_or(true);
+                                        ok_min && ok_max
+                                    });
+                                }
+                                if ui.button("Clear").on_hover_text("Clear size constraints").clicked() {
+                                    self.min_size_mb_input.clear();
+                                    self.max_size_mb_input.clear();
+                                    self.viewer.ui_settings.db_min_size_bytes = None;
+                                    self.viewer.ui_settings.db_max_size_bytes = None;
+                                    crate::database::settings::save_settings(&self.viewer.ui_settings);
+                                }
+                            });
+                            ui.add_space(4.0);
+                            ui.label(RichText::new("Types").italics());
+                            ui.horizontal(|ui| {
+                                ui.checkbox(&mut self.viewer.types_show_images, "Images");
+                                ui.checkbox(&mut self.viewer.types_show_videos, "Videos");
+                                ui.checkbox(&mut self.viewer.types_show_dirs, "Folders");
                             });
                             ui.add_space(4.0);
                             ui.horizontal_wrapped(|ui| {
@@ -342,10 +375,10 @@ impl FileExplorer {
                                     let recurse = self.recursive_scan.clone();
                                     let mut filters = crate::Filters::default();
                                     filters.root = std::path::PathBuf::from(self.current_path.clone());
-                                    unsafe {
-                                        filters.min_size_bytes = MIN_SIZE_MB;
-                                        filters.max_size_bytes = MAX_SIZE_MB;
-                                    }
+                                    filters.min_size_bytes = self.viewer.ui_settings.db_min_size_bytes;
+                                    filters.max_size_bytes = self.viewer.ui_settings.db_max_size_bytes;
+                                    filters.include_images = self.viewer.types_show_images;
+                                    filters.include_videos = self.viewer.types_show_videos;
                                     filters.excluded_terms = self.excluded_terms.clone();
                                     // Remember current scan id so cancel can target it
                                     self.current_scan_id = Some(scan_id);
@@ -361,6 +394,9 @@ impl FileExplorer {
                                         if self.viewer.bulk_cancel_requested { break; }
                                         if row.file_type == "<DIR>" { continue; }
                                         if let Some(ext) = std::path::Path::new(&row.path).extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()) { if !crate::is_image(ext.as_str()) { continue; } } else { continue; }
+                                        // Respect size bounds
+                                        if let Some(minb) = self.viewer.ui_settings.db_min_size_bytes { if row.size < minb { continue; } }
+                                        if let Some(maxb) = self.viewer.ui_settings.db_max_size_bytes { if row.size > maxb { continue; } }
                                         if row.caption.is_some() || row.description.is_some() { continue; }
                                         let path_str = row.path.clone();
                                         let path_str_clone = path_str.clone();
@@ -393,9 +429,20 @@ impl FileExplorer {
                                 }
                                 if ui.button("Generate Missing CLIP Embeddings").clicked() {
                                     // Collect all image paths currently visible in the table (current directory / DB page)
+                                    let minb = self.viewer.ui_settings.db_min_size_bytes;
+                                    let maxb = self.viewer.ui_settings.db_max_size_bytes;
                                     let paths: Vec<String> = self
                                         .table
                                         .iter()
+                                        .filter(|r| {
+                                            if r.file_type == "<DIR>" { return false; }
+                                            if let Some(ext) = std::path::Path::new(&r.path).extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()) {
+                                                if !crate::is_image(ext.as_str()) { return false; }
+                                            } else { return false; }
+                                            let ok_min = minb.map(|m| r.size >= m).unwrap_or(true);
+                                            let ok_max = maxb.map(|m| r.size <= m).unwrap_or(true);
+                                            ok_min && ok_max
+                                        })
                                         .map(|r| r.path.clone())
                                         .collect();
                                     tokio::spawn(async move {
@@ -437,6 +484,13 @@ impl FileExplorer {
                             ui.separator();
                             ui.checkbox(&mut self.follow_active_vision, "Follow active vision (auto-select)")
                                 .on_hover_text("When enabled, the preview auto-selects the image currently being described.");
+                            ui.separator();
+                            ui.label(RichText::new("File Types").italics());
+                            ui.horizontal(|ui| {
+                                ui.checkbox(&mut self.viewer.types_show_images, "Images");
+                                ui.checkbox(&mut self.viewer.types_show_videos, "Videos");
+                                ui.checkbox(&mut self.viewer.types_show_dirs, "Folders");
+                            });
                             if ui.button("Group by Category").clicked() {
                                 // TODO implement grouping pipeline
                             }

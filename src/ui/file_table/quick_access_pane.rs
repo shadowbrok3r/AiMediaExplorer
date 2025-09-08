@@ -28,20 +28,43 @@ impl super::FileExplorer {
                                 ui.label(RichText::new("Size Filters (MB)").italics());
                                 ui.horizontal(|ui| {
                                     ui.label("Min:");
-                                    // Use parent module statics
-                                    let mut min_txt = unsafe { super::MIN_SIZE_MB.map(|v| (v / 1_000_000).to_string()).unwrap_or_default() };
-                                    if ui.add(TextEdit::singleline(&mut min_txt).desired_width(60.)).lost_focus() { /* no-op */ }
-                                    ui.label("Max:");
-                                    let mut max_txt = unsafe { super::MAX_SIZE_MB.map(|v| (v / 1_000_000).to_string()).unwrap_or_default() };
-                                    if ui.add(TextEdit::singleline(&mut max_txt).desired_width(60.)).lost_focus() { /* no-op */ }
-                                    if ui.button("Apply").clicked() {
-                                        unsafe {
-                                            super::MIN_SIZE_MB = min_txt.trim().parse::<u64>().ok().map(|m| m * 1_000_000);
-                                            super::MAX_SIZE_MB = max_txt.trim().parse::<u64>().ok().map(|m| m * 1_000_000);
+                                    // Initialize inputs lazily from settings if empty
+                                    if self.min_size_mb_input.is_empty() {
+                                        if let Some(b) = self.viewer.ui_settings.db_min_size_bytes {
+                                            self.min_size_mb_input = (b / 1_000_000).to_string();
                                         }
                                     }
+                                    let _ = ui.add(TextEdit::singleline(&mut self.min_size_mb_input).desired_width(60.));
+                                    ui.label("Max:");
+                                    if self.max_size_mb_input.is_empty() {
+                                        if let Some(b) = self.viewer.ui_settings.db_max_size_bytes {
+                                            self.max_size_mb_input = (b / 1_000_000).to_string();
+                                        }
+                                    }
+                                    let _ = ui.add(TextEdit::singleline(&mut self.max_size_mb_input).desired_width(60.));
+                                    if ui.button("Apply").clicked() {
+                                        // Parse MB -> bytes, update settings and persist
+                                        let min_parsed = self.min_size_mb_input.trim().parse::<u64>().ok().map(|m| m * 1_000_000);
+                                        let max_parsed = self.max_size_mb_input.trim().parse::<u64>().ok().map(|m| m * 1_000_000);
+                                        self.viewer.ui_settings.db_min_size_bytes = min_parsed;
+                                        self.viewer.ui_settings.db_max_size_bytes = max_parsed;
+                                        crate::database::settings::save_settings(&self.viewer.ui_settings);
+                                        // Immediately apply to current table (remove rows out of range)
+                                        let minb = self.viewer.ui_settings.db_min_size_bytes;
+                                        let maxb = self.viewer.ui_settings.db_max_size_bytes;
+                                        self.table.retain(|r| {
+                                            if r.file_type == "<DIR>" { return true; }
+                                            let ok_min = minb.map(|m| r.size >= m).unwrap_or(true);
+                                            let ok_max = maxb.map(|m| r.size <= m).unwrap_or(true);
+                                            ok_min && ok_max
+                                        });
+                                    }
                                     if ui.button("Clear").on_hover_text("Clear size constraints").clicked() {
-                                        unsafe { super::MIN_SIZE_MB = None; super::MAX_SIZE_MB = None; }
+                                        self.min_size_mb_input.clear();
+                                        self.max_size_mb_input.clear();
+                                        self.viewer.ui_settings.db_min_size_bytes = None;
+                                        self.viewer.ui_settings.db_max_size_bytes = None;
+                                        crate::database::settings::save_settings(&self.viewer.ui_settings);
                                     }
                                 });
                                 ui.add_space(4.0);
@@ -60,10 +83,10 @@ impl super::FileExplorer {
                                         let recurse = self.recursive_scan.clone();
                                         let mut filters = Filters::default();
                                         filters.root = PathBuf::from(self.current_path.clone());
-                                        unsafe {
-                                            filters.min_size_bytes = super::MIN_SIZE_MB;
-                                            filters.max_size_bytes = super::MAX_SIZE_MB;
-                                        }
+                                        filters.min_size_bytes = self.viewer.ui_settings.db_min_size_bytes;
+                                        filters.max_size_bytes = self.viewer.ui_settings.db_max_size_bytes;
+                                        filters.include_images = self.viewer.types_show_images;
+                                        filters.include_videos = self.viewer.types_show_videos;
                                         filters.excluded_terms = self.excluded_terms.clone();
                                         // Remember current scan id so cancel can target it
                                         self.current_scan_id = Some(scan_id);
@@ -79,6 +102,9 @@ impl super::FileExplorer {
                                             if self.viewer.bulk_cancel_requested { break; }
                                             if row.file_type == "<DIR>" { continue; }
                                             if let Some(ext) = Path::new(&row.path).extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()) { if !crate::is_image(ext.as_str()) { continue; } } else { continue; }
+                                            // Respect size constraints
+                                            if let Some(minb) = self.viewer.ui_settings.db_min_size_bytes { if row.size < minb { continue; } }
+                                            if let Some(maxb) = self.viewer.ui_settings.db_max_size_bytes { if row.size > maxb { continue; } }
                                             if row.caption.is_some() || row.description.is_some() { continue; }
                                             let path_str = row.path.clone();
                                             let path_str_clone = path_str.clone();
@@ -111,9 +137,20 @@ impl super::FileExplorer {
                                     }
                                     if ui.button("Generate Missing CLIP Embeddings").clicked() {
                                         // Collect all image paths currently visible in the table (current directory / DB page)
+                                        let minb = self.viewer.ui_settings.db_min_size_bytes;
+                                        let maxb = self.viewer.ui_settings.db_max_size_bytes;
                                         let paths: Vec<String> = self
                                             .table
                                             .iter()
+                                            .filter(|r| {
+                                                if r.file_type == "<DIR>" { return false; }
+                                                if let Some(ext) = Path::new(&r.path).extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()) {
+                                                    if !crate::is_image(ext.as_str()) { return false; }
+                                                } else { return false; }
+                                                let ok_min = minb.map(|m| r.size >= m).unwrap_or(true);
+                                                let ok_max = maxb.map(|m| r.size <= m).unwrap_or(true);
+                                                ok_min && ok_max
+                                            })
                                             .map(|r| r.path.clone())
                                             .collect();
                                         tokio::spawn(async move {

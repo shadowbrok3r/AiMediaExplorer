@@ -17,6 +17,56 @@ impl crate::ai::AISearchEngine {
             return None;
         }
 
+        // Prefer a decoded, standard image when input is a RAW file (e.g., .arw on Windows)
+        let ext = image_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default();
+
+        // For ARW, first try a RAW decoder (if available), then Windows Shell PNG (on Windows)
+        if ext.as_str() == "arw" {
+            match crate::utilities::raw_decode::decode_raw_to_png_bytes(image_path.as_path(), 1024) {
+                Ok(png_bytes) => {
+                    let instruction = "Analyze the supplied image and return JSON with keys: description, caption, tags (array), category.";
+                    match crate::ai::joycap::stream_describe_bytes(png_bytes, instruction).await {
+                        Ok(full) => {
+                            log::info!("[joycaption.stream] collected {} chars (rawkit PNG)", full.len());
+                            if let Some(vd) = crate::ai::joycap::extract_json_vision(&full)
+                                .and_then(|v| serde_json::from_value::<VisionDescription>(v).ok())
+                            {
+                                return Some(vd);
+                            }
+                        }
+                        Err(e) => log::warn!("stream_describe_bytes(rawkit PNG) failed: {e}"),
+                    }
+                }
+                Err(e) => {
+                    log::warn!("raw decode to PNG failed for {:?}: {}", image_path, e);
+                    #[cfg(windows)]
+                    {
+                        match crate::utilities::thumbs::generate_shell_png_bytes(image_path.as_path(), 768) {
+                            Ok(png_bytes) => {
+                                let instruction = "Analyze the supplied image and return JSON with keys: description, caption, tags (array), category.";
+                                match crate::ai::joycap::stream_describe_bytes(png_bytes, instruction).await {
+                                    Ok(full) => {
+                                        log::info!("[joycaption.stream] collected {} chars (shell PNG)", full.len());
+                                        if let Some(vd) = crate::ai::joycap::extract_json_vision(&full)
+                                            .and_then(|v| serde_json::from_value::<VisionDescription>(v).ok())
+                                        {
+                                            return Some(vd);
+                                        }
+                                    }
+                                    Err(e) => log::warn!("stream_describe_bytes(shell PNG) failed: {e}"),
+                                }
+                            }
+                            Err(e) => log::warn!("generate_shell_png_bytes failed for {:?}: {}", image_path, e),
+                        }
+                    }
+                }
+            }
+        }
+
         match tokio::fs::read(image_path).await {
             Ok(bytes) if !bytes.is_empty() => {
                 let instruction = "Analyze the supplied image and return JSON with keys: description, caption, tags (array), category.";

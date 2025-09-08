@@ -5560,6 +5560,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
 
 [[package]]
+name = "rawkit"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e397e78b5ebb24f7f20579ae91404b6556747e2192713d5d68e13fb333df41fb"
+dependencies = [
+ "bitstream-io",
+ "num_enum",
+ "rawkit-proc-macros",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "rawkit-proc-macros"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c66e919ebbf0db2bd353ba2b4454ae9e1b8a795d3b81a49002a75083870f86e6"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.106",
+ "toml",
+]
+
+[[package]]
 name = "rawpointer"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6508,6 +6532,7 @@ dependencies = [
  "once_cell",
  "open",
  "ort",
+ "rawkit",
  "rayon",
  "regex",
  "rfd",
@@ -7439,8 +7464,15 @@ dependencies = [
  "serde",
  "serde_spanned",
  "toml_datetime",
+ "toml_write",
  "winnow",
 ]
+
+[[package]]
+name = "toml_write"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 
 [[package]]
 name = "tower"

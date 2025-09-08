@@ -149,7 +149,7 @@ pub fn load_settings() -> UiSettings {
     });
     // Return cached if set
     if let Some(cached) = SETTINGS_CACHE.lock().unwrap().clone() {
-        log::error!("Got cached ui settings: {:?}", cached.clip_model);
+        // log::error!("Got cached ui settings: {:?}", cached.clip_model);
         return cached;
     } else {
         log::error!("Using UiSettings::default()");

@@ -196,3 +196,109 @@ pub fn file_to_thumbnail(f: &crate::utilities::types::FoundFile) -> Option<crate
         parent_dir
     })
 }
+
+// Windows Shell: return PNG bytes for any shell-supported preview (e.g., RAW like .arw)
+#[cfg(windows)]
+pub fn generate_shell_png_bytes(path: &Path, size: i32) -> Result<Vec<u8>, String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::{
+        Win32::{
+            Foundation::SIZE,
+            System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, IBindCtx},
+            UI::Shell::{IShellItem, IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF},
+        },
+        core::{Interface, PCWSTR},
+    };
+
+    unsafe {
+        CoInitializeEx(None, COINIT_APARTMENTTHREADED)
+            .ok()
+            .map_err(|e| format!("CoInitializeEx: {e}"))?;
+        let wide: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let shell_item: IShellItem = SHCreateItemFromParsingName(PCWSTR(wide.as_ptr()), None::<&IBindCtx>)
+            .map_err(|e| format!("SHCreateItemFromParsingName: {e}"))?;
+        let factory: IShellItemImageFactory = shell_item
+            .cast()
+            .map_err(|e| format!("cast IShellItemImageFactory: {e}"))?;
+        let hbmp: windows::Win32::Graphics::Gdi::HBITMAP = factory
+            .GetImage(SIZE { cx: size, cy: size }, SIIGBF(0))
+            .map_err(|e| format!("GetImage: {e}"))?;
+        let png = hbitmap_to_png_bytes(hbmp)?;
+        Ok(png)
+    }
+}
+
+#[cfg(windows)]
+fn hbitmap_to_png_bytes(
+    hbmp: windows::Win32::Graphics::Gdi::HBITMAP,
+) -> Result<Vec<u8>, String> {
+    use windows::Win32::Graphics::Gdi::*;
+    let mut bmp = BITMAP::default();
+    if unsafe {
+        GetObjectW(
+            HGDIOBJ(hbmp.0),
+            std::mem::size_of::<BITMAP>() as i32,
+            Some(&mut bmp as *mut _ as *mut _),
+        )
+    } == 0
+    {
+        let _ = unsafe { DeleteObject(HGDIOBJ(hbmp.0)) };
+        return Err("GetObjectW failed".into());
+    }
+    let width = bmp.bmWidth as i32;
+    let height = bmp.bmHeight as i32;
+    let mut bi = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: width,
+            biHeight: -height,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: 0,
+            biSizeImage: 0,
+            biXPelsPerMeter: 0,
+            biYPelsPerMeter: 0,
+            biClrUsed: 0,
+            biClrImportant: 0,
+        },
+        bmiColors: Default::default(),
+    };
+    let stride = (width * 4) as usize;
+    let mut buffer = vec![0u8; (stride * height as usize) as usize];
+    let hdc: HDC = unsafe { CreateCompatibleDC(None) };
+    if hdc.0.is_null() {
+        let _ = unsafe { DeleteObject(HGDIOBJ(hbmp.0)) };
+        return Err("CreateCompatibleDC failed".into());
+    }
+    let _old = unsafe { SelectObject(hdc, HGDIOBJ(hbmp.0)) };
+    let got = unsafe {
+        GetDIBits(
+            hdc,
+            hbmp,
+            0,
+            height as u32,
+            Some(buffer.as_mut_ptr() as *mut _),
+            &mut bi as *mut _,
+            DIB_RGB_COLORS,
+        )
+    };
+    let _ = unsafe { DeleteDC(hdc) };
+    let _ = unsafe { DeleteObject(HGDIOBJ(hbmp.0)) };
+    if got == 0 {
+        return Err("GetDIBits failed".into());
+    }
+    for px in buffer.chunks_exact_mut(4) {
+        px.swap(0, 2);
+    }
+    let img = image::RgbaImage::from_raw(width as u32, height as u32, buffer)
+        .ok_or("rgba from raw failed")?;
+    let mut png = Vec::new();
+    DynamicImage::ImageRgba8(img)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .map_err(|e| e.to_string())?;
+    Ok(png)
+}

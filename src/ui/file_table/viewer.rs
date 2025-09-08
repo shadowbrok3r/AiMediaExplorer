@@ -48,6 +48,10 @@ pub struct FileTableViewer {
     // Track which paths have a CLIP embedding
     #[serde(skip)]
     pub clip_presence: std::collections::HashSet<String>,
+    // Type visibility toggles (UI): affect table view filtering and scans
+    pub types_show_images: bool,
+    pub types_show_videos: bool,
+    pub types_show_dirs: bool,
 }
 
 impl FileTableViewer {
@@ -67,6 +71,9 @@ impl FileTableViewer {
             showing_similarity: false,
             similar_scores: HashMap::new(),
             clip_presence: std::collections::HashSet::new(),
+            types_show_images: true,
+            types_show_videos: true,
+            types_show_dirs: true,
         }
     }
 }
@@ -123,9 +130,19 @@ impl RowViewer<Thumbnail> for FileTableViewer {
     fn filter_row(&mut self, row: &Thumbnail) -> bool {
         match self.mode {
             ExplorerMode::FileSystem | ExplorerMode::Database => {
-                if self.filter.trim().is_empty() {
-                    return true;
+                // Apply simple type visibility (view-only) before text search
+                if row.file_type == "<DIR>" && !self.types_show_dirs { return false; }
+                if row.file_type != "<DIR>" {
+                    let ext_opt = std::path::Path::new(&row.path)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|s| s.to_ascii_lowercase());
+                    if let Some(ext) = ext_opt {
+                        if crate::is_image(ext.as_str()) && !self.types_show_images { return false; }
+                        if crate::is_video(ext.as_str()) && !self.types_show_videos { return false; }
+                    }
                 }
+                if self.filter.trim().is_empty() { return true; }
                 let f = self.filter.to_lowercase();
                 let tags_join = row.tags.join(",");
                 row.filename.to_lowercase().contains(&f)
@@ -572,6 +589,9 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                     if self.bulk_cancel_requested { break; }
                     if row.file_type == "<DIR>" { continue; }
                     if let Some(ext) = Path::new(&row.path).extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()) { if !crate::is_image(ext.as_str()) { continue; } } else { continue; }
+                    // Respect size bounds from UiSettings
+                    if let Some(minb) = self.ui_settings.db_min_size_bytes { if row.size < minb { continue; } }
+                    if let Some(maxb) = self.ui_settings.db_max_size_bytes { if row.size > maxb { continue; } }
                     if row.caption.is_some() || row.description.is_some() { continue; }
                     let path_str = row.path.clone();
                     let path_str_clone = path_str.clone();
@@ -598,6 +618,9 @@ impl RowViewer<Thumbnail> for FileTableViewer {
             "generate_clip_embeddings" => {
                 for (_, row) in ctx.selection.selected_rows.clone() {
                     let path = row.path.clone();
+                    // Skip if outside size bounds
+                    if let Some(minb) = self.ui_settings.db_min_size_bytes { if row.size < minb { continue; } }
+                    if let Some(maxb) = self.ui_settings.db_max_size_bytes { if row.size > maxb { continue; } }
                     let thumb = row.clone();
                     let tx = self.clip_embedding_tx.clone();
                     tokio::spawn(async move {
