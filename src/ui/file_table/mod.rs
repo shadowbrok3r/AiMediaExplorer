@@ -1,14 +1,13 @@
+use crate::{ScanEnvelope, Thumbnail, utilities::windows::{gpu_mem_mb, system_mem_mb, smoothed_cpu01, smoothed_ram01, smoothed_vram01}};
+use egui::{containers::menu::{MenuButton, MenuConfig}, style::StyleModifier};
 use std::{borrow::Cow, collections::HashMap, sync::Arc};
 use crossbeam::channel::{Receiver, Sender};
-use egui::{containers::menu::{MenuButton, MenuConfig}, style::StyleModifier};
-use crate::{ScanEnvelope, Thumbnail, utilities::windows::{gpu_mem_mb, system_mem_mb, smoothed_cpu01, smoothed_ram01, smoothed_vram01}};
+use std::sync::{Mutex, OnceLock};
 use egui_data_table::Renderer;
 use viewer::FileTableViewer;
 use humansize::DECIMAL;
 use serde::Serialize;
 use eframe::egui::*;
-
-// Size filter inputs are now persisted via UiSettings; temporary globals removed.
 
 pub mod quick_access_pane;
 pub mod preview_pane;
@@ -16,6 +15,17 @@ pub mod explorer;
 pub mod receive;
 pub mod viewer;
 pub mod codec;
+
+// Global accessor for the current active logical group name to be used by viewer context menu actions.
+static ACTIVE_GROUP_NAME: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+pub fn active_group_name() -> Option<String> {
+    ACTIVE_GROUP_NAME
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+}
+
 
 // Request to open a new filtered tab in the dock
 #[derive(Clone, Debug)]
@@ -26,6 +36,15 @@ pub enum FilterRequest {
         // Optional: mark this tab as a similarity-results view and attach scores
         showing_similarity: bool,
         similar_scores: Option<std::collections::HashMap<String, f32>>,
+    // Open without focusing the new tab
+    background: bool,
+    },
+    OpenPath {
+        title: String,
+        path: String,
+        recursive: bool,
+    // Open without focusing the new tab
+    background: bool,
     },
 }
 
@@ -47,25 +66,6 @@ pub enum AIUpdate {
         origin_path: String,
         results: Vec<SimilarResult>,
     },
-}
-
-fn _load_png_as_white_lineart(path: &std::path::Path) -> ColorImage {
-    use image::GenericImageView;
-    let dyn_img = image::ImageReader::open(path).unwrap().decode().unwrap();
-    let (w, h) = dyn_img.dimensions();
-    let pixels = vec![Color32::WHITE; w as usize * h as usize]; // fill every pixel
-    let mut out = ColorImage::new([w as usize, h as usize], pixels);
-
-    for (x, y, pixel) in dyn_img.pixels() {
-        let image::Rgba([r, g, b, a]) = pixel;
-        // If it's “near black” but visible, make it white, keep alpha
-        if a > 0 && r < 32 && g < 32 && b < 32 {
-            out[(x as usize, y as usize)] = Color32::from_rgba_unmultiplied(255, 255, 255, a);
-        } else {
-            out[(x as usize, y as usize)] = Color32::from_rgba_unmultiplied(r, g, b, a);
-        }
-    }
-    out
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -175,6 +175,35 @@ pub struct FileExplorer {
     filter_groups_tx: Sender<Vec<crate::database::FilterGroup>>,
     #[serde(skip)]
     filter_groups_rx: Receiver<Vec<crate::database::FilterGroup>>,
+    // Logical group navigation
+    pub active_logical_group_name: Option<String>,
+    #[serde(skip)]
+    logical_groups: Vec<crate::database::LogicalGroup>,
+    #[serde(skip)]
+    logical_groups_tx: Sender<Vec<crate::database::LogicalGroup>>,
+    #[serde(skip)]
+    logical_groups_rx: Receiver<Vec<crate::database::LogicalGroup>>,
+    // Prefetch throttle for logical groups when DB becomes ready after construction
+    #[serde(skip)]
+    last_groups_fetch_attempt: Option<std::time::Instant>,
+    // UI state: group management
+    #[serde(skip)]
+    group_create_name_input: String,
+    #[serde(skip)]
+    group_rename_target: Option<String>,
+    #[serde(skip)]
+    group_rename_input: String,
+    // UI fields for group operations
+    #[serde(skip)]
+    group_add_target: String,
+    #[serde(skip)]
+    group_add_view_target: String,
+    #[serde(skip)]
+    group_copy_src: String,
+    #[serde(skip)]
+    group_copy_dst: String,
+    #[serde(skip)]
+    group_add_unassigned_target: String,
 }
 
 impl FileExplorer {
@@ -184,7 +213,8 @@ impl FileExplorer {
         let (scan_tx, scan_rx) = crossbeam::channel::unbounded();
         let (ai_update_tx, ai_update_rx) = crossbeam::channel::unbounded();
         let (clip_embedding_tx, clip_embedding_rx) = crossbeam::channel::unbounded();
-        let (db_preload_tx, db_preload_rx) = crossbeam::channel::unbounded();
+    let (db_preload_tx, db_preload_rx) = crossbeam::channel::unbounded();
+    let (logical_groups_tx, logical_groups_rx) = crossbeam::channel::unbounded();
     let (filter_groups_tx, filter_groups_rx) = crossbeam::channel::unbounded();
         let current_path = directories::UserDirs::new()
             .unwrap()
@@ -242,6 +272,19 @@ impl FileExplorer {
             filter_groups: Vec::new(),
             filter_groups_tx,
             filter_groups_rx,
+            active_logical_group_name: None,
+            logical_groups: Vec::new(),
+            logical_groups_tx,
+            logical_groups_rx,
+            last_groups_fetch_attempt: None,
+            group_create_name_input: String::new(),
+            group_rename_target: None,
+            group_rename_input: String::new(),
+            group_add_target: String::new(),
+            group_add_view_target: String::new(),
+            group_copy_src: String::new(),
+            group_copy_dst: String::new(),
+            group_add_unassigned_target: String::new(),
         };
         // Preload saved filter groups
         {
@@ -253,10 +296,55 @@ impl FileExplorer {
                 }
             });
         }
+        // Preload logical groups list
+        {
+            let tx = this.logical_groups_tx.clone();
+            tokio::spawn(async move {
+                match crate::database::LogicalGroup::list_all().await {
+                    Ok(groups) => { let _ = tx.try_send(groups); },
+                    Err(e) => log::debug!("No logical groups yet or failed to load: {e:?}"),
+                }
+            });
+        }
         if !skip_initial_scan {
             this.populate_current_directory();
         }
         this
+    }
+
+    /// Initialize this explorer to open a specific path in a new tab, optionally performing a recursive scan.
+    /// This encapsulates internal state and avoids external code touching private fields.
+    pub fn init_open_path(&mut self, path: &str, recursive: bool) {
+        self.current_path = path.to_string();
+        // reset view state
+        self.viewer.showing_similarity = false;
+        self.viewer.similar_scores.clear();
+        self.table.clear();
+        if recursive {
+            self.recursive_scan = true;
+            self.scan_done = false;
+            self.file_scan_progress = 0.0;
+            // Reset previous scan snapshot
+            self.last_scan_rows.clear();
+            self.last_scan_paths.clear();
+            self.last_scan_root = Some(self.current_path.clone());
+            // Spawn recursive scan with current filters
+            let scan_id = crate::next_scan_id();
+            let tx = self.scan_tx.clone();
+            let mut filters = crate::Filters::default();
+            filters.root = std::path::PathBuf::from(self.current_path.clone());
+            filters.min_size_bytes = self.viewer.ui_settings.db_min_size_bytes;
+            filters.max_size_bytes = self.viewer.ui_settings.db_max_size_bytes;
+            filters.include_images = self.viewer.types_show_images;
+            filters.include_videos = self.viewer.types_show_videos;
+            filters.skip_icons = self.viewer.ui_settings.filter_skip_icons;
+            filters.excluded_terms = self.excluded_terms.clone();
+            self.current_scan_id = Some(scan_id);
+            tokio::spawn(async move { crate::spawn_scan(filters, tx, true, scan_id).await; });
+        } else {
+            // Shallow scan / directory populate
+            self.populate_current_directory();
+        }
     }
     
     pub fn set_rows(&mut self, rows: Vec<crate::database::Thumbnail>) {
@@ -264,6 +352,7 @@ impl FileExplorer {
         self.table.clear();
         for r in rows.into_iter() { self.table.push(r); }
     }
+    
     // Set the table rows from DB results and switch to Database viewing mode
     pub fn set_rows_from_db(&mut self, rows: Vec<crate::database::Thumbnail>) {
         self.viewer.mode = viewer::ExplorerMode::Database;
@@ -273,9 +362,50 @@ impl FileExplorer {
 
     pub fn ui(&mut self, ui: &mut Ui) {
         self.receive(ui.ctx());
+        // Keep global active group name snapshot in sync for viewer context menu
+        {
+            let guard = ACTIVE_GROUP_NAME.get_or_init(|| Mutex::new(None));
+            if let Ok(mut g) = guard.lock() { *g = self.active_logical_group_name.clone(); }
+        }
         // Integrate any freshly loaded filter groups
         while let Ok(groups) = self.filter_groups_rx.try_recv() {
             self.filter_groups = groups;
+        }
+        // Integrate any freshly loaded logical groups
+        while let Ok(groups) = self.logical_groups_rx.try_recv() {
+            self.logical_groups = groups;
+            if self.logical_groups.is_empty() {
+                // Ensure at least Default exists, then refresh list
+                let tx = self.logical_groups_tx.clone();
+                tokio::spawn(async move {
+                    let _ = crate::database::LogicalGroup::create("Default").await;
+                    if let Ok(groups) = crate::database::LogicalGroup::list_all().await { let _ = tx.try_send(groups); }
+                });
+            } else if self.active_logical_group_name.is_none() {
+                // Choose a sensible default: previously used from settings or first available
+                let preferred = crate::ui::file_table::active_group_name();
+                if let Some(name) = preferred {
+                    if self.logical_groups.iter().any(|g| g.name == name) { self.active_logical_group_name = Some(name); }
+                }
+                if self.active_logical_group_name.is_none() {
+                    self.active_logical_group_name = Some(self.logical_groups[0].name.clone());
+                }
+            }
+        }
+        // If DB became ready after construction and list is empty, try fetching groups automatically (no manual refresh needed)
+        if self.logical_groups.is_empty() {
+            let now = std::time::Instant::now();
+            let should = match self.last_groups_fetch_attempt {
+                None => true,
+                Some(t) => now.duration_since(t) > std::time::Duration::from_secs(2),
+            };
+            if should {
+                self.last_groups_fetch_attempt = Some(now);
+                let tx = self.logical_groups_tx.clone();
+                tokio::spawn(async move {
+                    if let Ok(groups) = crate::database::LogicalGroup::list_all().await { let _ = tx.try_send(groups); }
+                });
+            }
         }
         self.preview_pane(ui);
         self.quick_access_pane(ui);
@@ -321,7 +451,11 @@ impl FileExplorer {
                 .ui(ui);
 
                 match self.viewer.mode {
-                    viewer::ExplorerMode::FileSystem => {},
+                    viewer::ExplorerMode::FileSystem => {
+                        if path_edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                            self.refresh();
+                        }
+                    },
                     viewer::ExplorerMode::Database => {
                         let mut ai_box = self.ai_search_enabled;
                         if ui.checkbox(&mut ai_box, "AI").on_hover_text("Use AI semantic search across the database (text prompt)").clicked() {
@@ -598,7 +732,7 @@ impl FileExplorer {
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
                             ui.label(RichText::new("Saved filter groups").italics());
-                            if ui.small_button("Refresh").clicked() {
+                            if ui.button("⟲ Refresh").clicked() {
                                 let tx = self.filter_groups_tx.clone();
                                 tokio::spawn(async move {
                                     match crate::database::list_filter_groups().await {
@@ -616,7 +750,7 @@ impl FileExplorer {
                                 for g in groups.iter() {
                                     ui.horizontal(|ui| {
                                         ui.label(&g.name);
-                                        if ui.small_button("Apply").on_hover_text("Apply this filter group to settings and current table").clicked() {
+                                        if ui.button("Apply").on_hover_text("Apply this filter group to settings and current table").clicked() {
                                             // Apply toggles and settings
                                             self.viewer.types_show_images = g.include_images;
                                             self.viewer.types_show_videos = g.include_videos;
@@ -631,7 +765,7 @@ impl FileExplorer {
                                             // Prune current table with the newly applied filters
                                             self.apply_filters_to_current_table();
                                         }
-                                        if ui.small_button("Delete").on_hover_text("Delete this saved group").clicked() {
+                                        if ui.button("Delete").on_hover_text("Delete this saved group").clicked() {
                                             let name = g.name.clone();
                                             let name_for_spawn = name.clone();
                                             let tx = self.filter_groups_tx.clone();
@@ -686,6 +820,18 @@ impl FileExplorer {
                         ui.separator();
                         ui.checkbox(&mut self.follow_active_vision, "Follow active vision (auto-select)")
                             .on_hover_text("When enabled, the preview auto-selects the image currently being described.");
+                        ui.separator();
+                        // Auto-save to DB toggle (persisted)
+                        let mut auto_save = self.viewer.ui_settings.auto_save_to_database;
+                        if ui.checkbox(&mut auto_save, "Auto save to database").on_hover_text("When enabled, newly discovered files will be saved to the database automatically (requires an active logical group)").changed() {
+                            self.viewer.ui_settings.auto_save_to_database = auto_save;
+                            crate::database::settings::save_settings(&self.viewer.ui_settings);
+                        }
+                        if self.active_logical_group_name.is_none() {
+                            ui.colored_label(Color32::YELLOW, "No active logical group. Auto save and indexing are gated.");
+                        } else {
+                            ui.colored_label(Color32::LIGHT_GREEN, format!("Active Group: {}", self.active_logical_group_name.clone().unwrap_or_default()));
+                        }
 
                     });
                     TextEdit::singleline(&mut self.viewer.filter)
@@ -756,6 +902,44 @@ impl FileExplorer {
                 
                             if Button::new("Cancel Scan").right_text(RichText::new("■").color(ui.style().visuals.error_fg_color)).ui(ui).on_hover_text("Cancel active recursive scan").clicked() {
                                 if let Some(id) = self.current_scan_id.take() { crate::utilities::scan::cancel_scan(id); }
+                            }
+                            ui.separator();
+                            ui.heading("Database Save");
+                            if ui.button("Save Current View to DB").on_hover_text("Upsert all currently visible rows into the database and add them to the active logical group").clicked() {
+                                if let Some(group_name) = self.active_logical_group_name.clone() {
+                                    let rows: Vec<crate::database::Thumbnail> = self
+                                        .table
+                                        .iter()
+                                        .filter(|r| r.file_type != "<DIR>")
+                                        .cloned()
+                                        .collect();
+                                    if !rows.is_empty() {
+                                        tokio::spawn(async move {
+                                            // Upsert rows and collect ids
+                                            match crate::database::upsert_rows_and_get_ids(rows).await {
+                                                Ok(ids) => {
+                                                    // Find the group and add ids
+                                                    match crate::database::LogicalGroup::get_by_name(&group_name).await {
+                                                        Ok(Some(g)) => {
+                                                            if let Some(gid) = g.id.as_ref() {
+                                                                if let Err(e) = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await {
+                                                                    log::error!("Add thumbs to group failed: {e:?}");
+                                                                } else {
+                                                                    log::info!("Saved {} rows to DB and associated with group '{}'", ids.len(), group_name);
+                                                                }
+                                                            }
+                                                        }
+                                                        Ok(None) => log::warn!("Active group '{}' not found during save", group_name),
+                                                        Err(e) => log::error!("get_by_name failed: {e:?}"),
+                                                    }
+                                                }
+                                                Err(e) => log::error!("Upsert rows failed: {e:?}"),
+                                            }
+                                        });
+                                    }
+                                } else {
+                                    log::warn!("Save skipped: no active logical group selected");
+                                }
                             }
                             
                             if !self.last_scan_rows.is_empty() {
@@ -877,6 +1061,323 @@ impl FileExplorer {
                             ui.label(format!("Loaded Rows: {} (offset {})", self.table.len(), self.db_offset));
                             if self.db_loading { ui.colored_label(Color32::YELLOW, "Loading..."); }
                         }
+                    });
+
+                    let style = StyleModifier::default();
+                    style.apply(ui.style_mut());
+                    MenuButton::new("Logical Groups")
+                    .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside).style(style))
+                    .ui(ui, |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.set_width(470.);
+                            ui.heading("Logical Groups");
+                            ui.horizontal(|ui| {
+                                if let Some(name) = &self.active_logical_group_name {
+                                    ui.label(format!("Active: {}", name));
+                                } else {
+                                    ui.label("Active: (none)");
+                                }
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if ui.button("⟲ Refresh").clicked() {
+                                        let tx = self.logical_groups_tx.clone();
+                                        tokio::spawn(async move {
+                                            match crate::database::LogicalGroup::list_all().await {
+                                                Ok(groups) => { let _ = tx.try_send(groups); },
+                                                Err(e) => log::error!("refresh logical groups failed: {e:?}"),
+                                            }
+                                        });
+                                    }
+                                });
+                            });
+                            ui.separator();
+                            ui.label(RichText::new("Operations").italics());
+                            ui.horizontal(|ui| {
+                                ui.label("Add selection to:");
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    let response = TextEdit::singleline(&mut self.group_add_target).hint_text("Group name").desired_width(150.).ui(ui);
+                                    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                        let target = self.group_add_target.trim().to_string();
+                                        if !target.is_empty() && !self.selected.is_empty() {
+                                            // Gather selected rows and upsert to get ids
+                                            let rows: Vec<crate::database::Thumbnail> = self
+                                                .table
+                                                .iter()
+                                                .filter(|r| r.file_type != "<DIR>" && self.selected.contains(&r.path))
+                                                .cloned()
+                                                .collect();
+                                            if !rows.is_empty() {
+                                                tokio::spawn(async move {
+                                                    // Ensure rows exist in DB and get their ids
+                                                    match crate::database::upsert_rows_and_get_ids(rows).await {
+                                                        Ok(ids) => {
+                                                            if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&target).await {
+                                                                if let Some(gid) = g.id.as_ref() {
+                                                                    let _ = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await;
+                                                                }
+                                                            } else {
+                                                                if let Ok(_) = crate::database::LogicalGroup::create(&target).await {
+                                                                    if let Ok(Some(g2)) = crate::database::LogicalGroup::get_by_name(&target).await {
+                                                                        if let Some(gid) = g2.id.as_ref() { let _ = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await; }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        Err(e) => log::error!("Add selection: upsert failed: {e:?}"),
+                                                    }
+                                                });
+                                            }
+                                        }
+                                    }
+                                });
+                            });
+
+                            ui.add_space(5.);
+
+                            ui.horizontal(|ui| {
+                                ui.label("Add current view to:");
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    let response = TextEdit::singleline(&mut self.group_add_view_target).hint_text("Group name").desired_width(150.).ui(ui);
+                                    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                        let target = self.group_add_view_target.trim().to_string();
+                                        if !target.is_empty() {
+                                            let rows: Vec<crate::database::Thumbnail> = self
+                                            .table
+                                            .iter()
+                                            .filter(|r| r.file_type != "<DIR>")
+                                            .cloned()
+                                            .collect();
+
+                                            if !rows.is_empty() {
+                                                tokio::spawn(async move {
+                                                    match crate::database::upsert_rows_and_get_ids(rows).await {
+                                                        Ok(ids) => {
+                                                            if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&target).await {
+                                                                if let Some(gid) = g.id.as_ref() {
+                                                                    let _ = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await;
+                                                                }
+                                                            } else {
+                                                                if let Ok(_) = crate::database::LogicalGroup::create(&target).await {
+                                                                    if let Ok(Some(g2)) = crate::database::LogicalGroup::get_by_name(&target).await {
+                                                                        if let Some(gid) = g2.id.as_ref() { let _ = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await; }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        Err(e) => log::error!("Add view: upsert failed: {e:?}"),
+                                                    }
+                                                });
+                                            }
+                                        }
+                                    }
+                                });
+                            });
+
+                            ui.add_space(5.);
+
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Copy From: "));
+                                TextEdit::singleline(&mut self.group_copy_src).hint_text("Group to Copy From").desired_width(150.).ui(ui);
+                                ui.label(RichText::new(" -> "));
+                                TextEdit::singleline(&mut self.group_copy_dst).hint_text("Destination group").desired_width(150.).ui(ui);
+
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if ui.button("Copy").clicked() {
+                                        let src = self.group_copy_src.trim().to_string();
+                                        let dst = self.group_copy_dst.trim().to_string();
+                                        if !src.is_empty() && !dst.is_empty() && src != dst {
+                                            tokio::spawn(async move {
+                                                if let Ok(Some(src_g)) = crate::database::LogicalGroup::get_by_name(&src).await {
+                                                    let ids = src_g.thumbnails.clone();
+                                                    if !ids.is_empty() {
+                                                        // Ensure destination exists
+                                                        let dst_gid = match crate::database::LogicalGroup::get_by_name(&dst).await {
+                                                            Ok(Some(g)) => g.id,
+                                                            _ => {
+                                                                let _ = crate::database::LogicalGroup::create(&dst).await;
+                                                                crate::database::LogicalGroup::get_by_name(&dst).await.ok().flatten().and_then(|g| g.id)
+                                                            }
+                                                        };
+                                                        if let Some(gid) = dst_gid.as_ref() {
+                                                            let _ = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await;
+                                                        }
+                                                    }
+                                                }
+                                            });
+                                        }
+                                    }
+                                });
+                            });
+                            
+                            ui.add_space(5.);
+                            
+                            ui.horizontal(|ui| {
+                                ui.label("Add unassigned to:");
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    let response = TextEdit::singleline(&mut self.group_add_unassigned_target).hint_text("Group name").desired_width(150.).ui(ui);
+                                    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                        let target = self.group_add_unassigned_target.trim().to_string();
+                                        if !target.is_empty() {
+                                            tokio::spawn(async move {
+                                                match crate::database::LogicalGroup::list_unassigned_thumbnail_ids().await {
+                                                    Ok(ids) => {
+                                                        log::info!("Thumbnails without a group: {}", ids.len());
+                                                        if !ids.is_empty() {
+                                                            // ensure destination group exists
+                                                            let gid_opt = match crate::database::LogicalGroup::get_by_name(&target).await {
+                                                                Ok(Some(g)) => g.id,
+                                                                _ => {
+                                                                    let _ = crate::database::LogicalGroup::create(&target).await;
+                                                                    crate::database::LogicalGroup::get_by_name(&target).await.ok().flatten().and_then(|g| g.id)
+                                                                }
+                                                            };
+                                                            if let Some(gid) = gid_opt.as_ref() {
+                                                                let _ = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await;
+                                                            }
+                                                        }
+                                                    }
+                                                    Err(e) => log::error!("List unassigned failed: {e:?}"),
+                                                }
+                                            });
+                                        }
+                                    }
+                                    if let Some(gname) = &self.active_logical_group_name {
+                                        if ui.button("To Current Group").on_hover_text("Add all unassigned thumbnails to the active group").clicked() {
+                                            let target = gname.clone();
+                                            tokio::spawn(async move {
+                                                match crate::database::LogicalGroup::list_unassigned_thumbnail_ids().await {
+                                                    Ok(ids) => {
+                                                        if ids.is_empty() { return; }
+                                                        // Ensure group exists then add
+                                                        let gid_opt = match crate::database::LogicalGroup::get_by_name(&target).await {
+                                                            Ok(Some(g)) => g.id,
+                                                            _ => {
+                                                                let _ = crate::database::LogicalGroup::create(&target).await;
+                                                                crate::database::LogicalGroup::get_by_name(&target).await.ok().flatten().and_then(|g| g.id)
+                                                            }
+                                                        };
+                                                        if let Some(gid) = gid_opt.as_ref() {
+                                                            if let Err(e) = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await {
+                                                                log::error!("Add unassigned to current group failed: {e:?}");
+                                                            }
+                                                        }
+                                                    }
+                                                    Err(e) => log::error!("List unassigned failed: {e:?}"),
+                                                }
+                                            });
+                                        }
+                                    }
+                                });
+                            });
+
+                            ui.separator();
+
+                            ui.label(RichText::new("Create new group").italics());
+                            
+                            ui.horizontal(|ui| {
+                                let response = TextEdit::singleline(&mut self.group_create_name_input).hint_text("Group name").desired_width(150.).ui(ui);
+                                let btn = ui.with_layout(Layout::right_to_left(Align::Center), |ui| ui.button("Create")).inner;
+                                if ( response.lost_focus() && response.changed() ) || btn.clicked() {
+                                    let name = self.group_create_name_input.trim().to_string();
+                                    if !name.is_empty() {
+                                        let tx = self.logical_groups_tx.clone();
+                                        tokio::spawn(async move {
+                                            match crate::database::LogicalGroup::create(&name).await {
+                                                Ok(_) => {
+                                                    match crate::database::LogicalGroup::list_all().await {
+                                                        Ok(groups) => { let _ = tx.try_send(groups); },
+                                                        Err(e) => log::error!("list groups after create failed: {e:?}"),
+                                                    }
+                                                }
+                                                Err(e) => log::error!("create group failed: {e:?}"),
+                                            }
+                                        });
+                                        self.group_create_name_input.clear();
+                                    }
+                                }
+                            });
+                            ui.separator();
+                            if self.logical_groups.is_empty() {
+                                ui.label(RichText::new("No groups defined yet.").weak());
+                            } else {
+                                egui::ScrollArea::vertical().max_height(180.).show(ui, |ui| {
+                                    for g in self.logical_groups.clone().into_iter() {
+                                        ui.horizontal(|ui| {
+                                            // Name or rename editor
+                                            if self.group_rename_target.as_deref() == Some(g.name.as_str()) {
+                                                ui.add_sized([180., 22.], TextEdit::singleline(&mut self.group_rename_input));
+                                                if ui.button("Save").on_hover_text("Rename group").clicked() {
+                                                    if let Some(gid) = g.id.clone() {
+                                                        let new_name = self.group_rename_input.trim().to_string();
+                                                        if !new_name.is_empty() {
+                                                            let tx = self.logical_groups_tx.clone();
+                                                            tokio::spawn(async move {
+                                                                match crate::database::LogicalGroup::rename(&gid, &new_name).await {
+                                                                    Ok(_) => {
+                                                                        match crate::database::LogicalGroup::list_all().await {
+                                                                            Ok(groups) => { let _ = tx.try_send(groups); },
+                                                                            Err(e) => log::error!("list groups after rename failed: {e:?}"),
+                                                                        }
+                                                                    }
+                                                                    Err(e) => log::error!("rename group failed: {e:?}"),
+                                                                }
+                                                            });
+                                                        }
+                                                    }
+                                                    self.group_rename_target = None;
+                                                    self.group_rename_input.clear();
+                                                }
+                                                if ui.button("Cancel").clicked() {
+                                                    self.group_rename_target = None;
+                                                    self.group_rename_input.clear();
+                                                }
+                                            } else {
+                                                ui.label(&g.name);
+                                            }
+
+                                            if ui.button("Select").on_hover_text("Use this as the active group (no mode switch)").clicked() {
+                                                self.active_logical_group_name = Some(g.name.clone());
+                                            }
+                                            if ui.button("Open").on_hover_text("Load this group's thumbnails").clicked() {
+                                                self.active_logical_group_name = Some(g.name.clone());
+                                                self.viewer.mode = viewer::ExplorerMode::Database;
+                                                self.table.clear();
+                                                self.db_offset = 0;
+                                                self.db_last_batch_len = 0;
+                                                self.db_loading = true;
+                                                self.load_logical_group_by_name(g.name.clone());
+                                            }
+                                            if self.group_rename_target.as_deref() != Some(g.name.as_str()) {
+                                                if ui.button("Rename").clicked() {
+                                                    self.group_rename_target = Some(g.name.clone());
+                                                    self.group_rename_input = g.name.clone();
+                                                }
+                                            }
+                                            if ui.button("Delete").on_hover_text("Delete this group").clicked() {
+                                                if let Some(gid) = g.id.clone() {
+                                                    let tx = self.logical_groups_tx.clone();
+                                                    let active = self.active_logical_group_name.clone();
+                                                    let name = g.name.clone();
+                                                    tokio::spawn(async move {
+                                                        match crate::database::LogicalGroup::delete(&gid).await {
+                                                            Ok(_) => {
+                                                                match crate::database::LogicalGroup::list_all().await {
+                                                                    Ok(groups) => { let _ = tx.try_send(groups); },
+                                                                    Err(e) => log::error!("list groups after delete failed: {e:?}"),
+                                                                }
+                                                            }
+                                                            Err(e) => log::error!("delete group failed: {e:?}"),
+                                                        }
+                                                    });
+                                                    if active.as_deref() == Some(name.as_str()) {
+                                                        self.active_logical_group_name = None;
+                                                    }
+                                                }
+                                            }
+                                        });
+                                    }
+                                });
+                            }
+                        });
                     });
                 });
             });
@@ -1108,7 +1609,7 @@ impl FileExplorer {
                             crate::app::OPEN_TAB_REQUESTS
                                 .lock()
                                 .unwrap()
-                                .push(crate::ui::file_table::FilterRequest::NewTab { title, rows, showing_similarity: false, similar_scores: None });
+                                .push(crate::ui::file_table::FilterRequest::NewTab { title, rows, showing_similarity: false, similar_scores: None, background: false });
                         }
                         crate::ui::file_table::viewer::TabAction::OpenTag(tag) => {
                             let title = format!("Tag: {}", tag);
@@ -1121,7 +1622,7 @@ impl FileExplorer {
                             crate::app::OPEN_TAB_REQUESTS
                                 .lock()
                                 .unwrap()
-                                .push(crate::ui::file_table::FilterRequest::NewTab { title, rows, showing_similarity: false, similar_scores: None });
+                                .push(crate::ui::file_table::FilterRequest::NewTab { title, rows, showing_similarity: false, similar_scores: None, background: false });
                         }
                         crate::ui::file_table::viewer::TabAction::OpenSimilar(filename) => {
                             let title = format!("Similar to {filename}");
@@ -1134,7 +1635,7 @@ impl FileExplorer {
                             crate::app::OPEN_TAB_REQUESTS
                                 .lock()
                                 .unwrap()
-                                .push(crate::ui::file_table::FilterRequest::NewTab { title, rows, showing_similarity: true, similar_scores: Some(self.viewer.similar_scores.clone()) });
+                                .push(crate::ui::file_table::FilterRequest::NewTab { title, rows, showing_similarity: true, similar_scores: Some(self.viewer.similar_scores.clone()), background: false });
                         }
                     }
                 }
@@ -1165,6 +1666,27 @@ impl FileExplorer {
         });
 
         // Removed modal; results shown inline in table
+    }
+
+    // Load and display rows from a logical group by name
+    pub fn load_logical_group_by_name(&mut self, name: String) {
+        let tx = self.thumbnail_tx.clone();
+        tokio::spawn(async move {
+            match crate::database::LogicalGroup::get_by_name(&name).await {
+                Ok(Some(group)) => {
+                    match crate::Thumbnail::fetch_by_ids(group.thumbnails.clone()).await {
+                        Ok(rows) => {
+                            let count = rows.len();
+                            for r in rows.into_iter() { let _ = tx.try_send(r); }
+                            log::info!("[Groups] Loaded '{}' with {} rows", name, count);
+                        }
+                        Err(e) => log::error!("Failed to fetch rows for group '{}': {e:?}", name),
+                    }
+                }
+                Ok(None) => log::warn!("Logical group '{}' not found", name),
+                Err(e) => log::error!("get_by_name '{}' failed: {e:?}", name),
+            }
+        });
     }
 
     fn apply_filters_to_current_table(&mut self) {

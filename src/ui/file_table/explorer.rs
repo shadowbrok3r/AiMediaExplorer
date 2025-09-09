@@ -60,10 +60,11 @@ impl super::FileExplorer {
 
     pub fn push_history(&mut self, new_path: String) {
         if self.current_path != new_path {
-            // save to settings recent paths
-            let mut s = crate::database::settings::load_settings();
-            s.push_recent_path(new_path.clone());
-            crate::database::settings::save_settings(&s);
+            // save to settings recent paths (only if settings are loaded from DB)
+            if let Some(mut s) = crate::database::settings::load_settings() {
+                s.push_recent_path(new_path.clone());
+                crate::database::settings::save_settings(&s);
+            }
             self.back_stack.push(self.current_path.clone());
             self.forward_stack.clear();
             self.current_path = new_path;

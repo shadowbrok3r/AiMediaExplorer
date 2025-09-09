@@ -55,14 +55,14 @@ pub(crate) async fn ensure_clip_engine(engine_slot: &std::sync::Arc<tokio::sync:
         CLIP_STATUS.set_state(StatusState::Initializing, "Loading model");
         // Prefer cached settings (updated immediately on save) to avoid races with async DB save.
         let cached = crate::database::settings::load_settings();
-    let model_key = if let Some(m) = cached.clip_model.clone() {
+        let model_key = if let Some(m) = cached.and_then(|c| c.clip_model.clone()) {
             m
         } else {
             match crate::database::get_settings().await {
-        Ok(s) => s.clip_model.unwrap_or_else(|| "unicom-vit-b32".to_string()),
+                Ok(s) => s.clip_model.unwrap_or_else(|| "unicom-vit-b32".to_string()),
                 Err(e) => {
                     log::warn!("[CLIP] get_settings() failed: {e}. Falling back to default.");
-            "unicom-vit-b32".to_string()
+                    "unicom-vit-b32".to_string()
                 }
             }
         };

@@ -1,12 +1,14 @@
-
 use crate::utilities::types::{DateField, Filters, FoundFile, MediaKind, DirItem, is_image, is_video};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use jwalk::{WalkDirGeneric, Parallelism};
-use crossbeam::channel::Sender;
+use crossbeam::channel::{Sender, Receiver, bounded};
 use chrono::{DateTime, Local}; 
 use once_cell::sync::Lazy;
 use std::time::SystemTime;
 use std::path::Path;
+use std::time::Duration;
+use rayon::ThreadPool;
+use std::sync::OnceLock;
 
 // Track cancelled scan ids
 static CANCELLED_SCANS: Lazy<std::sync::Mutex<std::collections::HashSet<u64>>> = Lazy::new(|| std::sync::Mutex::new(Default::default()));
@@ -27,6 +29,94 @@ fn is_cancelled(id: u64) -> bool {
 
 fn clear_cancel(id: u64) {
     if let Ok(mut set) = CANCELLED_SCANS.lock() { let _ = set.remove(&id); }
+}
+
+// --- Dedicated thumbnail pipeline (bounded queue + small worker pool) ---
+#[derive(Clone, Debug)]
+pub struct ThumbJob {
+    pub path: std::path::PathBuf,
+    pub kind: MediaKind,
+    pub scan_id: u64,
+}
+
+static THUMB_POOL: Lazy<ThreadPool> = Lazy::new(|| {
+    let logical = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
+    let workers = logical.clamp(2, 4);
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(workers)
+        .thread_name(|i| format!("thumb-{}", i))
+        .build()
+        .expect("thumb pool")
+});
+
+static THUMB_TX: OnceLock<Sender<ThumbJob>> = OnceLock::new();
+static IMG_INFLIGHT: AtomicUsize = AtomicUsize::new(0);
+static VID_INFLIGHT: AtomicUsize = AtomicUsize::new(0);
+
+pub fn init_thumbnail_workers(tx_scan: Sender<ScanEnvelope>) {
+    if THUMB_TX.get().is_some() { return; }
+    let (tx, rx): (Sender<ThumbJob>, Receiver<ThumbJob>) = bounded(256);
+    let _ = THUMB_TX.set(tx.clone());
+    start_thumbnail_workers(rx, tx_scan);
+}
+
+fn start_thumbnail_workers(rx: Receiver<ThumbJob>, tx_scan: Sender<ScanEnvelope>) {
+    let workers = 3usize.min(THUMB_POOL.current_num_threads());
+    for _ in 0..workers {
+        let rx = rx.clone();
+        let tx = tx_scan.clone();
+        THUMB_POOL.spawn(move || {
+            while let Ok(job) = rx.recv() {
+                if is_cancelled(job.scan_id) { 
+                    // decrement the proper counter if we had incremented on enqueue but got cancelled before work
+                    match job.kind { 
+                        MediaKind::Image => { IMG_INFLIGHT.fetch_sub(1, Ordering::Relaxed); },
+                        MediaKind::Video => { VID_INFLIGHT.fetch_sub(1, Ordering::Relaxed); },
+                        _ => {}
+                    }
+                    continue; 
+                }
+                if let Some(thumb_b64) = generate_thumb(&job.path, &job.kind) {
+                    let _ = tx.try_send(ScanEnvelope {
+                        scan_id: job.scan_id,
+                        msg: ScanMsg::UpdateThumb { path: job.path.clone(), thumb: thumb_b64 },
+                    });
+                }
+                match job.kind {
+                    MediaKind::Image => { IMG_INFLIGHT.fetch_sub(1, Ordering::Relaxed); },
+                    MediaKind::Video => { VID_INFLIGHT.fetch_sub(1, Ordering::Relaxed); },
+                    _ => {}
+                }
+            }
+        });
+    }
+}
+
+fn enqueue_thumb_job(path: &Path, kind: MediaKind, scan_id: u64) {
+    if let Some(tx) = THUMB_TX.get() {
+        // increment inflight on success; bounded send applies back-pressure
+        let job = ThumbJob { path: path.to_path_buf(), kind: kind.clone(), scan_id };
+        if tx.send(job).is_ok() {
+            match kind { 
+                MediaKind::Image => { IMG_INFLIGHT.fetch_add(1, Ordering::Relaxed); },
+                MediaKind::Video => { VID_INFLIGHT.fetch_add(1, Ordering::Relaxed); },
+                _ => {}
+            }
+        }
+    }
+}
+
+fn generate_thumb(path: &Path, kind: &MediaKind) -> Option<String> {
+    match kind {
+        MediaKind::Image => crate::generate_image_thumb_data(path).ok(),
+        MediaKind::Video => {
+            #[cfg(windows)]
+            { return crate::generate_video_thumb_data(path).ok(); }
+            #[cfg(not(windows))]
+            { return None; }
+        }
+        _ => None,
+    }
 }
 
 #[derive(Debug)]
@@ -69,6 +159,8 @@ pub struct ScanEnvelope {
 
 // Main entry used by UI resource: offloads whole scan onto blocking thread pool.
 pub async fn spawn_scan(filters: Filters, tx: Sender<ScanEnvelope>, recursive: bool, scan_id: u64) {
+    // Ensure thumbnail workers are initialized with this scan channel
+    init_thumbnail_workers(tx.clone());
     // Perform the blocking filesystem traversal on a blocking thread.
     if let Err(e) = tokio::task::spawn_blocking(move || perform_scan_blocking(filters, tx, recursive, scan_id)).await {
         log::warn!("spawn_blocking scan join error: {e:?}");
@@ -168,13 +260,17 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
                 }
                 true
             });
-            entries.sort_by(|a,b| match (a,b) { (Ok(ae), Ok(be)) => ae.file_name.cmp(&be.file_name), _ => std::cmp::Ordering::Equal });
+            if !recursive {
+                entries.sort_by(|a,b| match (a,b) { (Ok(ae), Ok(be)) => ae.file_name.cmp(&be.file_name), _ => std::cmp::Ordering::Equal });
+            }
         });
 
     // For shallow scans we also collect the immediate subdirectories to send in a single batch at the end.
     let mut dir_batch: Vec<DirItem> = if recursive { Vec::new() } else { Vec::with_capacity(128) };
 
     let mut idx: usize = 0;
+    // Collect videos for deferred thumbnailing
+    let mut videos_for_later: Vec<std::path::PathBuf> = Vec::new();
     for dir_entry_result in walker {
         if is_cancelled(scan_id) {
             let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::Done });
@@ -199,6 +295,12 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
                             scan_id, 
                             msg: ScanMsg::FoundBatch(std::mem::take(&mut batch)) 
                         });
+                        // Schedule image thumbnails immediately; defer videos
+                        match is_media_kind(path) {
+                            MediaKind::Image => enqueue_thumb_job(path, MediaKind::Image, scan_id),
+                            MediaKind::Video => videos_for_later.push(path.to_path_buf()),
+                            _ => {}
+                        }
                     }
                     if recursive {
                         scanned_paths += 1;
@@ -235,6 +337,19 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
     } else {
         if !batch.is_empty() { let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::FoundBatch(batch) }); }
         let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::Progress { scanned: scanned_paths, total: 0 } });
+    }
+
+    // Defer video thumbnails until image thumbnails are complete
+    // Wait briefly for image inflight to drain (respect cancellation)
+    let mut spins = 0usize;
+    while IMG_INFLIGHT.load(Ordering::Relaxed) > 0 {
+        if is_cancelled(scan_id) { break; }
+        std::thread::sleep(Duration::from_millis(15));
+        spins += 1;
+        if spins > 2_000 { break; } // ~30s safety cap
+    }
+    for vpath in videos_for_later.into_iter() {
+        enqueue_thumb_job(&vpath, MediaKind::Video, scan_id);
     }
 
     finish(&tx, scan_id);
@@ -310,24 +425,14 @@ fn process_path_collect(
     let size_val = md.len();
     // Heuristic: skip likely icons/asset images
     if filters.skip_icons {
-        // 1) Common icon extensions
-        let is_icon_ext = path.extension().and_then(|e| e.to_str()).map(|s| s.eq_ignore_ascii_case("ico")).unwrap_or(false);
-        // 2) Very small file size (<= min_size_bytes if provided, else 10 KB)
+        let is_icon_ext = path.extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.eq_ignore_ascii_case("ico"))
+            .unwrap_or(false);
         let tiny_thresh = filters.min_size_bytes.unwrap_or(10 * 1024);
         let is_tiny_file = size_val <= tiny_thresh;
-        // 3) Very small image dimensions (<= 64 px on both sides)
-        let is_tiny_image = if is_image_ext(path) {
-            // Try cheap decode to get dimensions only; ignore errors
-            image::ImageReader::open(path)
-                .ok()
-                .and_then(|r| r.with_guessed_format().ok())
-                .and_then(|r| r.into_dimensions().ok())
-                .map(|(w,h)| w <= 64 && h <= 64)
-                .unwrap_or(false)
-        } else { false };
-        if is_icon_ext || (is_tiny_file && is_tiny_image) {
-            return None;
-        }
+        // No image decoding here; only extension + size heuristics
+        if is_icon_ext || is_tiny_file { return None; }
     }
     if let Some(minb) = filters.min_size_bytes { if size_val < minb { return None; } }
     if let Some(maxb) = filters.max_size_bytes { if size_val > maxb { return None; } }
@@ -343,7 +448,7 @@ fn process_path_collect(
     Some(item)
 }
 
-fn is_image_ext(path: &Path) -> bool {
+fn _is_image_ext(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .map(|s| crate::is_image(s.to_ascii_lowercase().as_str()))

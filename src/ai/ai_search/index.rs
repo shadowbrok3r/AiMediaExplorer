@@ -123,7 +123,7 @@ impl crate::ai::AISearchEngine {
                 let clip_path = metadata.path.clone();
                 tokio::spawn(async move {
                     // Respect overwrite flag: only regenerate if missing, unless overwrite is enabled
-                    let overwrite = crate::database::settings::load_settings().clip_overwrite_embeddings;
+                    let overwrite = crate::database::settings::load_settings().as_ref().map(|s| s.clip_overwrite_embeddings).unwrap_or(false);
                     let mut should_run = overwrite;
                     if !should_run {
                         if let Some(meta) = arc_self2.get_file_metadata(&clip_path).await {
@@ -197,8 +197,9 @@ impl crate::ai::AISearchEngine {
 
     /// Enqueue a file metadata record for background indexing. Returns false if queue not ready yet.
     pub async fn enqueue_index(&self, meta: Thumbnail) -> bool {
-        // Global gate: only allow enqueue when auto indexing is enabled
-        let auto_on = crate::database::settings::load_settings().auto_indexing;
+    // Global gate: only allow enqueue when auto indexing is enabled.
+    // Note: logical group gating and auto-save are enforced at the call sites in UI to remain UI-context aware.
+    let auto_on = crate::database::settings::load_settings().as_ref().map(|s| s.auto_indexing).unwrap_or(false);
         if !auto_on {
             return false;
         }

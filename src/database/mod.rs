@@ -1,19 +1,17 @@
 use crossbeam::channel::Sender;
 use std::sync::LazyLock;
-use surrealdb::{
-    Surreal,
-    engine::local::Db,
-    opt::{Config, capabilities::Capabilities},
-};
+use surrealdb::{Surreal, engine::local::Db};
 pub mod clip_embeddings;
 pub mod files;
 pub mod settings;
 pub mod thumbnails;
+pub mod logical_groups;
 pub mod filter_groups;
 pub use clip_embeddings::*;
 pub use files::*;
 pub use settings::*;
 pub use thumbnails::*;
+pub use logical_groups::*;
 pub use filter_groups::*;
 
 pub static DB: LazyLock<Surreal<Db>> = LazyLock::new(Surreal::init);
@@ -22,13 +20,14 @@ pub const DB_NAME: &str = "ai_search";
 pub const THUMBNAILS: &str = "thumbnails";
 pub const USER_SETTINGS: &str = "user_settings";
 pub const FILTER_GROUPS: &str = "filter_groups";
+pub const LOGICAL_GROUPS: &str = "logical_groups";
 pub const DB_DEFAULT_TABLE: &str = "./db/default.surql";
 pub const DB_BACKUP_PATH: &str = "./db/backup.surql";
 
 pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
-    let capabilities = Capabilities::all().with_all_experimental_features_allowed();
-    let config = Config::new().capabilities(capabilities);
-    DB.connect::<surrealdb::engine::local::SurrealKv>(("./db/ai_search", config)).await?;
+    // let capabilities = surrealdb::capabilities::Capabilities::all().with_all_experimental_features_allowed();
+    // let config = surrealdb::opt::Config::new().capabilities(capabilities); // ("./db/ai_search", config)
+    DB.connect::<surrealdb::engine::local::SurrealKv>("./db/ai_search").await?;
     DB.use_ns(NS).use_db(DB_NAME).await?;
 
     // DEFINE BUCKET userfiles BACKEND "memory";
@@ -36,7 +35,8 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
         BEGIN;
         DEFINE TABLE IF NOT EXISTS thumbnails TYPE NORMAL SCHEMAFULL PERMISSIONS FULL;
         DEFINE TABLE IF NOT EXISTS user_settings TYPE NORMAL SCHEMAFULL PERMISSIONS FULL;
-    DEFINE TABLE IF NOT EXISTS filter_groups TYPE NORMAL SCHEMAFULL PERMISSIONS FULL;
+        DEFINE TABLE IF NOT EXISTS filter_groups TYPE NORMAL SCHEMAFULL PERMISSIONS FULL;
+        DEFINE TABLE IF NOT EXISTS logical_groups TYPE NORMAL SCHEMAFULL PERMISSIONS FULL;
         DEFINE TABLE IF NOT EXISTS clip_embeddings TYPE NORMAL SCHEMAFULL PERMISSIONS FULL;
 
         DEFINE FIELD IF NOT EXISTS caption ON thumbnails TYPE option<string> PERMISSIONS FULL;
@@ -95,17 +95,25 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
         DEFINE FIELD IF NOT EXISTS clip_overwrite_embeddings ON user_settings TYPE bool PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS clip_model ON user_settings TYPE option<string> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS recent_paths ON user_settings TYPE array<string> PERMISSIONS FULL;
-    DEFINE FIELD IF NOT EXISTS name ON filter_groups TYPE string PERMISSIONS FULL;
-    DEFINE FIELD IF NOT EXISTS include_images ON filter_groups TYPE bool PERMISSIONS FULL;
-    DEFINE FIELD IF NOT EXISTS include_videos ON filter_groups TYPE bool PERMISSIONS FULL;
-    DEFINE FIELD IF NOT EXISTS include_dirs ON filter_groups TYPE bool PERMISSIONS FULL;
-    DEFINE FIELD IF NOT EXISTS skip_icons ON filter_groups TYPE bool PERMISSIONS FULL;
-    DEFINE FIELD IF NOT EXISTS min_size_bytes ON filter_groups TYPE option<number> PERMISSIONS FULL;
-    DEFINE FIELD IF NOT EXISTS max_size_bytes ON filter_groups TYPE option<number> PERMISSIONS FULL;
-    DEFINE FIELD IF NOT EXISTS excluded_terms ON filter_groups TYPE array<string> PERMISSIONS FULL;
-    DEFINE FIELD IF NOT EXISTS created ON filter_groups TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
-    DEFINE FIELD IF NOT EXISTS updated ON filter_groups TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS auto_save_to_database ON user_settings TYPE bool PERMISSIONS FULL;
         
+        DEFINE FIELD IF NOT EXISTS name ON filter_groups TYPE string PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS include_images ON filter_groups TYPE bool PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS include_videos ON filter_groups TYPE bool PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS include_dirs ON filter_groups TYPE bool PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS skip_icons ON filter_groups TYPE bool PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS min_size_bytes ON filter_groups TYPE option<number> PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS max_size_bytes ON filter_groups TYPE option<number> PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS excluded_terms ON filter_groups TYPE array<string> PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS created ON filter_groups TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS updated ON filter_groups TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
+        
+        DEFINE FIELD IF NOT EXISTS name ON logical_groups TYPE string PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS thumbnails ON logical_groups TYPE array<record<thumbnails>> PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS created ON logical_groups TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS updated ON logical_groups TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
+
+        DEFINE INDEX IF NOT EXISTS lg_name_idx ON logical_groups FIELDS name UNIQUE;
         DEFINE INDEX IF NOT EXISTS category_idx ON thumbnails FIELDS category;
         DEFINE INDEX IF NOT EXISTS tags_idx ON thumbnails FIELDS tags;
         DEFINE INDEX IF NOT EXISTS path_idx ON thumbnails FIELDS path UNIQUE;
@@ -113,11 +121,16 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
         DEFINE INDEX IF NOT EXISTS clip_thumb_ref_idx ON clip_embeddings FIELDS thumb_ref;
         DEFINE INDEX IF NOT EXISTS idx_parent_dir ON thumbnails FIELDS parent_dir;
         DEFINE INDEX IF NOT EXISTS idx_clip_hnsw ON clip_embeddings FIELDS embedding HNSW DIMENSION 1024 TYPE F32 DIST COSINE EFC 120 M 12;
+
         COMMIT;
     "#;
 
     let response = DB.query(query).await?;
     let _ = response.check()?;
+    // Ensure at least one logical group exists (Default)
+    if crate::database::LogicalGroup::list_all().await?.is_empty() {
+        let _ = crate::database::LogicalGroup::create("Default").await;
+    }
     let _ = tx.send(());
     Ok(())
 }

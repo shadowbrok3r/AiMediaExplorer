@@ -183,7 +183,7 @@ impl super::FileExplorer {
                             self.last_scan_paths.insert(row.path.clone());
                         }
                         ctx.request_repaint();
-                        // Enqueue for AI indexing (images/videos). Use lightweight Thumbnail conversion.
+                        // Enqueue for AI indexing (images/videos) only if auto_save is enabled and a logical group is active.
                         let path_clone = item.path.to_string_lossy().to_string();
                         let parent_dir = item.path.parent().map(|p| p.to_string_lossy().to_string().clone()).unwrap_or_default();
                         // Use actual extension (lowercase) for file_type
@@ -224,9 +224,27 @@ impl super::FileExplorer {
                             }
                         };
 
-                        if self.viewer.ui_settings.auto_indexing {
+                        let settings = crate::database::settings::load_settings();
+                        if settings.as_ref().map(|s| s.auto_save_to_database).unwrap_or(false) {
+                            let group_name = self.active_logical_group_name.clone();
+                            let meta_clone = meta.clone();
+                            let do_index = self.viewer.ui_settings.auto_indexing;
                             tokio::spawn(async move {
-                                let _ = crate::ai::GLOBAL_AI_ENGINE.enqueue_index(meta).await;
+                                // Upsert row always when auto-save is enabled
+                                if let Ok(ids) = crate::database::upsert_rows_and_get_ids(vec![meta_clone.clone()]).await {
+                                    // Optionally add to group if one is active
+                                    if let Some(group_name) = group_name {
+                                        if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&group_name).await {
+                                            if let Some(gid) = g.id.as_ref() {
+                                                let _ = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await;
+                                            }
+                                        }
+                                    }
+                                }
+                                // Index only if enabled
+                                if do_index {
+                                    let _ = crate::ai::GLOBAL_AI_ENGINE.enqueue_index(meta_clone).await;
+                                }
                             });
                         }
                     }
@@ -329,18 +347,50 @@ impl super::FileExplorer {
                         }
                         if self.pending_thumb_rows.len() >= 32 {
                             let batch = std::mem::take(&mut self.pending_thumb_rows);
+                            let group_name = self.active_logical_group_name.clone();
+                            let settings = crate::database::settings::load_settings();
                             tokio::spawn(async move {
-                                if let Err(e) = crate::database::save_thumbnail_batch(batch).await {
-                                    log::error!("scan batch persistence failed: {e}");
+                                if settings.as_ref().map(|s| s.auto_save_to_database).unwrap_or(false) {
+                                    if let Some(gname) = group_name {
+                                        match crate::database::upsert_rows_and_get_ids(batch).await {
+                                            Ok(ids) => {
+                                                if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&gname).await {
+                                                    if let Some(gid) = g.id.as_ref() {
+                                                        let _ = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await;
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => log::error!("scan batch upsert failed: {e}"),
+                                        }
+                                    } else {
+                                        log::debug!("Skipping batch DB save: no active logical group");
+                                    }
+                                } else {
+                                    log::debug!("Skipping batch DB save: auto_save_to_database disabled");
                                 }
                             });
                         }
                     }
                     if !to_index.is_empty() {
-                        if self.viewer.ui_settings.auto_indexing {
+                        let settings = crate::database::settings::load_settings();
+                        let do_index = self.viewer.ui_settings.auto_indexing;
+                        if settings.as_ref().map(|s| s.auto_save_to_database).unwrap_or(false) {
+                            let group_name = self.active_logical_group_name.clone();
                             tokio::spawn(async move {
-                                for meta in to_index.into_iter() {
-                                    let _ = crate::ai::GLOBAL_AI_ENGINE.enqueue_index(meta).await;
+                                if let Ok(ids) = crate::database::upsert_rows_and_get_ids(to_index.clone()).await {
+                                    // Optionally add to group if one is active
+                                    if let Some(group_name) = group_name {
+                                        if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&group_name).await {
+                                            if let Some(gid) = g.id.as_ref() {
+                                                let _ = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await;
+                                            }
+                                        }
+                                    }
+                                }
+                                if do_index {
+                                    for meta in to_index.into_iter() {
+                                        let _ = crate::ai::GLOBAL_AI_ENGINE.enqueue_index(meta).await;
+                                    }
                                 }
                             });
                         }
@@ -403,9 +453,26 @@ impl super::FileExplorer {
                     }
                     if self.pending_thumb_rows.len() >= 32 {
                         let batch = std::mem::take(&mut self.pending_thumb_rows);
+                        let group_name = self.active_logical_group_name.clone();
+                        let settings = crate::database::settings::load_settings();
                         tokio::spawn(async move {
-                            if let Err(e) = crate::database::save_thumbnail_batch(batch).await {
-                                log::error!("thumb update persistence failed: {e}");
+                            if settings.as_ref().map(|s| s.auto_save_to_database).unwrap_or(false) {
+                                if let Some(gname) = group_name {
+                                    match crate::database::upsert_rows_and_get_ids(batch).await {
+                                        Ok(ids) => {
+                                            if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&gname).await {
+                                                if let Some(gid) = g.id.as_ref() {
+                                                    let _ = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await;
+                                                }
+                                            }
+                                        }
+                                        Err(e) => log::error!("thumb update batch upsert failed: {e}"),
+                                    }
+                                } else {
+                                    log::debug!("Skipping batch DB save: no active logical group");
+                                }
+                            } else {
+                                log::debug!("Skipping batch DB save: auto_save_to_database disabled");
                             }
                         });
                     }
@@ -427,9 +494,26 @@ impl super::FileExplorer {
                     self.last_scan_root = Some(self.current_path.clone());
                     if !self.pending_thumb_rows.is_empty() {
                         let batch = std::mem::take(&mut self.pending_thumb_rows);
+                        let group_name = self.active_logical_group_name.clone();
+                        let settings = crate::database::settings::load_settings();
                         tokio::spawn(async move {
-                            if let Err(e) = crate::database::save_thumbnail_batch(batch).await {
-                                log::error!("final scan batch persistence failed: {e}");
+                            if settings.as_ref().map(|s| s.auto_save_to_database).unwrap_or(false) {
+                                if let Some(gname) = group_name {
+                                    match crate::database::upsert_rows_and_get_ids(batch).await {
+                                        Ok(ids) => {
+                                            if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&gname).await {
+                                                if let Some(gid) = g.id.as_ref() {
+                                                    let _ = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await;
+                                                }
+                                            }
+                                        }
+                                        Err(e) => log::error!("final scan batch upsert failed: {e}"),
+                                    }
+                                } else {
+                                    log::debug!("Skipping final batch DB save: no active logical group");
+                                }
+                            } else {
+                                log::debug!("Skipping final batch DB save: auto_save_to_database disabled");
                             }
                         });
                     }
@@ -606,6 +690,7 @@ impl super::FileExplorer {
                             rows,
                             showing_similarity: true,
                             similar_scores: Some(scores),
+                            background: false,
                         });
                     }
                 }

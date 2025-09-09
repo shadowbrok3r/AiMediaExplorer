@@ -108,7 +108,7 @@ impl crate::ai::AISearchEngine {
                 .clip_model
                 .unwrap_or_else(|| "siglip2-large-patch16-512".to_string()),
             Err(_) => crate::database::settings::load_settings()
-                .clip_model
+                .and_then(|s| s.clip_model)
                 .unwrap_or_else(|| "siglip2-large-patch16-512".to_string()),
         };
         let want_siglip = desired_key.starts_with("siglip");
@@ -188,7 +188,7 @@ impl crate::ai::AISearchEngine {
             };
 
             if already_embedded {
-                let overwrite = crate::database::settings::load_settings().clip_overwrite_embeddings;
+                    let overwrite = crate::database::settings::load_settings().as_ref().map(|s| s.clip_overwrite_embeddings).unwrap_or(false);
                 if !overwrite {
                 log::warn!("[CLIP] Skip already embedded {p}");
                 processed += 1;
@@ -208,7 +208,7 @@ impl crate::ai::AISearchEngine {
 
             if emb_opt.is_some() {
                 let settings = crate::database::settings::load_settings();
-                if settings.clip_augment_with_text {
+                if settings.as_ref().map(|s| s.clip_augment_with_text).unwrap_or(false) {
                     if let Some(meta) = &maybe_meta {
                         // Only augment when description is present and non-empty
                         if let Some(desc) = &meta.description {

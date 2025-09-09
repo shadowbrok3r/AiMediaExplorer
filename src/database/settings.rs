@@ -69,6 +69,9 @@ pub struct UiSettings {
     pub clip_model: Option<String>,
     #[serde(default)]
     pub recent_paths: Vec<String>,
+    // When true, new scan results and thumbnail updates are saved into the DB automatically (if a logical group is active)
+    #[serde(default)]
+    pub auto_save_to_database: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,6 +129,7 @@ impl Default for UiSettings {
             clip_overwrite_embeddings: false,
             clip_model: Some("unicom-vit-b32".into()),
             recent_paths: Vec::new(),
+            auto_save_to_database: false,
         }
     }
 }
@@ -143,23 +147,12 @@ impl UiSettings {
     }
 }
 // In-memory snapshot (optional) to avoid extra DB selects for callers that load early.
-static SETTINGS_CACHE: Lazy<Mutex<Option<UiSettings>>> = Lazy::new(|| Mutex::new(None));
+pub static SETTINGS_CACHE: Lazy<Mutex<Option<UiSettings>>> = Lazy::new(|| Mutex::new(None));
 
-pub fn load_settings() -> UiSettings {
-    // Kick off async fetch; return default immediately (will hydrate later)
-    task::spawn(async {
-        if let Ok(s) = super::get_settings().await {
-            *SETTINGS_CACHE.lock().unwrap() = Some(s);
-        }
-    });
-    // Return cached if set
-    if let Some(cached) = SETTINGS_CACHE.lock().unwrap().clone() {
-        // log::error!("Got cached ui settings: {:?}", cached.clip_model);
-        return cached;
-    } else {
-        log::error!("Using UiSettings::default()");
-        UiSettings::default()
-    }
+pub fn load_settings() -> Option<UiSettings> {
+    // Do not fetch or fabricate defaults here. Until DB is ready and cache is hydrated,
+    // return None so callers can gate behavior appropriately.
+    SETTINGS_CACHE.lock().unwrap().clone()
 }
 
 pub fn save_settings(s: &UiSettings) {

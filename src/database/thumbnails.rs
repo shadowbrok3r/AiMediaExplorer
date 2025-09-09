@@ -2,6 +2,7 @@ use std::time::Instant;
 
 use crate::DB;
 use surrealdb::RecordId;
+use chrono::Utc;
 
 
 impl crate::Thumbnail {
@@ -170,6 +171,39 @@ pub async fn save_thumbnail_batch(
 pub async fn get_thumbnail_paths() -> anyhow::Result<Vec<String>, anyhow::Error> {
     let paths: Vec<String> = DB.query("SELECT VALUE path FROM thumbnails").await?.take(0)?;
     Ok(paths)
+}
+
+// Upsert a list of thumbnail rows (by path) and return their RecordIds
+pub async fn upsert_rows_and_get_ids(rows: Vec<super::Thumbnail>) -> anyhow::Result<Vec<RecordId>, anyhow::Error> {
+    let mut ids: Vec<RecordId> = Vec::new();
+    for meta in rows.into_iter() {
+        let base = crate::Thumbnail::get_thumbnail_by_path(&meta.path)
+            .await?
+            .unwrap_or_else(|| crate::Thumbnail {
+                id: None,
+                db_created: Some(Utc::now().into()),
+                path: meta.path.clone(),
+                filename: meta.filename.clone(),
+                file_type: meta.file_type.clone(),
+                size: meta.size,
+                description: None,
+                caption: None,
+                tags: Vec::new(),
+                category: None,
+                thumbnail_b64: None,
+                modified: meta.modified.clone(),
+                hash: meta.hash.clone(),
+                parent_dir: meta.parent_dir.clone(),
+            });
+        // Prefer any provided thumbnail data in meta
+        base.update_or_create_thumbnail(&meta, meta.thumbnail_b64.clone()).await?;
+        if let Some(id) = crate::Thumbnail::get_thumbnail_id_by_path(&meta.path).await? {
+            if !ids.iter().any(|x| x == &id) {
+                ids.push(id);
+            }
+        }
+    }
+    Ok(ids)
 }
 
 
