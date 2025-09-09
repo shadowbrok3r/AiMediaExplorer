@@ -312,8 +312,9 @@ fn process_path_collect(
     if filters.skip_icons {
         // 1) Common icon extensions
         let is_icon_ext = path.extension().and_then(|e| e.to_str()).map(|s| s.eq_ignore_ascii_case("ico")).unwrap_or(false);
-        // 2) Very small file size (<= 10 KB)
-        let is_tiny_file = size_val <= 10 * 1024;
+        // 2) Very small file size (<= min_size_bytes if provided, else 10 KB)
+        let tiny_thresh = filters.min_size_bytes.unwrap_or(10 * 1024);
+        let is_tiny_file = size_val <= tiny_thresh;
         // 3) Very small image dimensions (<= 64 px on both sides)
         let is_tiny_image = if is_image_ext(path) {
             // Try cheap decode to get dimensions only; ignore errors

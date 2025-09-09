@@ -1,7 +1,7 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use std::{path::PathBuf, sync::Arc};
 use eframe::egui::Context;
-use crate::{ScanEnvelope, next_scan_id, ui::file_table::AIUpdate};
+use crate::{next_scan_id, ui::file_table::AIUpdate, ScanEnvelope};
 
 impl super::FileExplorer {
     pub fn receive(&mut self, ctx: &Context) {
@@ -586,24 +586,27 @@ impl super::FileExplorer {
                         });
                     }
                 }
-                AIUpdate::SimilarResults {
-                    origin_path,
-                    results,
-                } => {
+                AIUpdate::SimilarResults { origin_path, results } => {
                     if !results.is_empty() {
-                        self.similar_origin = Some(origin_path.clone());
-                        self.similar_results = results.clone();
-                        // Replace table with results so they render inline
-                        self.table.clear();
-                        self.viewer.similar_scores.clear();
+                        // Build rows and score map for a dedicated Similar tab
+                        let mut rows: Vec<crate::database::Thumbnail> = Vec::with_capacity(results.len());
+                        let mut scores: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
                         for r in results.into_iter() {
-                            // Combine scores: prefer clip_similarity_score, fall back to similarity_score
                             if let Some(s) = r.clip_similarity_score.or(r.similarity_score) {
-                                self.viewer.similar_scores.insert(r.thumb.path.clone(), s);
+                                scores.insert(r.thumb.path.clone(), s);
                             }
-                            self.table.push(r.thumb);
+                            rows.push(r.thumb);
                         }
-                        self.viewer.showing_similarity = true;
+                        let title = format!("Similar to {}", origin_path);
+                        crate::app::OPEN_TAB_REQUESTS
+                        .lock()
+                        .unwrap()
+                        .push(crate::ui::file_table::FilterRequest::NewTab {
+                            title,
+                            rows,
+                            showing_similarity: true,
+                            similar_scores: Some(scores),
+                        });
                     }
                 }
             }

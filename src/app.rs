@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
-use crate::UiSettings;
+use crate::{ui::file_table::FileExplorer, UiSettings};
 
 // Global atomic flag to request opening the settings modal from anywhere (e.g., navbar without direct &mut SmartMediaApp access)
 pub static OPEN_SETTINGS_REQUEST: Lazy<std::sync::atomic::AtomicBool> = Lazy::new(|| std::sync::atomic::AtomicBool::new(false));
@@ -40,6 +40,7 @@ pub struct SmartMediaContext {
     pub open_tabs: HashSet<String>,
     // Map of dynamic tab title -> a dedicated FileExplorer instance with filters applied
     pub filtered_tabs: std::collections::HashMap<String, crate::ui::file_table::FileExplorer>,
+    pub open_ui_settings: bool,
 }
 
 #[derive(PartialEq, Debug, Serialize, Deserialize, Default)]
@@ -90,9 +91,10 @@ impl SmartMediaApp {
             ai_initializing: false,
             ai_ready: false,
             settings_draft: None,
-            file_explorer: Default::default(),
+            file_explorer: FileExplorer::new(false),
             open_tabs,
             filtered_tabs: std::collections::HashMap::new(),
+            open_ui_settings: false,
         };
 
         Self {

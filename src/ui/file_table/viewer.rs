@@ -1,4 +1,4 @@
-use egui::{Color32, FontId, Image, ImageSource, KeyboardShortcut, Stroke, Vec2, Widget};
+use egui::{Color32, FontId, Image, ImageSource, KeyboardShortcut, Stroke, TextureOptions, Vec2, Widget};
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use std::{borrow::Cow, collections::HashMap, path::Path, sync::Arc};
 use egui_data_table::{
@@ -17,6 +17,15 @@ pub enum ExplorerMode {
     #[default]
     FileSystem,
     Database,
+}
+
+impl ExplorerMode {
+    pub fn to_str(&self) -> &str {
+        match self {
+            ExplorerMode::FileSystem => "FileSystem",
+            ExplorerMode::Database => "Database",
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -59,7 +68,7 @@ pub struct FileTableViewer {
 
 // Actions requested from table cells
 #[derive(Clone, Debug)]
-pub enum TabAction { OpenCategory(String), OpenTag(String) }
+pub enum TabAction { OpenCategory(String), OpenTag(String), OpenSimilar(String) }
 
 impl FileTableViewer {
     pub fn new(thumbnail_tx: Sender<Thumbnail>, ai_update_tx: Sender<AIUpdate>, clip_embedding_tx: Sender<crate::ClipEmbeddingRow>) -> Self {
@@ -172,9 +181,17 @@ impl RowViewer<Thumbnail> for FileTableViewer {
         hot
     }
 
-    fn is_editable_cell(&mut self, column: usize, _row: usize, _row_value: &Thumbnail) -> bool {
+    fn is_editable_cell(&mut self, _column: usize, _row: usize, _row_value: &Thumbnail) -> bool {
         // Only allow editing for Category (3) and Tags (4) regardless of mode.
-        matches!(column, 3 | 4)
+        // matches!(column, 3 | 4)
+        false
+    }
+
+    fn is_interactive_in_view(&mut self, _row: &Thumbnail, column: usize) -> bool {
+        match column {
+            3|4 => true,
+            _ => false
+        }
     }
 
     fn show_cell_view(&mut self, ui: &mut egui::Ui, row: &Thumbnail, column: usize) {
@@ -196,52 +213,54 @@ impl RowViewer<Thumbnail> for FileTableViewer {
         }
         match column {
             0 => {
-                // Thumbnail (mode-agnostic currently)
-                if row.file_type == "<DIR>" {
-                    ui.add_sized(
-                        ui.available_size(),
-                        egui::Image::new(eframe::egui::include_image!(
-                            "../../../assets/Icons/folder.png"
-                        )),
-                    );
-                    return;
-                }
-                let cache_key = row.path.clone();
-                if row.thumbnail_b64.is_none() {
-                    ui.label("📄");
-                } else {
-                    if !self.thumb_cache.contains_key(&cache_key) {
-                        if let Some(mut b64) = row.thumbnail_b64.clone() {
-                            if b64.starts_with("data:image/png;base64,") {
-                                let (_, end) =
-                                    b64.split_once("data:image/png;base64,").unwrap_or_default();
-                                b64 = end.to_string();
-                            }
-                            if let Ok(decoded) = B64.decode(b64.as_bytes()) {
-                                self.thumb_cache.insert(
-                                    cache_key.clone(),
-                                    Arc::from(decoded.into_boxed_slice()),
-                                );
+                ui.vertical_centered_justified(|ui| {
+                    // Thumbnail (mode-agnostic currently)
+                    if row.file_type == "<DIR>" {
+                        ui.add_sized(
+                            ui.available_size(),
+                            egui::Image::new(eframe::egui::include_image!(
+                                "../../../assets/Icons/folder.png"
+                            )).texture_options(TextureOptions::default().with_mipmap_mode(Some(egui::TextureFilter::Linear))),
+                        );
+                        return;
+                    }
+                    let cache_key = row.path.clone();
+                    if row.thumbnail_b64.is_none() {
+                        ui.label("📄");
+                    } else {
+                        if !self.thumb_cache.contains_key(&cache_key) {
+                            if let Some(mut b64) = row.thumbnail_b64.clone() {
+                                if b64.starts_with("data:image/png;base64,") {
+                                    let (_, end) =
+                                        b64.split_once("data:image/png;base64,").unwrap_or_default();
+                                    b64 = end.to_string();
+                                }
+                                if let Ok(decoded) = B64.decode(b64.as_bytes()) {
+                                    self.thumb_cache.insert(
+                                        cache_key.clone(),
+                                        Arc::from(decoded.into_boxed_slice()),
+                                    );
+                                }
                             }
                         }
+                        if let Some(bytes_arc) = self.thumb_cache.get(&cache_key) {
+                            let img_src = ImageSource::Bytes {
+                                uri: Cow::from(format!("bytes://{}", cache_key)),
+                                bytes: egui::load::Bytes::Shared(bytes_arc.clone()),
+                            };
+                            Image::new(img_src)
+                                .show_loading_spinner(true)
+                                .max_size(ui.available_size())
+                                .ui(ui); // .bg_fill(Color32::WHITE)
+                        } else {
+                            ui.label("❌");
+                        }
                     }
-                    if let Some(bytes_arc) = self.thumb_cache.get(&cache_key) {
-                        let img_src = ImageSource::Bytes {
-                            uri: Cow::from(format!("bytes://{}", cache_key)),
-                            bytes: egui::load::Bytes::Shared(bytes_arc.clone()),
-                        };
-                        Image::new(img_src)
-                            .show_loading_spinner(true)
-                            .max_size(ui.available_size())
-                            .ui(ui); // .bg_fill(Color32::WHITE)
-                    } else {
-                        ui.label("❌");
-                    }
-                }
+                });
             }
             1 => {
                 // Name
-                ui.label(&row.filename);
+                ui.label(format!(" {}", &row.filename));
             }
             2 => {
                 // Path or DB key depending on mode
@@ -251,15 +270,17 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                 };
             }
             3 => {
-                // Category (click to open in new tab)
-                if let Some(cat) = row.category.as_ref() {
-                    let resp = ui.selectable_label(false, egui::RichText::new(cat).underline());
-                    if resp.clicked() {
-                        self.requested_tabs.push(TabAction::OpenCategory(cat.clone()));
+                ui.vertical_centered_justified(|ui| {
+                    // Category (click to open in new tab)
+                    if let Some(cat) = row.category.as_ref() {
+                        let resp = ui.button(egui::RichText::new(cat).underline());
+                        if resp.clicked() {
+                            self.requested_tabs.push(TabAction::OpenCategory(cat.clone()));
+                        }
+                    } else {
+                        ui.label("-");
                     }
-                } else {
-                    ui.label("-");
-                }
+                });
             }
             4 => {
                 // Tags as chips
@@ -274,27 +295,20 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                             let galley = ui.painter().layout_no_wrap(
                                 txt.clone(),
                                 FontId::monospace(12.),
-                                Color32::WHITE,
+                                Color32::BLACK,
                             );
-                            let (rect, resp) = ui.allocate_exact_size(
+                            let (rect, _) = ui.allocate_exact_size(
                                 galley.rect.size() + pad * 2.0,
                                 egui::Sense::click(),
                             );
                             ui.painter().rect_filled(rect, 6.0, color);
-                            ui.painter().galley(rect.min + pad, galley, Color32::WHITE);
+                            ui.painter().galley(rect.min + pad, galley, Color32::BLACK);
                             let stroke = Stroke {
                                 width: 1.0,
                                 color: color.gamma_multiply(0.6),
                             };
-                            ui.painter().rect_filled(rect, 6.0, color);
                             ui.painter()
                                 .rect_stroke(rect, 6.0, stroke, egui::StrokeKind::Outside);
-                            if resp.hovered() {
-                                ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
-                            }
-                            if resp.clicked() {
-                                self.requested_tabs.push(TabAction::OpenTag(tag.clone()));
-                            }
                         }
                     });
                 }
@@ -349,7 +363,7 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                     }
                 }
             }
-            _ => unreachable!(),
+            _ => {},
         };
     }
 
@@ -359,10 +373,10 @@ impl RowViewer<Thumbnail> for FileTableViewer {
         row: &mut Thumbnail,
         column: usize,
     ) -> Option<egui::Response> {
-    // No data to set for CLIP/Similarity appended columns
-    let base_no_clip = match self.mode { ExplorerMode::FileSystem => 9, ExplorerMode::Database => 10 };
-    if column == base_no_clip || (self.showing_similarity && column == base_no_clip + 1) { return None; }
-    match column {
+        // No data to set for CLIP/Similarity appended columns
+        let base_no_clip = match self.mode { ExplorerMode::FileSystem => 9, ExplorerMode::Database => 10 };
+        if column == base_no_clip || (self.showing_similarity && column == base_no_clip + 1) { return None; }
+        match column {
             0 => {
                 let cache_key = row.path.clone();
                 if row.thumbnail_b64.is_none() {
@@ -400,26 +414,50 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                 }
             }
             4 => {
-                // Tags editable
-                let mut tag_str = row.tags.join(", ");
-                let resp = ui.text_edit_singleline(&mut tag_str);
-                if resp.changed() {
-                    row.tags = tag_str
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect();
+                let mut response = None;
+                for tag in &row.tags {
+                    let color = color_for_tag(tag);
+                    let txt = format!("{}", tag);
+                    let pad = egui::vec2(6.0, 2.0);
+                    let galley = ui.painter().layout_no_wrap(
+                        txt.clone(),
+                        FontId::monospace(12.),
+                        Color32::BLACK,
+                    );
+                    let (rect, resp) = ui.allocate_exact_size(
+                        galley.rect.size() + pad * 2.0,
+                        egui::Sense::click(),
+                    );
+                    ui.painter().rect_filled(rect, 6.0, color);
+                    ui.painter().galley(rect.min + pad, galley, Color32::BLACK);
+                    let stroke = Stroke {
+                        width: 1.0,
+                        color: color.gamma_multiply(0.6),
+                    };
+                    ui.painter().rect_stroke(rect, 6.0, stroke, egui::StrokeKind::Outside);
+                    if resp.hovered() {
+                        response = Some(resp.clone());
+                        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                    }
+                    if resp.clicked() {
+                        self.requested_tabs.push(TabAction::OpenTag(tag.clone()));
+                        response = Some(resp);
+                    }
                 }
-                Some(resp)
+
+                response
             }
             3 => {
-                // Category
-                let mut v = row.category.clone().unwrap_or_default();
-                let resp = ui.text_edit_singleline(&mut v);
-                if resp.changed() {
-                    row.category = if v.is_empty() { None } else { Some(v) };
+                if let Some(cat) = row.category.as_ref() {
+                    let resp = ui.button(egui::RichText::new(cat).underline());
+                    if resp.clicked() {
+                        self.requested_tabs.push(TabAction::OpenCategory(cat.clone()));
+                    }
+                    Some(resp)
+                } else {
+                    ui.label("-");
+                    None
                 }
-                Some(resp)
             }
             // Non-editable columns
             _ => None,
@@ -436,6 +474,22 @@ impl RowViewer<Thumbnail> for FileTableViewer {
             2 => {
                 if resp.hovered() {
                     resp.clone().on_hover_text(&row.path);
+                }
+            }
+            3 => {
+                if let Some(cat) = row.category.as_ref() {
+                    if resp.clicked() {
+                        log::info!("Clickced on: {cat}");
+                        self.requested_tabs.push(TabAction::OpenCategory(cat.clone()));
+                    }
+                }
+            }
+            4 => {
+                for tag in &row.tags {
+                    if resp.clicked() {
+                        log::info!("Clickced on: {tag}");
+                        self.requested_tabs.push(TabAction::OpenTag(tag.clone()));
+                    }
                 }
             }
             _ => {
@@ -493,7 +547,7 @@ impl RowViewer<Thumbnail> for FileTableViewer {
 
     fn set_cell_value(&mut self, src: &Thumbnail, dst: &mut Thumbnail, column: usize) {
         match column {
-            0 => { /* thumbnail placeholder - no data */ }
+            0 => dst.thumbnail_b64 = src.thumbnail_b64.clone(),
             1 => dst.filename = src.filename.clone(),
             2 => dst.path = src.path.clone(),
             3 => dst.category = src.category.clone(),
@@ -509,7 +563,7 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                 }
             },
             9 => dst.db_created = src.db_created.clone(),
-            _ => unreachable!(),
+            _ => {},
         }
     }
 

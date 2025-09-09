@@ -11,7 +11,7 @@ impl crate::app::SmartMediaApp {
         .exact_height(25.0)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.menu_button("File", |ui| {
+                ui.menu_button(" File ", |ui| {
                     ui.menu_button("AI", |ui| {
                         // Enable AI Search: spawn async global init if not already in progress
                         if ui.button("Enable AI Search").clicked() {
@@ -76,7 +76,11 @@ impl crate::app::SmartMediaApp {
                     }
                 });
 
-                ui.menu_button("View", |ui| {
+                ui.menu_button(" View ", |ui| {
+                    if ui.button("Egui Settings").clicked() {
+                        self.context.open_ui_settings = true;
+                    }
+
                     // allow certain tabs to be toggled
                     for tab in TABS {
                         if ui
@@ -95,6 +99,10 @@ impl crate::app::SmartMediaApp {
                         }
                     }
                 });
+
+                ui.add_space(5.);
+                ui.separator();
+                ui.add_space(5.);
 
                 let current_path_clone = self.context.file_explorer.current_path.clone();
                 let parts: Vec<String> = current_path_clone

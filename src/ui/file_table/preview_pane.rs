@@ -9,23 +9,7 @@ impl super::FileExplorer {
         SidePanel::right("MainPageRightPanel")
             .default_width(400.)
             .show_animated_inside(ui, self.open_preview_pane, |ui| {
-                // Auto-follow active vision path asynchronously (avoid blocking UI thread)
-                if self.open_preview_pane { // only poll when pane visible
-                    let cur_path = self.current_thumb.path.clone();
-                    let tx_thumb = self.thumbnail_tx.clone();
-                    let preview_follow = self.follow_active_vision; // assume a bool field (add if not existing)
-                    if preview_follow {
-                        tokio::spawn(async move {
-                            if let Some(active) = crate::ai::GLOBAL_AI_ENGINE.get_active_vision_path().await {
-                                if !active.is_empty() && active != cur_path {
-                                    if let Ok(row_opt) = crate::Thumbnail::get_thumbnail_by_path(&active).await {
-                                        if let Some(row) = row_opt { let _ = tx_thumb.send(row); }
-                                    }
-                                }
-                            }
-                        });
-                    }
-                }
+                // Removed background polling of active vision path to avoid selection thrashing.
                 ui.vertical_centered(|ui| {
                     let name = &self.current_thumb.filename;
                     let thumb_cache = &mut self.viewer.thumb_cache;

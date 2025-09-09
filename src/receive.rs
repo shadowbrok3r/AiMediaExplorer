@@ -269,5 +269,13 @@ impl crate::app::SmartMediaContext {
 
             if !self.open_settings_modal { self.open_settings_modal = false; }
         }
+    
+        if self.open_ui_settings {
+            Window::new("Egui Settings").show(ctx, |ui| {
+                ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                    ctx.settings_ui(ui);
+                });
+            });
+        }
     }
 }

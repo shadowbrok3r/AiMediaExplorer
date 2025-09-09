@@ -212,7 +212,7 @@ fn indicator_small(ui: &mut Ui, meta: &StatusMeta) {
                     .size(18.),
             );
         } else {
-            ui.put(rect, Label::new(RichText::new("⚙").weak()));
+            ui.put(rect, Label::new(RichText::new("⚙").weak()).selectable(false));
         }
     }
 
@@ -239,37 +239,6 @@ fn indicator_small(ui: &mut Ui, meta: &StatusMeta) {
     });
     ui.add_space(5.);
 }
-
-/// Draw a rotating gear (⚙) centered vertically, aligned near the left inside the given rect.
-// fn draw_rotating_gear(ui: &Ui, button_rect: Rect, color: Color32) {
-//     if !ui.is_rect_visible(button_rect) { return; }
-//     ui.ctx().request_repaint(); // ensure animation
-//     let h = button_rect.height();
-//     // Square area for gear near left edge (after button's default padding ~4px)
-//     let side = h.min(18.0); // cap size a bit so it doesn't dominate
-//     let gear_rect = Rect::from_min_size(
-//         pos2(button_rect.left() + 4.0, button_rect.center().y - side * 0.5),
-//         vec2(side, side),
-//     );
-//     let angle = ui.input(|i| i.time as f32) * std::f32::consts::TAU * 0.6; // rotation speed factor
-//     // Build rotated text shape using egui font system.
-//     let shape = ui.ctx().fonts(|f| {
-//         let mut s = Shape::text(
-//             f,
-//             gear_rect.center(),
-//             Align2::CENTER_CENTER,
-//             "⚙",
-//             FontId::new(side * 0.9, FontFamily::Proportional),
-//             color,
-//         );
-//         if let Shape::Text(ts) = &mut s {
-//             let rotated = ts.clone().with_angle_and_anchor(angle, Align2::CENTER_CENTER);
-//             *ts = rotated;
-//         }
-//         s
-//     });
-//     ui.painter().add(shape);
-// }
 
 #[derive(Default)]
 pub struct GearSpinner {

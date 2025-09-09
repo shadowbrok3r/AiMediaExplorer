@@ -371,7 +371,7 @@ dependencies = [
  "futures-timer",
  "futures-util",
  "http",
- "indexmap 2.11.0",
+ "indexmap 2.11.1",
  "mime",
  "multer",
  "num-traits",
@@ -420,7 +420,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34ecdaff7c9cffa3614a9f9999bf9ee4c3078fe3ce4d6a6e161736b56febf2de"
 dependencies = [
  "bytes",
- "indexmap 2.11.0",
+ "indexmap 2.11.1",
  "serde",
  "serde_json",
 ]
@@ -1818,6 +1818,7 @@ dependencies = [
 [[package]]
 name = "egui-data-table"
 version = "0.8.3"
+source = "git+https://github.com/shadowbrok3r/egui-data-table#c0a15875666e9c81728b91cde0e63ca8de0c54dd"
 dependencies = [
  "egui",
  "egui_extras",
@@ -2960,7 +2961,7 @@ dependencies = [
  "futures-core",
  "futures-sink",
  "http",
- "indexmap 2.11.0",
+ "indexmap 2.11.1",
  "slab",
  "tokio",
  "tokio-util",
@@ -3436,9 +3437,9 @@ dependencies = [
 
 [[package]]
 name = "indexmap"
-version = "2.11.0"
+version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2481980430f9f78649238835720ddccc57e52df14ffce1c6f37391d61b563e9"
+checksum = "206a8042aec68fa4a62e8d3f7aa4ceb508177d9324faf261e1959e495b7a1921"
 dependencies = [
  "equivalent",
  "hashbrown 0.15.5",
@@ -4097,7 +4098,7 @@ dependencies = [
  "half",
  "hashbrown 0.15.5",
  "hexf-parse",
- "indexmap 2.11.0",
+ "indexmap 2.11.1",
  "log",
  "num-traits",
  "once_cell",
@@ -4840,7 +4841,7 @@ dependencies = [
  "pkg-config",
  "sha2",
  "tar",
- "ureq 3.1.1",
+ "ureq 3.1.2",
 ]
 
 [[package]]
@@ -4965,7 +4966,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4c5cc86750666a3ed20bdaf5ca2a0344f9c67674cae0515bec2da16fbaa47db"
 dependencies = [
  "fixedbitset",
- "indexmap 2.11.0",
+ "indexmap 2.11.1",
 ]
 
 [[package]]
@@ -5083,7 +5084,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3af6b589e163c5a788fab00ce0c0366f6efbb9959c2f9874b224936af7fce7e1"
 dependencies = [
  "base64 0.22.1",
- "indexmap 2.11.0",
+ "indexmap 2.11.1",
  "quick-xml 0.38.3",
  "serde",
  "time",
@@ -6340,7 +6341,7 @@ version = "1.0.143"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d401abef1d108fbd9cbaebc3e46611f4b1021f714a0597a71f41ee463f5f4a5a"
 dependencies = [
- "indexmap 2.11.0",
+ "indexmap 2.11.1",
  "itoa",
  "memchr",
  "ryu",
@@ -6398,7 +6399,7 @@ dependencies = [
  "chrono",
  "hex",
  "indexmap 1.9.3",
- "indexmap 2.11.0",
+ "indexmap 2.11.1",
  "schemars 0.9.0",
  "schemars 1.0.4",
  "serde",
@@ -6803,7 +6804,7 @@ dependencies = [
  "futures",
  "geo",
  "getrandom 0.3.3",
- "indexmap 2.11.0",
+ "indexmap 2.11.1",
  "path-clean",
  "pharos",
  "reblessive",
@@ -7489,7 +7490,7 @@ version = "0.22.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "41fe8c660ae4257887cf66394862d21dbca4a6ddd26f04a3560410406a2f819a"
 dependencies = [
- "indexmap 2.11.0",
+ "indexmap 2.11.1",
  "serde",
  "serde_spanned",
  "toml_datetime",
@@ -7804,9 +7805,9 @@ dependencies = [
 
 [[package]]
 name = "ureq"
-version = "3.1.1"
+version = "3.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9504c6ba73daec8a6541440ab9fb64f97320251582292265420e5587559c9095"
+checksum = "99ba1025f18a4a3fc3e9b48c868e9beb4f24f4b4b1a325bada26bd4119f46537"
 dependencies = [
  "base64 0.22.1",
  "der",
@@ -8286,7 +8287,7 @@ dependencies = [
  "cfg_aliases",
  "document-features",
  "hashbrown 0.15.5",
- "indexmap 2.11.0",
+ "indexmap 2.11.1",
  "log",
  "naga",
  "once_cell",
@@ -9218,7 +9219,7 @@ dependencies = [
  "crc32fast",
  "crossbeam-utils",
  "displaydoc",
- "indexmap 2.11.0",
+ "indexmap 2.11.1",
  "num_enum",
  "thiserror 1.0.69",
 ]
@@ -9238,7 +9239,7 @@ dependencies = [
  "flate2",
  "getrandom 0.3.3",
  "hmac",
- "indexmap 2.11.0",
+ "indexmap 2.11.1",
  "lzma-rust2",
  "memchr",
  "pbkdf2",

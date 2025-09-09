@@ -19,13 +19,17 @@ impl eframe::App for app::SmartMediaApp {
             let mut q = app::OPEN_TAB_REQUESTS.lock().unwrap();
             for req in q.drain(..) {
                 match req {
-                    crate::ui::file_table::FilterRequest::NewTab { title, rows } => {
+                    crate::ui::file_table::FilterRequest::NewTab { title, rows, showing_similarity, similar_scores } => {
                         if !self.context.open_tabs.contains(&title) {
                             self.tree[egui_dock::SurfaceIndex::main()].push_to_focused_leaf(title.clone());
                             self.context.open_tabs.insert(title.clone());
                         }
-                        let mut ex = crate::ui::file_table::FileExplorer::default();
+                        let mut ex = crate::ui::file_table::FileExplorer::new(true);
                         ex.set_rows(rows);
+                        if showing_similarity {
+                            ex.viewer.showing_similarity = true;
+                            if let Some(scores) = similar_scores { ex.viewer.similar_scores = scores; }
+                        }
                         self.context.filtered_tabs.insert(title, ex);
                     }
                 }
