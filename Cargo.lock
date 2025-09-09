@@ -1818,7 +1818,7 @@ dependencies = [
 [[package]]
 name = "egui-data-table"
 version = "0.8.3"
-source = "git+https://github.com/shadowbrok3r/egui-data-table#c0a15875666e9c81728b91cde0e63ca8de0c54dd"
+source = "git+https://github.com/shadowbrok3r/egui-data-table#7faf1cac885454fc087fb3dcaf0a940f6cf52aef"
 dependencies = [
  "egui",
  "egui_extras",

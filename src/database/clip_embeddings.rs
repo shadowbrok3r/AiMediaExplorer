@@ -44,7 +44,7 @@ impl super::ClipEmbeddingRow {
                 r#"
                 SELECT id, thumb_ref, path, vector::distance::knn() AS dist
                 FROM clip_embeddings
-                WHERE embedding <| 24, 64 |> $vec
+                WHERE embedding <| 64, 64 |> $vec
                 ORDER BY dist
                 
                 FETCH thumb_ref

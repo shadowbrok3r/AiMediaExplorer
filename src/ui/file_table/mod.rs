@@ -699,7 +699,7 @@ impl FileExplorer {
                     style.apply(ui.style_mut());
                     
                     MenuButton::new("Scan")
-                    .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside).style(style))
+                    .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside).style(style.clone()))
                     .ui(ui, |ui| {
                         ui.vertical_centered_justified(|ui| { 
                             ui.set_width(400.);
@@ -856,22 +856,18 @@ impl FileExplorer {
                     });
                     
                     MenuButton::new("Table")
-                    .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside))
+                    .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside).style(style))
                     .ui(ui, |ui| {
                         ui.vertical_centered_justified(|ui| {
-                            let response = ComboBox::new("Table Mode", "")
-                            .selected_text(self.viewer.mode.to_str())
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut self.viewer.mode, viewer::ExplorerMode::Database, "Database");
-                                ui.selectable_value(&mut self.viewer.mode, viewer::ExplorerMode::FileSystem, "FileSystem");
-                            }).response;
+                            ui.selectable_value(&mut self.viewer.mode, viewer::ExplorerMode::Database, "Database");
+                            ui.selectable_value(&mut self.viewer.mode, viewer::ExplorerMode::FileSystem, "FileSystem");
 
-                            if response.changed() {
-                                match self.viewer.mode {
-                                    viewer::ExplorerMode::Database => self.load_database_rows(),
-                                    viewer::ExplorerMode::FileSystem => self.populate_current_directory()
-                                }
-                            }
+                            // if response.changed() {
+                            //     match self.viewer.mode {
+                            //         viewer::ExplorerMode::Database => self.load_database_rows(),
+                            //         viewer::ExplorerMode::FileSystem => self.populate_current_directory()
+                            //     }
+                            // }
                             if ui.button("Reload Page").clicked() { self.load_database_rows(); }
                             if ui.button("Clear Table").clicked() { self.table.clear(); }
                         });
