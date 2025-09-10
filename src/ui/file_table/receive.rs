@@ -1,7 +1,7 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use std::{path::PathBuf, sync::Arc};
 use eframe::egui::Context;
-use crate::{next_scan_id, ui::file_table::AIUpdate, ScanEnvelope};
+use crate::{ui::file_table::AIUpdate, ScanEnvelope};
 
 impl super::FileExplorer {
     pub fn receive(&mut self, ctx: &Context) {
@@ -130,6 +130,16 @@ impl super::FileExplorer {
         }
 
         while let Ok(env) = self.scan_rx.try_recv() {
+            // Only process messages for our owning scan_id if set, else accept any
+            if let Some(owner) = self.owning_scan_id {
+                if env.scan_id != owner {
+                    // Ignore stray messages for other tabs/scans
+                    continue;
+                }
+            } else {
+                // If we don't have an owner set yet, take the first seen scan_id as ours
+                self.owning_scan_id = Some(env.scan_id);
+            }
             match env.msg {
                 crate::utilities::scan::ScanMsg::FoundDir(dir) => {
                     if let Some(row) = super::FileExplorer::directory_to_thumbnail(&dir.path) {
@@ -398,7 +408,8 @@ impl super::FileExplorer {
                     if !newly_enqueued.is_empty() {
                         let scan_tx = self.scan_tx.clone();
                         let sem = self.thumb_semaphore.clone();
-                        let scan_id_for_updates = next_scan_id();
+                        // Route these updates to this explorer's owning scan id
+                        let scan_id_for_updates = self.owning_scan_id.or(self.current_scan_id).unwrap_or(0);
                         for path_str in newly_enqueued.into_iter() {
                             let permit_fut = sem.clone().acquire_owned();
                             let tx_clone = scan_tx.clone();
@@ -477,6 +488,14 @@ impl super::FileExplorer {
                         });
                     }
                 }
+                crate::utilities::scan::ScanMsg::EncryptedArchives(zips) => {
+                    // Queue unique archives; show modal after scan completes
+                    for z in zips.into_iter() {
+                        if !self.pending_zip_passwords.contains(&z) {
+                            self.pending_zip_passwords.push_back(z);
+                        }
+                    }
+                }
                 crate::utilities::scan::ScanMsg::Progress { scanned, total } => {
                     if scanned > 0 && total > 0 {
                         self.file_scan_progress = (scanned as f32) / (total as f32);
@@ -490,6 +509,11 @@ impl super::FileExplorer {
                     self.file_scan_progress = 1.0;
                     self.scan_done = true;
                     self.current_scan_id = None;
+                    // If we have pending encrypted archives, open the modal now
+                    if !self.pending_zip_passwords.is_empty() {
+                        self.active_zip_prompt = self.pending_zip_passwords.front().cloned();
+                        self.show_zip_modal = true;
+                    }
                     // Record the root associated with this scan for UX
                     self.last_scan_root = Some(self.current_path.clone());
                     if !self.pending_thumb_rows.is_empty() {

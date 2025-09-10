@@ -15,6 +15,47 @@ use std::sync::Mutex;
 use once_cell::sync::Lazy;
 use std::time::{Duration, Instant};
 
+// --- WSL/UNC path normalization helpers ---
+/// Normalize common WSL UNC inputs to a canonical \\\\wsl.localhost\\<distro>\\... form.
+/// No-op on non-Windows or for virtual schemes like zip://
+#[cfg(windows)]
+pub fn normalize_wsl_unc(input: &str) -> String {
+    // Skip virtual schemes
+    if input.starts_with("zip://") || input.starts_with("tar://") || input.starts_with("7z://") { return input.to_string(); }
+    let s = input.trim().replace('/', "\\");
+    let slow = s.to_ascii_lowercase();
+    // Accept variations: \\wsl$\\, \wsl$\\, wsl$\\, /wsl$/, same for wsl.localhost
+    // Map all to \\wsl.localhost\\
+    let mut rest = None;
+    if slow.starts_with("\\\\wsl$\\") { rest = Some(s[6..].to_string()); } // strip "\\wsl$\\"
+    else if slow.starts_with("\\wsl$\\") { rest = Some(s[5..].to_string()); } // add missing backslash later
+    else if slow.starts_with("wsl$\\") { rest = Some(s[5..].to_string()); }
+    else if slow.starts_with("/wsl$/") { rest = Some(s[6..].to_string()); }
+    else if slow.starts_with("\\\\wsl.localhost\\") { return s; }
+    else if slow.starts_with("\\wsl.localhost\\") { return format!("\\\\{}", &s[1..]); }
+    else if slow.starts_with("wsl.localhost\\") { rest = Some(s[14..].to_string()); }
+    else if slow.starts_with("/wsl.localhost/") { rest = Some(s[15..].to_string()); }
+
+    if let Some(r) = rest {
+        let r = r.trim_start_matches('\\');
+        return format!("\\\\wsl.localhost\\{}", r);
+    }
+    s
+}
+
+#[cfg(not(windows))]
+pub fn normalize_wsl_unc(input: &str) -> String { input.to_string() }
+
+#[cfg(windows)]
+pub fn normalize_wsl_unc_pathbuf(p: &std::path::Path) -> std::path::PathBuf {
+    use std::path::PathBuf;
+    let s = p.to_string_lossy().to_string();
+    PathBuf::from(normalize_wsl_unc(&s))
+}
+
+#[cfg(not(windows))]
+pub fn normalize_wsl_unc_pathbuf(p: &std::path::Path) -> std::path::PathBuf { p.to_path_buf() }
+
 #[cfg(windows)]
 pub fn gpu_mem_mb() -> Option<(f32, f32)> {
     // Prefer PDH performance counters when available as they reflect system VRAM usage on NVIDIA drivers.

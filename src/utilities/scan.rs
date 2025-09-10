@@ -1,4 +1,4 @@
-use crate::utilities::types::{DateField, Filters, FoundFile, MediaKind, DirItem, is_image, is_video};
+use crate::utilities::types::{DateField, Filters, FoundFile, MediaKind, DirItem, is_image, is_video, is_archive};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use jwalk::{WalkDirGeneric, Parallelism};
 use crossbeam::channel::{Sender, Receiver, bounded};
@@ -53,18 +53,21 @@ static THUMB_TX: OnceLock<Sender<ThumbJob>> = OnceLock::new();
 static IMG_INFLIGHT: AtomicUsize = AtomicUsize::new(0);
 static VID_INFLIGHT: AtomicUsize = AtomicUsize::new(0);
 
-pub fn init_thumbnail_workers(tx_scan: Sender<ScanEnvelope>) {
+// Route scan updates to the correct UI (per scan_id)
+static SCAN_ROUTERS: Lazy<std::sync::Mutex<std::collections::HashMap<u64, Sender<ScanEnvelope>>>> =
+    Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+pub fn init_thumbnail_workers() {
     if THUMB_TX.get().is_some() { return; }
     let (tx, rx): (Sender<ThumbJob>, Receiver<ThumbJob>) = bounded(256);
     let _ = THUMB_TX.set(tx.clone());
-    start_thumbnail_workers(rx, tx_scan);
+    start_thumbnail_workers(rx);
 }
 
-fn start_thumbnail_workers(rx: Receiver<ThumbJob>, tx_scan: Sender<ScanEnvelope>) {
+fn start_thumbnail_workers(rx: Receiver<ThumbJob>) {
     let workers = 3usize.min(THUMB_POOL.current_num_threads());
     for _ in 0..workers {
         let rx = rx.clone();
-        let tx = tx_scan.clone();
         THUMB_POOL.spawn(move || {
             while let Ok(job) = rx.recv() {
                 if is_cancelled(job.scan_id) { 
@@ -77,10 +80,15 @@ fn start_thumbnail_workers(rx: Receiver<ThumbJob>, tx_scan: Sender<ScanEnvelope>
                     continue; 
                 }
                 if let Some(thumb_b64) = generate_thumb(&job.path, &job.kind) {
-                    let _ = tx.try_send(ScanEnvelope {
-                        scan_id: job.scan_id,
-                        msg: ScanMsg::UpdateThumb { path: job.path.clone(), thumb: thumb_b64 },
-                    });
+                    // Route thumbnail to the UI that owns this scan_id
+                    if let Ok(map) = SCAN_ROUTERS.lock() {
+                        if let Some(tx) = map.get(&job.scan_id) {
+                            let _ = tx.try_send(ScanEnvelope {
+                                scan_id: job.scan_id,
+                                msg: ScanMsg::UpdateThumb { path: job.path.clone(), thumb: thumb_b64 },
+                            });
+                        }
+                    }
                 }
                 match job.kind {
                     MediaKind::Image => { IMG_INFLIGHT.fetch_sub(1, Ordering::Relaxed); },
@@ -129,6 +137,8 @@ pub enum ScanMsg {
         path: std::path::PathBuf,
         thumb: String,
     },
+    /// Report encrypted archives encountered during scans so the UI can prompt once at the end.
+    EncryptedArchives(Vec<String>),
     Progress {
         scanned: usize,
         total: usize,
@@ -145,6 +155,7 @@ fn is_media_kind(path: &Path) -> MediaKind {
     if let Some(ext) = path.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()) {
         if is_image(&ext) { return MediaKind::Image; }
         if is_video(&ext) { return MediaKind::Video; }
+        if is_archive(&ext) { return MediaKind::Archive; }
     }
     MediaKind::Other
 }
@@ -160,7 +171,9 @@ pub struct ScanEnvelope {
 // Main entry used by UI resource: offloads whole scan onto blocking thread pool.
 pub async fn spawn_scan(filters: Filters, tx: Sender<ScanEnvelope>, recursive: bool, scan_id: u64) {
     // Ensure thumbnail workers are initialized with this scan channel
-    init_thumbnail_workers(tx.clone());
+    init_thumbnail_workers();
+    // Register router for this scan id
+    if let Ok(mut map) = SCAN_ROUTERS.lock() { map.insert(scan_id, tx.clone()); }
     // Perform the blocking filesystem traversal on a blocking thread.
     if let Err(e) = tokio::task::spawn_blocking(move || perform_scan_blocking(filters, tx, recursive, scan_id)).await {
         log::warn!("spawn_blocking scan join error: {e:?}");
@@ -183,7 +196,12 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
                 return;
             }
         }
-    } else { filters.root.clone() };
+    } else {
+        // Normalize WSL UNC on Windows to improve exists()/is_dir() stability
+        let p = &filters.root;
+        let s = p.to_string_lossy().to_string();
+        std::path::PathBuf::from(crate::utilities::windows::normalize_wsl_unc(&s))
+    };
     if !root.exists() {
         let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::Error(format!("Root does not exist: {}", root.display())) });
         let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::Done });
@@ -253,6 +271,8 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
                             if !crate::is_supported_media_ext(ext.as_str()) { return false; }
                             // Only apply extension excludes in recursive mode (as per Filters contract).
                             if recursive && excluded_exts_set.contains(&ext) { return false; }
+                            // In shallow scans we optionally include archives (.zip) in listing
+                            if !recursive && is_archive(ext.as_str()) && !filters_clone.include_archives { return false; }
                             return true;
                         } else { return false; }
                     }
@@ -271,6 +291,8 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
     let mut idx: usize = 0;
     // Collect videos for deferred thumbnailing
     let mut videos_for_later: Vec<std::path::PathBuf> = Vec::new();
+    // Encrypted archives found during this scan
+    let mut encrypted_archives: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for dir_entry_result in walker {
         if is_cancelled(scan_id) {
             let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::Done });
@@ -289,6 +311,24 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
                 if entry.file_type.is_file() {
                     let path_buf = entry.path();
                     let path = path_buf.as_path();
+                    // Detect if this is an encrypted ZIP so we can prompt later
+                    if let Some(ext) = path.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()) {
+                        if ext == "zip" {
+                            if let Ok(file) = std::fs::File::open(path) {
+                                if let Ok(mut z) = zip::ZipArchive::new(file) {
+                                    let mut found = false;
+                                    let to_check = z.len().min(8);
+                                    for i in 0..to_check {
+                                        if let Ok(entry) = z.by_index(i) {
+                                            let enc = entry.encrypted();
+                                            if enc { found = true; break; }
+                                        }
+                                    }
+                                    if found { encrypted_archives.insert(path.to_string_lossy().to_string()); }
+                                }
+                            }
+                        }
+                    }
                     if let Some(found) = process_path_collect(path, &filters_clone, after, before) {
                         batch.push(found);
                         let _ = tx.try_send(ScanEnvelope { 
@@ -352,6 +392,10 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
         enqueue_thumb_job(&vpath, MediaKind::Video, scan_id);
     }
 
+    // If we found encrypted archives, notify UI before Done
+    if !encrypted_archives.is_empty() {
+        let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::EncryptedArchives(encrypted_archives.into_iter().collect()) });
+    }
     finish(&tx, scan_id);
 }
 
@@ -370,6 +414,8 @@ fn estimate_total_shallow(root: &Path, filters: &Filters) -> usize {
 
 fn finish(tx: &Sender<ScanEnvelope>, scan_id: u64) { 
     let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::Done }); 
+    // Unregister router mapping for this scan
+    if let Ok(mut map) = SCAN_ROUTERS.lock() { let _ = map.remove(&scan_id); }
 }
 
 fn process_path_collect(
@@ -380,12 +426,13 @@ fn process_path_collect(
 ) -> Option<FoundFile> {
     if let Some(name) = path.file_name().and_then(|s| s.to_str()) { if name.starts_with("._") { return None; } }
     let kind = is_media_kind(path);
+    // Permit archives when explicitly requested for shallow scans (represented as MediaKind::Other)
+    let is_archive_file = path.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()).map(|e| is_archive(e.as_str())).unwrap_or(false);
     if !(
-        (filters.include_images && kind == MediaKind::Image) 
+        (filters.include_images && kind == MediaKind::Image)
         || (filters.include_videos && kind == MediaKind::Video)
-    ) {
-        return None;
-    }
+        || (filters.include_archives && is_archive_file)
+    ) { return None; }
     let md = match path.metadata() {
         Ok(m) => m,
         Err(_) => return None,

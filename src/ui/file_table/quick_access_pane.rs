@@ -1,5 +1,5 @@
 use humansize::{format_size, DECIMAL};
-use crate::list_drive_infos;
+use crate::{list_drive_infos};
 use std::path::PathBuf;
 use eframe::egui::*;
 
@@ -68,8 +68,8 @@ impl super::FileExplorer {
                                     if response.clicked() || middle {
                                         let title = format!("Drive: {}", drive.label);
                                         let path = path.to_string_lossy().to_string();
-                                        let shift = ui.input(|i| i.modifiers.shift);
-                                        let recursive = !shift; // default recursive
+                                        let recursive = ui.input(|i| i.modifiers.shift);
+                                        // let recursive = !shift; // default recursive
                                         let background = ctrl || middle;
                                         crate::app::OPEN_TAB_REQUESTS
                                             .lock()
@@ -79,6 +79,45 @@ impl super::FileExplorer {
                                 }
                             });
                         });       
+                        // WSL (Windows Subsystem for Linux) distros and mounts
+                        CollapsingHeader::new(RichText::new("WSL (Linux)"))
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            #[cfg(windows)]
+                            {
+                                let distros = crate::utilities::explorer::list_wsl_distros();
+                                if distros.is_empty() {
+                                    ui.label(RichText::new("No WSL distros detected (check `wsl -l -q`) ").weak());
+                                }
+                                for d in distros.iter() {
+                                    ui.separator();
+                                    ui.label(RichText::new(format!("Distro: {}", d)).strong());
+                                    for access in crate::utilities::explorer::wsl_dynamic_mounts(d) {
+                                        let resp = Button::new(&access.label)
+                                            .right_text(RichText::new(&access.icon).color(ui.style().visuals.error_fg_color))
+                                            .ui(ui)
+                                            .on_hover_text("Click: open recursive in new tab (Shift: shallow)");
+                                        let ctrl = ui.input(|i| i.modifiers.command || i.modifiers.ctrl);
+                                        let middle = resp.middle_clicked();
+                                        if resp.clicked() || middle {
+                                            let title = access.label.clone();
+                                            let path = access.path.to_string_lossy().to_string();
+                                            let shift = ui.input(|i| i.modifiers.shift);
+                                            let recursive = !shift; // default recursive
+                                            let background = ctrl || middle;
+                                            crate::app::OPEN_TAB_REQUESTS
+                                                .lock()
+                                                .unwrap()
+                                                .push(crate::ui::file_table::FilterRequest::OpenPath { title, path, recursive, background });
+                                        }
+                                    }
+                                }
+                            }
+                            #[cfg(not(windows))]
+                            {
+                                ui.label(RichText::new("WSL is only available on Windows").weak());
+                            }
+                        });
                         CollapsingHeader::new(RichText::new("Recent Directories").strong())
                         .default_open(true)
                         .show(ui, |ui| {

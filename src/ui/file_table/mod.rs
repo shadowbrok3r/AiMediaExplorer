@@ -204,6 +204,21 @@ pub struct FileExplorer {
     group_copy_dst: String,
     #[serde(skip)]
     group_add_unassigned_target: String,
+    // Encrypted archive support: prompt queue shown as egui modal after scan completes
+    #[serde(skip)]
+    pending_zip_passwords: std::collections::VecDeque<String>,
+    #[serde(skip)]
+    active_zip_prompt: Option<String>, // archive path currently asking password for
+    #[serde(skip)]
+    zip_password_input: String,
+    #[serde(skip)]
+    show_zip_modal: bool,
+    // In-memory archive passwords for current session (keyed by archive filesystem path)
+    #[serde(skip)]
+    archive_passwords: std::collections::HashMap<String, String>,
+    // Track which scan_id owns this explorer so updates don't leak across tabs
+    #[serde(skip)]
+    owning_scan_id: Option<u64>,
 }
 
 impl FileExplorer {
@@ -285,6 +300,12 @@ impl FileExplorer {
             group_copy_src: String::new(),
             group_copy_dst: String::new(),
             group_add_unassigned_target: String::new(),
+            pending_zip_passwords: std::collections::VecDeque::new(),
+            active_zip_prompt: None,
+            zip_password_input: String::new(),
+            show_zip_modal: false,
+            archive_passwords: std::collections::HashMap::new(),
+            owning_scan_id: None,
         };
         // Preload saved filter groups
         {
@@ -330,6 +351,7 @@ impl FileExplorer {
             self.last_scan_root = Some(self.current_path.clone());
             // Spawn recursive scan with current filters
             let scan_id = crate::next_scan_id();
+            self.owning_scan_id = Some(scan_id);
             let tx = self.scan_tx.clone();
             let mut filters = crate::Filters::default();
             filters.root = std::path::PathBuf::from(self.current_path.clone());
@@ -449,6 +471,9 @@ impl FileExplorer {
                 })
                 .desired_width(300.)
                 .ui(ui);
+
+                // If browsing inside a zip archive, show a password button
+                // Zip password button removed; we show a modal automatically when needed
 
                 match self.viewer.mode {
                     viewer::ExplorerMode::FileSystem => {
@@ -851,30 +876,12 @@ impl FileExplorer {
                             ui.set_width(400.);
                             ui.heading("Recursive Scanning");
                             if Button::new("Recursive Scan").right_text("💡").ui(ui).clicked() {
-                                self.recursive_scan = true;
-                                self.scan_done = false;
-                                self.table.clear();
-                                // Reset previous scan snapshot
-                                self.last_scan_rows.clear();
-                                self.last_scan_paths.clear();
-                                self.last_scan_root = Some(self.current_path.clone());
-                                self.file_scan_progress = 0.0;
-                                let scan_id = crate::next_scan_id();
-                                let tx = self.scan_tx.clone();
-                                let recurse = self.recursive_scan.clone();
-                                let mut filters = crate::Filters::default();
-                                filters.root = std::path::PathBuf::from(self.current_path.clone());
-                                filters.min_size_bytes = self.viewer.ui_settings.db_min_size_bytes;
-                                filters.max_size_bytes = self.viewer.ui_settings.db_max_size_bytes;
-                                filters.include_images = self.viewer.types_show_images;
-                                filters.include_videos = self.viewer.types_show_videos;
-                                filters.skip_icons = self.viewer.ui_settings.filter_skip_icons;
-                                filters.excluded_terms = self.excluded_terms.clone();
-                                // Remember current scan id so cancel can target it
-                                self.current_scan_id = Some(scan_id);
-                                tokio::spawn(async move {
-                                    crate::spawn_scan(filters, tx, recurse, scan_id).await;
-                                });
+                                let title = format!("Scan: {}", self.current_path);
+                                let path = self.current_path.clone();
+                                crate::app::OPEN_TAB_REQUESTS
+                                    .lock()
+                                    .unwrap()
+                                    .push(crate::ui::file_table::FilterRequest::OpenPath { title, path, recursive: true, background: false });
                             }
                             
                             if Button::new("Re-scan Current Folder").right_text("🔄").ui(ui).on_hover_text("Shallow scan with current filters (applies 'Skip likely icons')").clicked() {
@@ -1593,6 +1600,56 @@ impl FileExplorer {
                     s.auto_shrink = [false, false].into();
                 })
                 .ui(ui);
+            // Modal password prompt (appears at end of scans or when browsing encrypted archives)
+            if self.show_zip_modal {
+                egui::Window::new("Archive Password Required")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                    .show(ui.ctx(), |ui| {
+                        let current = self.active_zip_prompt.clone().unwrap_or_default();
+                        ui.label("One or more encrypted archives were found. Please enter the password.");
+                        ui.separator();
+                        ui.label(format!("Archive: {}", current));
+                        let resp = egui::TextEdit::singleline(&mut self.zip_password_input)
+                            .password(true)
+                            .hint_text("Password")
+                            .desired_width(240.)
+                            .ui(ui);
+                        ui.horizontal(|ui| {
+                            if ui.button("Submit").clicked() || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                                // Store in-memory for this session and refresh any open view for that archive
+                                let pw = std::mem::take(&mut self.zip_password_input);
+                                if !current.is_empty() {
+                                    self.archive_passwords.insert(current.clone(), pw);
+                                }
+                                // If currently browsing this archive, refresh to re-attempt list with password
+                                if self.current_path.starts_with(&format!("zip://{}!", current))
+                                    || self.current_path.starts_with(&format!("7z://{}!", current))
+                                    || self.current_path.starts_with(&format!("tar://{}!", current)) // tar typically not encrypted, but harmless
+                                {
+                                    self.populate_current_directory();
+                                }
+                                // Advance the queue
+                                if let Some(_) = self.pending_zip_passwords.pop_front() {}
+                                self.active_zip_prompt = self.pending_zip_passwords.front().cloned();
+                                if self.active_zip_prompt.is_none() { self.show_zip_modal = false; }
+                            }
+                            if ui.button("Skip").on_hover_text("Skip this archive").clicked() {
+                                self.zip_password_input.clear();
+                                if let Some(_) = self.pending_zip_passwords.pop_front() {}
+                                self.active_zip_prompt = self.pending_zip_passwords.front().cloned();
+                                if self.active_zip_prompt.is_none() { self.show_zip_modal = false; }
+                            }
+                            if ui.button("Cancel All").clicked() {
+                                self.pending_zip_passwords.clear();
+                                self.active_zip_prompt = None;
+                                self.zip_password_input.clear();
+                                self.show_zip_modal = false;
+                            }
+                        });
+                    });
+            }
             // Check for tag/category open-tab actions requested by the viewer
             if !self.viewer.requested_tabs.is_empty() {
                 let actions = std::mem::take(&mut self.viewer.requested_tabs);
@@ -1623,6 +1680,29 @@ impl FileExplorer {
                                 .lock()
                                 .unwrap()
                                 .push(crate::ui::file_table::FilterRequest::NewTab { title, rows, showing_similarity: false, similar_scores: None, background: false });
+                        }
+                        crate::ui::file_table::viewer::TabAction::OpenArchive(path_clicked) => {
+                            // Choose scheme based on extension (zip or tar family)
+                            let is_virtual = path_clicked.starts_with("zip://") || path_clicked.starts_with("tar://") || path_clicked.starts_with("7z://");
+                            let vpath = if is_virtual {
+                                path_clicked
+                            } else {
+                                let ext = std::path::Path::new(&path_clicked)
+                                    .extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()).unwrap_or_default();
+                                let name = path_clicked.to_ascii_lowercase();
+                                let is_tar_family = ext == "tar" || ext == "gz" || ext == "bz" || ext == "bz2" || ext == "xz"
+                                    || name.ends_with(".tgz") || name.ends_with(".tbz") || name.ends_with(".tbz2") || name.ends_with(".txz")
+                                    || name.ends_with(".tar.gz") || name.ends_with(".tar.bz2") || name.ends_with(".tar.xz");
+                                if is_tar_family { 
+                                    format!("tar://{}!/", path_clicked) 
+                                } else if ext == "7z" { 
+                                    format!("7z://{}!/", path_clicked) 
+                                } else { 
+                                    format!("zip://{}!/", path_clicked) 
+                                }
+                            };
+                            self.current_path = vpath;
+                            self.populate_current_directory();
                         }
                         crate::ui::file_table::viewer::TabAction::OpenSimilar(filename) => {
                             let title = format!("Similar to {filename}");

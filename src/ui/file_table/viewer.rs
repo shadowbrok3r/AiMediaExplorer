@@ -68,7 +68,7 @@ pub struct FileTableViewer {
 
 // Actions requested from table cells
 #[derive(Clone, Debug)]
-pub enum TabAction { OpenCategory(String), OpenTag(String), OpenSimilar(String) }
+pub enum TabAction { OpenCategory(String), OpenTag(String), OpenSimilar(String), OpenArchive(String) }
 
 impl FileTableViewer {
     pub fn new(thumbnail_tx: Sender<Thumbnail>, ai_update_tx: Sender<AIUpdate>, clip_embedding_tx: Sender<crate::ClipEmbeddingRow>) -> Self {
@@ -154,10 +154,17 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                 // Apply simple type visibility (view-only) before text search
                 if row.file_type == "<DIR>" && !self.types_show_dirs { return false; }
                 if row.file_type != "<DIR>" {
-                    let ext_opt = std::path::Path::new(&row.path)
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .map(|s| s.to_ascii_lowercase());
+                    let ext_opt = if row.path.starts_with("zip://") {
+                        std::path::Path::new(&row.filename)
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .map(|s| s.to_ascii_lowercase())
+                    } else {
+                        std::path::Path::new(&row.path)
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .map(|s| s.to_ascii_lowercase())
+                    };
                     if let Some(ext) = ext_opt {
                         if crate::is_image(ext.as_str()) && !self.types_show_images { return false; }
                         if crate::is_video(ext.as_str()) && !self.types_show_videos { return false; }
@@ -228,6 +235,14 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                             ui.available_size(),
                             egui::Image::new(eframe::egui::include_image!(
                                 "../../../assets/Icons/folder.png"
+                            )).texture_options(TextureOptions::default().with_mipmap_mode(Some(egui::TextureFilter::Linear))),
+                        );
+                        return;
+                    } else if row.file_type == "<ARCHIVE>" {
+                        ui.add_sized(
+                            ui.available_size(),
+                            egui::Image::new(eframe::egui::include_image!(
+                                "../../../assets/Icons/zip.png"
                             )).texture_options(TextureOptions::default().with_mipmap_mode(Some(egui::TextureFilter::Linear))),
                         );
                         return;
@@ -366,8 +381,8 @@ impl RowViewer<Thumbnail> for FileTableViewer {
         row: &mut Thumbnail,
         column: usize,
     ) -> Option<egui::Response> {
-    // No data to set for CLIP/Similarity columns
-    let clip_idx = 5usize;
+        // No data to set for CLIP/Similarity columns
+        let clip_idx = 5usize;
         let similarity_idx = if self.showing_similarity {
             match self.mode { ExplorerMode::FileSystem => 10, ExplorerMode::Database => 11 }
         } else { usize::MAX };
@@ -529,12 +544,25 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                             }
                         }
                     }
+                    // If clicking an archive (zip), request to open virtual view
+                    if let Some(ext) = std::path::Path::new(&row.path)
+                        .extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()) {
+                        if ext == "zip" || row.file_type == "<ARCHIVE>" { 
+                            self.requested_tabs.push(TabAction::OpenArchive(row.path.clone()));
+                        }
+                    } else if row.file_type == "<ARCHIVE>" {
+                        self.requested_tabs.push(TabAction::OpenArchive(row.path.clone()));
+                    }
+                    // Always notify selection so preview can reflect current row
                     let _ = self.thumbnail_tx.try_send(row.clone());
-                    let tx = self.clip_embedding_tx.clone();
-                    let thumb = row.clone();
-                    tokio::spawn(async move {
-                        let _ = tx.try_send(thumb.get_embedding().await.unwrap_or_default());
-                    });
+                    // Skip embedding generation for virtual paths inside zip
+                    if !row.path.starts_with("zip://") && !row.path.starts_with("tar://") && !row.path.starts_with("7z://") {
+                        let tx = self.clip_embedding_tx.clone();
+                        let thumb = row.clone();
+                        tokio::spawn(async move {
+                            let _ = tx.try_send(thumb.get_embedding().await.unwrap_or_default());
+                        });
+                    }
                 }
             }
         }
@@ -680,6 +708,7 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                 let prompt = self.ui_settings.ai_prompt_template.clone();
                 // editor..set_cell(row_id, NAME, r)
                 for (_, row) in ctx.selection.selected_rows.iter() {
+                    if row.path.starts_with("zip://") || row.path.starts_with("tar://") || row.path.starts_with("7z://") { continue; }
                     if self.bulk_cancel_requested { break; }
                     if row.file_type == "<DIR>" { continue; }
                     if let Some(ext) = Path::new(&row.path).extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()) { if !crate::is_image(ext.as_str()) { continue; } } else { continue; }
@@ -711,6 +740,7 @@ impl RowViewer<Thumbnail> for FileTableViewer {
             }
             "generate_clip_embeddings" => {
                 for (_, row) in ctx.selection.selected_rows.clone() {
+                    if row.path.starts_with("zip://") || row.path.starts_with("tar://") || row.path.starts_with("7z://") { continue; }
                     let path = row.path.clone();
                     // Skip if outside size bounds
                     if let Some(minb) = self.ui_settings.db_min_size_bytes { if row.size < minb { continue; } }

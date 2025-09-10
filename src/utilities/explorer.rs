@@ -176,3 +176,80 @@ pub fn list_drive_infos() -> Vec<DriveInfo> {
 pub fn list_drive_infos() -> Vec<DriveInfo> {
     Vec::new()
 }
+
+// --- WSL quick access helpers (Windows only) ---
+#[cfg(windows)]
+pub fn list_wsl_distros() -> Vec<String> {
+    // First try UNC root (some systems can't list \\wsl.localhost root)
+    let root = std::path::Path::new("\\\\wsl.localhost\\");
+    let mut out: Vec<String> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(root) {
+        for dent in rd.flatten() {
+            if let Ok(ft) = dent.file_type() {
+                if ft.is_dir() {
+                    if let Some(name) = dent.file_name().to_str() { out.push(name.to_string()); }
+                }
+            }
+        }
+    }
+    if out.is_empty() {
+        // Fallback: query via wsl.exe (fast, reliable)
+        use std::process::Command;
+        if let Ok(outp) = Command::new("wsl").args(["-l", "-q"]).output() {
+            if outp.status.success() {
+                let s = String::from_utf8_lossy(&outp.stdout);
+                for line in s.lines() {
+                    let name = line.trim();
+                    if !name.is_empty() { out.push(name.to_string()); }
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+#[cfg(not(windows))]
+pub fn list_wsl_distros() -> Vec<String> { Vec::new() }
+
+#[cfg(windows)]
+pub fn wsl_dynamic_mounts(distro: &str) -> Vec<QuickAccess> {
+    // Build list including common homes and discovered mounts under mnt/wsl and mnt/*
+    let mut items: Vec<QuickAccess> = Vec::new();
+    let base = format!("\\\\wsl.localhost\\{}", distro);
+    let push = |items: &mut Vec<QuickAccess>, label: String, sub: &str, icon: &str| items.push(QuickAccess { label, path: PathBuf::from(format!("{}\\{}", base, sub)), icon: icon.to_string() });
+    // Always include home and root if they exist
+    if std::path::Path::new(&format!("{}\\home", base)).exists() { push(&mut items, format!("WSL:{distro} /home"), "home", "🐧"); }
+    if std::path::Path::new(&format!("{}\\root", base)).exists() { push(&mut items, format!("WSL:{distro} /root"), "root", "👑"); }
+    // Preferred: mnt\\wsl (contains mounted drives)
+    let wsl_mount_str = format!("{}\\mnt\\wsl", base);
+    let wsl_mount = std::path::Path::new(&wsl_mount_str);
+    if let Ok(rd) = std::fs::read_dir(wsl_mount) {
+        for dent in rd.flatten() {
+            if dent.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                if let Some(name) = dent.file_name().to_str() {
+                    let label = format!("WSL:{distro} /mnt/wsl/{}", name);
+                    push(&mut items, label, &format!("mnt\\wsl\\{}", name), "�");
+                }
+            }
+        }
+    } else {
+        // Fallback: enumerate mnt/* top-level letters (c,d,...) as typical Windows drives
+    let mnt_str = format!("{}\\mnt", base);
+    let mnt = std::path::Path::new(&mnt_str);
+        if let Ok(rd) = std::fs::read_dir(mnt) {
+            for dent in rd.flatten() {
+                if dent.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    if let Some(name) = dent.file_name().to_str() {
+                        let label = format!("WSL:{distro} /mnt/{}", name);
+                        push(&mut items, label, &format!("mnt\\{}", name), "🖴");
+                    }
+                }
+            }
+        }
+    }
+    items
+}
+
+#[cfg(not(windows))]
+pub fn wsl_dynamic_mounts(_distro: &str) -> Vec<QuickAccess> { Vec::new() }

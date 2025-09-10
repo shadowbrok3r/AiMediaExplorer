@@ -6,8 +6,8 @@ edition = "2024"
 [dependencies]
 eframe = { version="0.32.2", features=["persistence", "serde",  "default_fonts", "glow", "x11"], default-features=false }
 egui_extras = { version = "0.32.2", features = ["datepicker", "syntect", "serde", "image", "all_loaders" ]}
-egui-data-table = { path = "C:\\Users\\Owner\\Desktop\\egui-data-table", features = ["persistency"]} 
-# egui-data-table = { git = "https://github.com/shadowbrok3r/egui-data-table", branch = "master", features = ["persistency"]}
+# egui-data-table = { path = "C:\\Users\\Owner\\Desktop\\egui-data-table", features = ["persistency"]} 
+egui-data-table = { git = "https://github.com/shadowbrok3r/egui-data-table", branch = "master", features = ["persistency"]}
 egui_logger = "0.8"
 open = { version = "5.3.2" }
 chrono = { version = "0.4", features = ["clock", "std"] }
@@ -37,8 +37,13 @@ candle-transformers = { version = "0.9.1", features = ["cuda"]}
 candle-examples = { version = "0.9.1", features = ["cuda"]}
 tokenizers = { version = "0.22.0", features = ["http"] }
 hf-hub = { version = "0.4.3" }
-zip = "5.0.0"
+zip = "5"
+tar = "0.4"
+flate2 = { version = "1", features = ["zlib"] }
+bzip2 = "0.6"
+xz2 = "0.1"
 fastembed = { version = "5.1.0"}
+sevenz-rust2 = { version = "0.18" }
 widestring = "1"
 rawkit = "0.1"
 egui_dock = { version = "0.17.0", features = ["serde"] }

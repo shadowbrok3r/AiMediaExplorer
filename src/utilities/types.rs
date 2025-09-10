@@ -18,7 +18,10 @@ pub static VIDEO_EXTS: Lazy<Vec<&'static str>> = Lazy::new(|| {
 // Archive containers we want to show alongside media (contents handled separately)
 pub static ARCHIVE_EXTS: Lazy<Vec<&'static str>> = Lazy::new(|| {
     vec![
-        "zip", // future: add "7z", "rar", "tar", "gz", etc.
+        // containers
+        "zip", "7z", "rar", "tar",
+        // compressors and common tars
+        "gz", "bz", "bz2", "xz", "tgz", "tbz", "tbz2", "txz"
     ]
 });
 
@@ -55,6 +58,7 @@ pub struct Filters {
     pub root: PathBuf,
     pub include_images: bool,
     pub include_videos: bool,
+    pub include_archives: bool,
     pub modified_after: Option<String>, // YYYY-MM-DD
     pub modified_before: Option<String>,
     pub date_field: DateField,
@@ -84,6 +88,7 @@ impl Default for Filters {
             root,
             include_images: true,
             include_videos: true,
+            include_archives: false,
             modified_after: None,
             modified_before: None,
             date_field: DateField::Modified,
@@ -112,6 +117,7 @@ pub struct ScanResults {
 pub enum MediaKind {
     Image,
     Video,
+    Archive,
     Other,
 }
 impl Default for MediaKind {
@@ -125,6 +131,7 @@ impl MediaKind {
         match self {
             MediaKind::Image => "photo",
             MediaKind::Video => "smart_display",
+            MediaKind::Archive => "archive",
             MediaKind::Other => "insert_drive_file",
         }
     }
@@ -145,6 +152,7 @@ impl FoundFile {
         match self.kind {
             MediaKind::Image => "photo",
             MediaKind::Video => "smart_display",
+            MediaKind::Archive => "archive",
             MediaKind::Other => "insert_drive_file",
         }
     }
