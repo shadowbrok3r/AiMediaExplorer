@@ -4,7 +4,7 @@ use std::{borrow::Cow, collections::HashMap, sync::Arc};
 use crossbeam::channel::{Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
 use egui_data_table::Renderer;
-use viewer::FileTableViewer;
+use table::FileTableViewer;
 use humansize::DECIMAL;
 use serde::Serialize;
 use eframe::egui::*;
@@ -13,8 +13,7 @@ pub mod quick_access_pane;
 pub mod preview_pane;
 pub mod explorer;
 pub mod receive;
-pub mod viewer;
-pub mod codec;
+pub mod table;
 
 // Global accessor for the current active logical group name to be used by viewer context menu actions.
 static ACTIVE_GROUP_NAME: OnceLock<Mutex<Option<String>>> = OnceLock::new();
@@ -370,14 +369,14 @@ impl FileExplorer {
     }
     
     pub fn set_rows(&mut self, rows: Vec<crate::database::Thumbnail>) {
-        self.viewer.mode = viewer::ExplorerMode::Database;
+        self.viewer.mode = table::ExplorerMode::Database;
         self.table.clear();
         for r in rows.into_iter() { self.table.push(r); }
     }
     
     // Set the table rows from DB results and switch to Database viewing mode
     pub fn set_rows_from_db(&mut self, rows: Vec<crate::database::Thumbnail>) {
-        self.viewer.mode = viewer::ExplorerMode::Database;
+        self.viewer.mode = table::ExplorerMode::Database;
         self.table.clear();
         for r in rows.into_iter() { self.table.push(r); }
     }
@@ -464,7 +463,7 @@ impl FileExplorer {
                 if Button::new(RichText::new("🏠").font(font).color(err_color)).min_size(size).ui(ui).clicked() { self.nav_home(); }
                 ui.separator();
                 let path_edit = TextEdit::singleline(&mut self.current_path)
-                .hint_text(if self.viewer.mode == viewer::ExplorerMode::Database {
+                .hint_text(if self.viewer.mode == table::ExplorerMode::Database {
                     if self.ai_search_enabled { "AI Search (text prompt)" } else { "Path Prefix Filter" }
                 } else {
                     "Current Directory"
@@ -476,12 +475,12 @@ impl FileExplorer {
                 // Zip password button removed; we show a modal automatically when needed
 
                 match self.viewer.mode {
-                    viewer::ExplorerMode::FileSystem => {
+                    table::ExplorerMode::FileSystem => {
                         if path_edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                             self.refresh();
                         }
                     },
-                    viewer::ExplorerMode::Database => {
+                    table::ExplorerMode::Database => {
                         let mut ai_box = self.ai_search_enabled;
                         if ui.checkbox(&mut ai_box, "AI").on_hover_text("Use AI semantic search across the database (text prompt)").clicked() {
                             self.ai_search_enabled = ai_box;
@@ -816,7 +815,7 @@ impl FileExplorer {
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
                             if ui.button("Reload Rows").on_hover_text("Reload current view rows").clicked() {
-                                if self.viewer.mode == viewer::ExplorerMode::Database {
+                                if self.viewer.mode == table::ExplorerMode::Database {
                                     self.db_offset = 0;
                                     self.db_last_batch_len = 0;
                                     self.load_database_rows();
@@ -1050,13 +1049,13 @@ impl FileExplorer {
                     .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside).style(style))
                     .ui(ui, |ui| {
                         ui.vertical_centered_justified(|ui| {
-                            ui.selectable_value(&mut self.viewer.mode, viewer::ExplorerMode::Database, "Database");
-                            ui.selectable_value(&mut self.viewer.mode, viewer::ExplorerMode::FileSystem, "FileSystem");
+                            ui.selectable_value(&mut self.viewer.mode, table::ExplorerMode::Database, "Database");
+                            ui.selectable_value(&mut self.viewer.mode, table::ExplorerMode::FileSystem, "FileSystem");
 
                             // if response.changed() {
                             //     match self.viewer.mode {
-                            //         viewer::ExplorerMode::Database => self.load_database_rows(),
-                            //         viewer::ExplorerMode::FileSystem => self.populate_current_directory()
+                            //         table::ExplorerMode::Database => self.load_database_rows(),
+                            //         table::ExplorerMode::FileSystem => self.populate_current_directory()
                             //     }
                             // }
                             if ui.button("Reload Page").clicked() { self.load_database_rows(); }
@@ -1064,7 +1063,7 @@ impl FileExplorer {
                         });
 
                         ui.add_space(4.0);
-                        if matches!(self.viewer.mode, viewer::ExplorerMode::Database) {
+                        if matches!(self.viewer.mode, table::ExplorerMode::Database) {
                             ui.label(format!("Loaded Rows: {} (offset {})", self.table.len(), self.db_offset));
                             if self.db_loading { ui.colored_label(Color32::YELLOW, "Loading..."); }
                         }
@@ -1346,7 +1345,7 @@ impl FileExplorer {
                                             }
                                             if ui.button("Open").on_hover_text("Load this group's thumbnails").clicked() {
                                                 self.active_logical_group_name = Some(g.name.clone());
-                                                self.viewer.mode = viewer::ExplorerMode::Database;
+                                                self.viewer.mode = table::ExplorerMode::Database;
                                                 self.table.clear();
                                                 self.db_offset = 0;
                                                 self.db_last_batch_len = 0;
@@ -1655,7 +1654,7 @@ impl FileExplorer {
                 let actions = std::mem::take(&mut self.viewer.requested_tabs);
                 for act in actions.into_iter() {
                     match act {
-                        crate::ui::file_table::viewer::TabAction::OpenCategory(cat) => {
+                        crate::ui::file_table::table::TabAction::OpenCategory(cat) => {
                             let title = format!("Category: {}", cat);
                             let rows: Vec<crate::database::Thumbnail> = self
                                 .table
@@ -1668,7 +1667,7 @@ impl FileExplorer {
                                 .unwrap()
                                 .push(crate::ui::file_table::FilterRequest::NewTab { title, rows, showing_similarity: false, similar_scores: None, background: false });
                         }
-                        crate::ui::file_table::viewer::TabAction::OpenTag(tag) => {
+                        crate::ui::file_table::table::TabAction::OpenTag(tag) => {
                             let title = format!("Tag: {}", tag);
                             let rows: Vec<crate::database::Thumbnail> = self
                                 .table
@@ -1681,7 +1680,7 @@ impl FileExplorer {
                                 .unwrap()
                                 .push(crate::ui::file_table::FilterRequest::NewTab { title, rows, showing_similarity: false, similar_scores: None, background: false });
                         }
-                        crate::ui::file_table::viewer::TabAction::OpenArchive(path_clicked) => {
+                        crate::ui::file_table::table::TabAction::OpenArchive(path_clicked) => {
                             // Choose scheme based on extension (zip or tar family)
                             let is_virtual = path_clicked.starts_with("zip://") || path_clicked.starts_with("tar://") || path_clicked.starts_with("7z://");
                             let vpath = if is_virtual {
@@ -1704,7 +1703,7 @@ impl FileExplorer {
                             self.current_path = vpath;
                             self.populate_current_directory();
                         }
-                        crate::ui::file_table::viewer::TabAction::OpenSimilar(filename) => {
+                        crate::ui::file_table::table::TabAction::OpenSimilar(filename) => {
                             let title = format!("Similar to {filename}");
                             // If similar results are present, use them; else fallback to current table (no filtering)
                             let rows: Vec<crate::database::Thumbnail> = if self.viewer.showing_similarity && !self.viewer.similar_scores.is_empty() {
@@ -1725,7 +1724,7 @@ impl FileExplorer {
                 ui.separator();
                 ui.label(format!("Selected: {}", self.selected.len()));
             }
-            if self.viewer.mode == viewer::ExplorerMode::Database && !self.viewer.showing_similarity {
+            if self.viewer.mode == table::ExplorerMode::Database && !self.viewer.showing_similarity {
                 ui.separator();
                 ui.horizontal(|ui| {
                     if self.db_loading {

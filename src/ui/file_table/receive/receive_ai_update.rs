@@ -1,0 +1,166 @@
+use eframe::egui::Context;
+use crate::ui::file_table::AIUpdate;
+
+impl crate::ui::file_table::FileExplorer {
+    pub fn receive_ai_update(&mut self, ctx: &Context) {
+        // Process AI streaming updates
+        while let Ok(update) = self.ai_update_rx.try_recv() {
+            ctx.request_repaint();
+            match update {
+                AIUpdate::Interim { path, text } => {
+                    // Auto-follow: always advance to the currently streaming image if enabled.
+                    if self.follow_active_vision && !path.is_empty() {
+                        if self.current_thumb.path != path {
+                            if let Some(row) = self.table.iter().find(|r| r.path == path) {
+                                self.current_thumb = row.clone();
+                                self.open_preview_pane = true; // ensure visible
+                            }
+                        }
+                    }
+                    self.streaming_interim.insert(path, text);
+                }
+                AIUpdate::Final {
+                    path,
+                    description,
+                    caption,
+                    category,
+                    tags,
+                } => {
+                    if self.follow_active_vision && !path.is_empty() {
+                        if self.current_thumb.path != path {
+                            if let Some(row) = self.table.iter().find(|r| r.path == path) {
+                                self.current_thumb = row.clone();
+                                self.open_preview_pane = true;
+                            }
+                        }
+                    }
+                    self.streaming_interim.remove(&path);
+                    // Update counters: a pending item finished.
+                    if self.vision_pending > 0 {
+                        self.vision_pending -= 1;
+                    }
+                    self.vision_completed += 1;
+                    let desc_clone_for_row = description.clone();
+                    let caption_clone_for_row = caption.clone();
+                    let category_clone_for_row = category.clone();
+                    let tags_clone_for_row = tags.clone();
+                    if let Some(row) = self.table.iter_mut().find(|r| r.path == path) {
+                        if !desc_clone_for_row.trim().is_empty() {
+                            row.description = Some(desc_clone_for_row.clone());
+                        }
+                        if let Some(c) = caption_clone_for_row.clone() {
+                            if !c.trim().is_empty() {
+                                row.caption = Some(c);
+                            }
+                        }
+                        if let Some(cat) = category_clone_for_row.clone() {
+                            if !cat.trim().is_empty() {
+                                row.category = Some(cat);
+                            }
+                        }
+                        if !tags_clone_for_row.is_empty() {
+                            row.tags = tags_clone_for_row.clone();
+                        }
+                    }
+                    if self.current_thumb.path == path {
+                        if !description.trim().is_empty() {
+                            self.current_thumb.description = Some(description.clone());
+                        }
+                        if let Some(c) = caption.clone() {
+                            if !c.trim().is_empty() {
+                                self.current_thumb.caption = Some(c);
+                            }
+                        }
+                        if let Some(cat) = category.clone() {
+                            if !cat.trim().is_empty() {
+                                self.current_thumb.category = Some(cat);
+                            }
+                        }
+                        if !tags.is_empty() {
+                            self.current_thumb.tags = tags.clone();
+                        }
+                    }
+                    // Defensive persistence: ensure final AI metadata is saved to DB (idempotent if already saved by engine)
+                    {
+                        let persist_path = path.clone();
+                        let description_clone = description.clone();
+                        let caption_clone = caption.clone();
+                        let category_clone = category.clone();
+                        let tags_clone = tags.clone();
+                        // Prefer current_thumb if active, else table row, else the cloned incoming values.
+                        let (desc_final, cap_final, cat_final, tags_final) =
+                            if self.current_thumb.path == persist_path {
+                                (
+                                    self.current_thumb.description.clone().unwrap_or_default(),
+                                    self.current_thumb.caption.clone().unwrap_or_default(),
+                                    self.current_thumb
+                                        .category
+                                        .clone()
+                                        .unwrap_or_else(|| "general".into()),
+                                    self.current_thumb.tags.clone(),
+                                )
+                            } else if let Some(row) =
+                                self.table.iter().find(|r| r.path == persist_path)
+                            {
+                                (
+                                    row.description.clone().unwrap_or_default(),
+                                    row.caption.clone().unwrap_or_default(),
+                                    row.category.clone().unwrap_or_else(|| "general".into()),
+                                    row.tags.clone(),
+                                )
+                            } else {
+                                (
+                                    description_clone,
+                                    caption_clone.unwrap_or_default(),
+                                    category_clone.unwrap_or_else(|| "general".into()),
+                                    tags_clone,
+                                )
+                            };
+                        tokio::spawn(async move {
+                            let vd = crate::ai::VisionDescription {
+                                description: desc_final,
+                                caption: cap_final,
+                                category: cat_final,
+                                tags: tags_final,
+                            };
+                            if let Err(e) = crate::ai::GLOBAL_AI_ENGINE
+                                .apply_vision_description(&persist_path, &vd)
+                                .await
+                            {
+                                log::warn!(
+                                    "[AI] UI final persist failed for {}: {}",
+                                    persist_path,
+                                    e
+                                );
+                            }
+                        });
+                    }
+                }
+                AIUpdate::SimilarResults { origin_path, results } => {
+                    if !results.is_empty() {
+                        // Build rows and score map for a dedicated Similar tab
+                        let mut rows: Vec<crate::database::Thumbnail> = Vec::with_capacity(results.len());
+                        let mut scores: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
+                        for r in results.into_iter() {
+                            if let Some(s) = r.clip_similarity_score.or(r.similarity_score) {
+                                scores.insert(r.thumb.path.clone(), s);
+                            }
+                            rows.push(r.thumb);
+                        }
+                        let title = format!("Similar to {}", origin_path);
+                        crate::app::OPEN_TAB_REQUESTS
+                        .lock()
+                        .unwrap()
+                        .push(crate::ui::file_table::FilterRequest::NewTab {
+                            title,
+                            rows,
+                            showing_similarity: true,
+                            similar_scores: Some(scores),
+                            background: false,
+                        });
+                    }
+                }
+            }
+        }
+    }
+}

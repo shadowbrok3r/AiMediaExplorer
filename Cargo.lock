@@ -1847,6 +1847,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui-toast"
+version = "0.17.0"
+source = "git+https://github.com/shadowbrok3r/egui-toast#0720b10783dc37a5a1a02ce3429747c2f5c8b0b4"
+dependencies = [
+ "egui",
+]
+
+[[package]]
 name = "egui-wgpu"
 version = "0.32.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6618,6 +6626,7 @@ dependencies = [
  "eframe",
  "egui",
  "egui-data-table",
+ "egui-toast",
  "egui_dock",
  "egui_extras",
  "egui_logger",

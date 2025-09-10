@@ -38,6 +38,7 @@ candle-examples = { version = "0.9.1", features = ["cuda"]}
 tokenizers = { version = "0.22.0", features = ["http"] }
 hf-hub = { version = "0.4.3" }
 zip = "5"
+egui-toast = { git = "https://github.com/shadowbrok3r/egui-toast"}
 tar = "0.4"
 flate2 = { version = "1", features = ["zlib"] }
 bzip2 = "0.6"

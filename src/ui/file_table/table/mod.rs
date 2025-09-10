@@ -9,8 +9,10 @@ use crossbeam::channel::Sender;
 use humansize::DECIMAL;
 use serde::Serialize;
 
-use super::codec::ThumbCodec;
 use crate::{generate_image_thumb_data, generate_video_thumb_data, ui::file_table::AIUpdate, Thumbnail, UiSettings};
+use codec::ThumbCodec;
+
+pub mod codec;
 
 #[derive(Default, Copy, Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ExplorerMode {
@@ -234,7 +236,7 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                         ui.add_sized(
                             ui.available_size(),
                             egui::Image::new(eframe::egui::include_image!(
-                                "../../../assets/Icons/folder.png"
+                                "../../../../assets/Icons/folder.png"
                             )).texture_options(TextureOptions::default().with_mipmap_mode(Some(egui::TextureFilter::Linear))),
                         );
                         return;
@@ -242,7 +244,7 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                         ui.add_sized(
                             ui.available_size(),
                             egui::Image::new(eframe::egui::include_image!(
-                                "../../../assets/Icons/zip.png"
+                                "../../../../assets/Icons/zip.png"
                             )).texture_options(TextureOptions::default().with_mipmap_mode(Some(egui::TextureFilter::Linear))),
                         );
                         return;
@@ -724,7 +726,7 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                     tokio::spawn(async move {
                         eng.stream_vision_description(Path::new(&path_str_clone), &prompt_clone, move |interim, final_opt| {
                             if let Some(vd) = final_opt {
-                                let _ = tx_updates.try_send(super::AIUpdate::Final {
+                                let _ = tx_updates.try_send(crate::ui::file_table::AIUpdate::Final {
                                     path: path_str.clone(),
                                     description: vd.description.clone(),
                                     caption: Some(vd.caption.clone()),
@@ -732,7 +734,7 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                                     tags: vd.tags.clone(),
                                 });
                             } else {
-                                let _ = tx_updates.try_send(super::AIUpdate::Interim { path: path_str.clone(), text: interim.to_string() });
+                                let _ = tx_updates.try_send(crate::ui::file_table::AIUpdate::Interim { path: path_str.clone(), text: interim.to_string() });
                             }
                         }).await;
                     });

@@ -128,7 +128,7 @@ impl ArchiveHandler for SevenZHandler {
     fn list(&self, params: &ListParams) -> anyhow::Result<Vec<ArchiveEntry>> {
         use std::collections::BTreeSet;
     let pw: &str = params.password.unwrap_or("");
-    let mut sz = sevenz_rust2::ArchiveReader::open(params.archive_fs_path, pw.into())?;
+    let sz = sevenz_rust2::ArchiveReader::open(params.archive_fs_path, pw.into())?;
         let mut dirs: BTreeSet<String> = BTreeSet::new();
         let mut files: Vec<ArchiveEntry> = Vec::new();
         let prefix = normalize_prefix(params.internal_path);

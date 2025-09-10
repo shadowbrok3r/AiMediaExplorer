@@ -132,7 +132,7 @@ impl crate::app::SmartMediaApp {
                             .clicked()
                         {
                             self.context.file_explorer.push_history(accum.clone());
-                            if self.context.file_explorer.viewer.mode == crate::ui::file_table::viewer::ExplorerMode::Database {
+                            if self.context.file_explorer.viewer.mode == crate::ui::file_table::table::ExplorerMode::Database {
                                 // In DB mode, treat breadcrumbs as path prefix changes
                                 self.context.file_explorer.db_offset = 0;
                                 self.context.file_explorer.db_last_batch_len = 0;

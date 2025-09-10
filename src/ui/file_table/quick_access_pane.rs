@@ -185,7 +185,7 @@ impl super::FileExplorer {
                                                 }
                                                 if ui.button("Open").on_hover_text("Load this group's thumbnails").clicked() {
                                                     self.active_logical_group_name = Some(g.name.clone());
-                                                    self.viewer.mode = super::viewer::ExplorerMode::Database;
+                                                    self.viewer.mode = super::table::ExplorerMode::Database;
                                                     self.table.clear();
                                                     self.db_offset = 0;
                                                     self.db_last_batch_len = 0;

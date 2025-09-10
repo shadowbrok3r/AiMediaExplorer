@@ -83,7 +83,7 @@ fn start_thumbnail_workers(rx: Receiver<ThumbJob>) {
                     // Route thumbnail to the UI that owns this scan_id
                     if let Ok(map) = SCAN_ROUTERS.lock() {
                         if let Some(tx) = map.get(&job.scan_id) {
-                            let _ = tx.try_send(ScanEnvelope {
+                            let _ = tx.send(ScanEnvelope {
                                 scan_id: job.scan_id,
                                 msg: ScanMsg::UpdateThumb { path: job.path.clone(), thumb: thumb_b64 },
                             });
@@ -182,7 +182,7 @@ pub async fn spawn_scan(filters: Filters, tx: Sender<ScanEnvelope>, recursive: b
 
 fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: bool, scan_id: u64) {
     if is_cancelled(scan_id) {
-        let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::Done });
+        let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::Done });
         clear_cancel(scan_id);
         return;
     }
@@ -191,8 +191,8 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
         match std::env::current_dir().and_then(|p| std::path::absolute(p)) {
             Ok(p) => p,
             Err(e) => {
-                let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::Error(e.to_string()) });
-                let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::Done });
+                let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::Error(e.to_string()) });
+                let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::Done });
                 return;
             }
         }
@@ -203,8 +203,8 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
         std::path::PathBuf::from(crate::utilities::windows::normalize_wsl_unc(&s))
     };
     if !root.exists() {
-        let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::Error(format!("Root does not exist: {}", root.display())) });
-        let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::Done });
+        let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::Error(format!("Root does not exist: {}", root.display())) });
+        let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::Done });
         return;
     }
 
@@ -219,7 +219,7 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
 
     let mut scanned = 0usize; // shallow-only: number of file paths processed at root level
     let total = if recursive { 0 } else { estimate_total_shallow(&root, &filters) };
-    let _ = tx.try_send(ScanEnvelope { 
+    let _ = tx.send(ScanEnvelope { 
         scan_id, 
         msg: ScanMsg::Progress { scanned: 0, total } 
     });
@@ -295,7 +295,7 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
     let mut encrypted_archives: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for dir_entry_result in walker {
         if is_cancelled(scan_id) {
-            let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::Done });
+            let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::Done });
             clear_cancel(scan_id);
             return;
         }
@@ -331,7 +331,7 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
                     }
                     if let Some(found) = process_path_collect(path, &filters_clone, after, before) {
                         batch.push(found);
-                        let _ = tx.try_send(ScanEnvelope { 
+                        let _ = tx.send(ScanEnvelope { 
                             scan_id, 
                             msg: ScanMsg::FoundBatch(std::mem::take(&mut batch)) 
                         });
@@ -345,7 +345,7 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
                     if recursive {
                         scanned_paths += 1;
                         if scanned_paths % PROGRESS_EVERY == 0 {
-                            let _ = tx.try_send(ScanEnvelope { 
+                            let _ = tx.send(ScanEnvelope { 
                                 scan_id, 
                                 msg: ScanMsg::Progress { scanned: scanned_paths, total: 0 } 
                             });
@@ -354,14 +354,14 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
                         scanned += 1;
                         let display_scanned = if total > 0 { scanned.min(total) } else { scanned };
                         if scanned % 25 == 0 {
-                            let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::Progress { scanned: display_scanned, total } });
+                            let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::Progress { scanned: display_scanned, total } });
                         }
                         if scanned % 200 == 0 { std::thread::yield_now(); }
                     }
                 }
             }
             Err(err) => {
-                let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::Error(format!("walk error: {err}")) });
+                let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::Error(format!("walk error: {err}")) });
             }
         }
         if idx % 1000 == 0 { std::thread::yield_now(); }
@@ -370,13 +370,13 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
 
     // Flush remaining batches and final progress per mode
     if !recursive {
-        if !dir_batch.is_empty() { let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::FoundDirBatch(dir_batch) }); }
-        if !batch.is_empty() { let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::FoundBatch(batch) }); }
+        if !dir_batch.is_empty() { let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::FoundDirBatch(dir_batch) }); }
+        if !batch.is_empty() { let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::FoundBatch(batch) }); }
         let final_scanned = if total > 0 { scanned.min(total) } else { scanned };
-        let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::Progress { scanned: final_scanned, total } });
+        let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::Progress { scanned: final_scanned, total } });
     } else {
-        if !batch.is_empty() { let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::FoundBatch(batch) }); }
-        let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::Progress { scanned: scanned_paths, total: 0 } });
+        if !batch.is_empty() { let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::FoundBatch(batch) }); }
+        let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::Progress { scanned: scanned_paths, total: 0 } });
     }
 
     // Defer video thumbnails until image thumbnails are complete
@@ -394,7 +394,7 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
 
     // If we found encrypted archives, notify UI before Done
     if !encrypted_archives.is_empty() {
-        let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::EncryptedArchives(encrypted_archives.into_iter().collect()) });
+        let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::EncryptedArchives(encrypted_archives.into_iter().collect()) });
     }
     finish(&tx, scan_id);
 }
@@ -413,7 +413,7 @@ fn estimate_total_shallow(root: &Path, filters: &Filters) -> usize {
 }
 
 fn finish(tx: &Sender<ScanEnvelope>, scan_id: u64) { 
-    let _ = tx.try_send(ScanEnvelope { scan_id, msg: ScanMsg::Done }); 
+    let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::Done }); 
     // Unregister router mapping for this scan
     if let Ok(mut map) = SCAN_ROUTERS.lock() { let _ = map.remove(&scan_id); }
 }
