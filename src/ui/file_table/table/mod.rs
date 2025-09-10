@@ -1,4 +1,4 @@
-use egui::{Color32, FontId, Image, ImageSource, KeyboardShortcut, Stroke, TextureOptions, Vec2, Widget};
+use egui::{Color32, FontId, Image, ImageSource, KeyboardShortcut, RichText, Stroke, TextureOptions, Vec2, Widget};
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use std::{borrow::Cow, collections::HashMap, path::Path, sync::Arc};
 use egui_data_table::{
@@ -62,6 +62,9 @@ pub struct FileTableViewer {
     // Type visibility toggles (UI): affect table view filtering and scans
     pub types_show_images: bool,
     pub types_show_videos: bool,
+    // Archive passwords for accessing encrypted archives
+    #[serde(skip)]
+    pub archive_passwords: std::collections::HashMap<String, String>,
     pub types_show_dirs: bool,
     // Requests to open tabs based on user clicks in cells
     #[serde(skip)]
@@ -93,6 +96,7 @@ impl FileTableViewer {
             types_show_videos: true,
             types_show_dirs: true,
             requested_tabs: Vec::new(),
+            archive_passwords: std::collections::HashMap::new(),
         }
     }
 }
@@ -200,14 +204,6 @@ impl RowViewer<Thumbnail> for FileTableViewer {
         false
     }
 
-    // fn is_interactive_in_view(&mut self, _row: &Thumbnail, column: usize) -> bool {
-    //     match column {
-    //         8 | 9 => true, // Category, Tags
-    //         _ => false,
-    //     }
-    // }
-
-    // fn on_highlight_change(&mut self, highlighted: &[&Thumbnail], unhighlighted: &[&Thumbnail]) {}
 
     fn show_cell_view(&mut self, ui: &mut egui::Ui, row: &Thumbnail, column: usize) {
         // CLIP is now column 5. Similarity (if shown) is appended at the end.
@@ -215,7 +211,6 @@ impl RowViewer<Thumbnail> for FileTableViewer {
         if column == clip_idx {
             let has = self.clip_presence.contains(&row.path);
             ui.label(if has { "Yes" } else { "No" });
-            return;
         }
         let similarity_idx = if self.showing_similarity {
             match self.mode { ExplorerMode::FileSystem => 10, ExplorerMode::Database => 11 }
@@ -226,7 +221,6 @@ impl RowViewer<Thumbnail> for FileTableViewer {
             } else {
                 ui.label("-");
             }
-            return;
         }
         match column {
             0 => {
@@ -239,7 +233,6 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                                 "../../../../assets/Icons/folder.png"
                             )).texture_options(TextureOptions::default().with_mipmap_mode(Some(egui::TextureFilter::Linear))),
                         );
-                        return;
                     } else if row.file_type == "<ARCHIVE>" {
                         ui.add_sized(
                             ui.available_size(),
@@ -247,11 +240,15 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                                 "../../../../assets/Icons/zip.png"
                             )).texture_options(TextureOptions::default().with_mipmap_mode(Some(egui::TextureFilter::Linear))),
                         );
-                        return;
                     }
                     let cache_key = row.path.clone();
                     if row.thumbnail_b64.is_none() {
-                        ui.label("📄");
+                        ui.add_sized(
+                            ui.available_size(),
+                            egui::Image::new(eframe::egui::include_image!(
+                                "../../../../assets/Icons/broken_link.png"
+                            )).texture_options(TextureOptions::default().with_mipmap_mode(Some(egui::TextureFilter::Linear))),
+                        );
                     } else {
                         if !self.thumb_cache.contains_key(&cache_key) {
                             if let Some(mut b64) = row.thumbnail_b64.clone() {
@@ -278,21 +275,19 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                                 .max_size(ui.available_size())
                                 .texture_options(TextureOptions::default().with_mipmap_mode(Some(egui::TextureFilter::Linear)))
                                 .ui(ui); // .bg_fill(Color32::WHITE)
-                        } else {
-                            ui.label("❌");
                         }
                     }
                 });
             }
             1 => {
-                // Name
-                ui.label(format!(" {}", &row.filename));
+                // Name (clickable)
+                let _ = ui.selectable_label(false, format!(" {}", &row.filename));
             }
             2 => {
                 // Path or DB key depending on mode
                 match self.mode {
                     ExplorerMode::FileSystem => ui.label(&row.path),
-                    ExplorerMode::Database => ui.label(&row.path), // placeholder; could show DB id
+                    ExplorerMode::Database => ui.label(&row.path), 
                 };
             }
             3 => {
@@ -305,7 +300,7 @@ impl RowViewer<Thumbnail> for FileTableViewer {
             }
             4 => {
                 // Type
-                ui.label(&row.file_type);
+                ui.label(RichText::new(&row.file_type).font(FontId::monospace(11.)));
             }
             6 => {
                 // Modified mm/dd/yyyy (or '-')
@@ -386,14 +381,28 @@ impl RowViewer<Thumbnail> for FileTableViewer {
         // No data to set for CLIP/Similarity columns
         let clip_idx = 5usize;
         let similarity_idx = if self.showing_similarity {
-            match self.mode { ExplorerMode::FileSystem => 10, ExplorerMode::Database => 11 }
-        } else { usize::MAX };
-        if column == clip_idx || column == similarity_idx { return None; }
+            match self.mode { 
+                ExplorerMode::FileSystem => 10, 
+                ExplorerMode::Database => 11 
+            }
+        } else {
+            usize::MAX 
+        };
+
+        if column == clip_idx || column == similarity_idx { 
+            return None; 
+        }
+
         match column {
             0 => {
                 let cache_key = row.path.clone();
                 if row.thumbnail_b64.is_none() {
-                    Some(ui.label("📄"))
+                    Some(ui.add_sized(
+                        ui.available_size(),
+                        egui::Image::new(eframe::egui::include_image!(
+                            "../../../../assets/Icons/broken_link.png"
+                        )).texture_options(TextureOptions::default().with_mipmap_mode(Some(egui::TextureFilter::Linear))),
+                    ))
                 } else {
                     if !self.thumb_cache.contains_key(&cache_key) {
                         if let Some(mut b64) = row.thumbnail_b64.clone() {
@@ -485,14 +494,54 @@ impl RowViewer<Thumbnail> for FileTableViewer {
     ) -> Option<Box<Thumbnail>> {
         match column {
             2 => {
-                if resp.hovered() {
-                    resp.clone().on_hover_text(&row.path);
+                if resp.hovered() { resp.clone().on_hover_text(&row.path); }
+                if resp.clicked() {
+                    // Mirror main click behavior: preview + thumb generation
+                    if self.mode != ExplorerMode::Database {
+                        if row.thumbnail_b64.is_none() {
+                            if row.path.starts_with("zip://") || row.path.starts_with("7z://") || row.path.starts_with("tar://") {
+                                let path = row.path.clone();
+                                let thumbnail_tx = self.thumbnail_tx.clone();
+                                let row_clone = row.clone();
+                                let archive_passwords = self.archive_passwords.clone();
+                                tokio::spawn(async move {
+                                    if let Some(scheme_end) = path.find("://") {
+                                        if let Some(internal_start) = path.find("!/") {
+                                            let scheme = &path[..scheme_end];
+                                            let archive_path = &path[scheme_end + 3..internal_start];
+                                            let internal_path = &path[internal_start + 2..];
+                                            let filename = std::path::Path::new(internal_path).file_name().and_then(|n| n.to_str()).unwrap_or(internal_path);
+                                            let internal_dir = std::path::Path::new(internal_path).parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+                                            let password = archive_passwords.get(archive_path).map(|s| s.as_str());
+                                            match crate::utilities::archive::extract_and_generate_thumbnail(scheme, archive_path, &internal_dir, filename, password) {
+                                                Ok(Some(thumb_b64)) => {
+                                                    let thumb = Thumbnail { thumbnail_b64: Some(thumb_b64), ..row_clone };
+                                                    let _ = thumbnail_tx.try_send(thumb);
+                                                }
+                                                Ok(None) => {}
+                                                Err(err) => {
+                                                    let es = err.to_string();
+                                                    if es.contains("PasswordRequired") {
+                                                        let mut t = Thumbnail::default();
+                                                        t.path = archive_path.to_string();
+                                                        t.file_type = "<PASSWORD_REQUIRED>".to_string();
+                                                        let _ = thumbnail_tx.try_send(t);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                    }
+                    let _ = self.thumbnail_tx.try_send(row.clone());
                 }
             }
             8 => {
                 if let Some(cat) = row.category.as_ref() {
                     if resp.clicked() {
-                        log::info!("Clickced on: {cat}");
+                        log::info!("Clicked on: {cat}");
                         self.requested_tabs.push(TabAction::OpenCategory(cat.clone()));
                     }
                 }
@@ -500,7 +549,7 @@ impl RowViewer<Thumbnail> for FileTableViewer {
             9 => {
                 for tag in &row.tags {
                     if resp.clicked() {
-                        log::info!("Clickced on: {tag}");
+                        log::info!("Clicked on: {tag}");
                         self.requested_tabs.push(TabAction::OpenTag(tag.clone()));
                     }
                 }
@@ -511,54 +560,131 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                         // In DB mode, disable on-demand generation attempts (no filesystem walk triggers)
                     } else {
                         if row.thumbnail_b64.is_none() {
-                            // Determine media kind from file extension
-                            let ext_opt = std::path::Path::new(&row.path)
+                            // Check if this is a virtual archive path
+                            if row.path.starts_with("zip://") 
+                                || row.path.starts_with("7z://") 
+                                || row.path.starts_with("tar://") 
+                            {
+                                log::info!("Getting thumbnail for {}", row.path);
+                                // For virtual archive paths, use async extraction-based thumbnail generation
+                                let path = row.path.clone();
+                                let thumbnail_tx = self.thumbnail_tx.clone();
+                                let row_clone = row.clone();
+                                let archive_passwords = self.archive_passwords.clone();
+                                tokio::spawn(async move {
+                                    // Parse the virtual path: scheme://archive_path!/internal_path
+                                    if let Some(scheme_end) = path.find("://") {
+                                        log::info!("scheme_end: {scheme_end}");
+                                        if let Some(internal_start) = path.find("!/") {
+                                            log::info!("internal_start: {internal_start}");
+                                            let scheme = &path[..scheme_end];
+                                            let archive_path = &path[scheme_end + 3..internal_start];
+                                            let internal_path = &path[internal_start + 2..];
+                                            log::info!("internal_path: {internal_path}");
+                                            // Extract filename from internal path
+                                            let filename = std::path::Path::new(internal_path)
+                                                .file_name()
+                                                .and_then(|n| n.to_str())
+                                                .unwrap_or(internal_path);
+                                            
+                                            // Get directory part of internal path
+                                            let internal_dir = std::path::Path::new(internal_path)
+                                                .parent()
+                                                .map(|p| p.to_string_lossy().to_string())
+                                                .unwrap_or_default();
+                                            
+                                            // Look up the stored password for this archive
+                                            let password = archive_passwords.get(archive_path).map(|s| s.as_str());
+                                            
+                                            match crate::utilities::archive::extract_and_generate_thumbnail(
+                                                scheme, archive_path, &internal_dir, filename, password
+                                            ) {
+                                                Ok(Some(thumb_b64)) => {
+                                                    let thumb = Thumbnail {
+                                                        thumbnail_b64: Some(thumb_b64),
+                                                        ..row_clone
+                                                    };
+                                                    let _ = thumbnail_tx.try_send(thumb);
+                                                }
+                                                Ok(None) => {
+                                                    log::warn!("No thumbnail generated for archive file: {}", path);
+                                                }
+                                                Err(err) => {
+                                                    let es = err.to_string();
+                                                    if es.contains("PasswordRequired") {
+                                                        // queue modal via control thumbnail
+                                                        let mut t = Thumbnail::default();
+                                                        t.path = archive_path.to_string();
+                                                        t.file_type = "<PASSWORD_REQUIRED>".to_string();
+                                                        let _ = thumbnail_tx.try_send(t);
+                                                    } else {
+                                                        log::warn!("Failed to generate thumbnail for archive file: {}: {}", path, es);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                });
+                            } else {
+                                log::info!("Not a archive: {:?}", row.path);
+                                // Regular filesystem path - use direct thumbnail generation
+                                // Determine media kind from file extension
+                                let ext_opt = std::path::Path::new(&row.path)
                                 .extension()
                                 .and_then(|e| e.to_str())
                                 .map(|s| s.to_ascii_lowercase());
-                            if let Some(ext) = ext_opt {
-                                if crate::is_video(ext.as_str()) {
-                                    if let Ok(b64) = generate_video_thumb_data(Path::new(&row.path))
-                                    {
-                                        let thumb = Thumbnail {
-                                            thumbnail_b64: Some(b64),
-                                            ..row.clone()
-                                        };
-                                        let _ = self.thumbnail_tx.try_send(thumb.clone());
+                            
+                                if let Some(ext) = ext_opt {
+                                    if crate::is_video(ext.as_str()) {
+                                        if let Ok(b64) = generate_video_thumb_data(Path::new(&row.path))
+                                        {
+                                            let thumb = Thumbnail {
+                                                thumbnail_b64: Some(b64),
+                                                ..row.clone()
+                                            };
+                                            let _ = self.thumbnail_tx.try_send(thumb.clone());
+                                        }
+                                    } else if crate::is_image(ext.as_str()) {
+                                        if let Ok(b64) = generate_image_thumb_data(Path::new(&row.path))
+                                        {
+                                            // embedding presence is tracked via clip embeddings table now
+                                            let thumb = Thumbnail {
+                                                thumbnail_b64: Some(b64),
+                                                ..row.clone()
+                                            };
+                                            let _ = self.thumbnail_tx.try_send(thumb.clone());
+                                            let tx = self.clip_embedding_tx.clone();
+                                            tokio::spawn(async move {
+                                                let _ = tx.try_send(thumb.get_embedding().await.unwrap_or_default());
+                                            });
+                                        }
                                     }
-                                } else if crate::is_image(ext.as_str()) {
-                                    if let Ok(b64) = generate_image_thumb_data(Path::new(&row.path))
-                                    {
-                                        // embedding presence is tracked via clip embeddings table now
-                                        let thumb = Thumbnail {
-                                            thumbnail_b64: Some(b64),
-                                            ..row.clone()
-                                        };
-                                        let _ = self.thumbnail_tx.try_send(thumb.clone());
-                                        let tx = self.clip_embedding_tx.clone();
-                                        tokio::spawn(async move {
-                                            let _ = tx.try_send(thumb.get_embedding().await.unwrap_or_default());
-                                        });
-                                    }
+                                } else {
+                                    // no extension, do nothing
                                 }
-                            } else {
-                                // no extension, do nothing
                             }
                         }
                     }
                     // If clicking an archive (zip), request to open virtual view
                     if let Some(ext) = std::path::Path::new(&row.path)
-                        .extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()) {
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|s| s.to_ascii_lowercase()) 
+                    {
                         if ext == "zip" || row.file_type == "<ARCHIVE>" { 
                             self.requested_tabs.push(TabAction::OpenArchive(row.path.clone()));
                         }
                     } else if row.file_type == "<ARCHIVE>" {
                         self.requested_tabs.push(TabAction::OpenArchive(row.path.clone()));
                     }
+                    log::info!("Showing new thumbnail: {}", row.path);
                     // Always notify selection so preview can reflect current row
                     let _ = self.thumbnail_tx.try_send(row.clone());
                     // Skip embedding generation for virtual paths inside zip
-                    if !row.path.starts_with("zip://") && !row.path.starts_with("tar://") && !row.path.starts_with("7z://") {
+                    if !row.path.starts_with("zip://") 
+                        && !row.path.starts_with("tar://") 
+                        && !row.path.starts_with("7z://") 
+                    {
                         let tx = self.clip_embedding_tx.clone();
                         let thumb = row.clone();
                         tokio::spawn(async move {
@@ -696,7 +822,6 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                     .iter()
                     .map(|(_, r)| (*r).clone())
                     .collect();
-                if rows.is_empty() { return; }
                 let first = rows[0].filename.clone();
                 let count = rows.len();
                 let title = if count == 1 { format!("Selected: {}", first) } else { format!("Selected ({}) - {}", count, first) };

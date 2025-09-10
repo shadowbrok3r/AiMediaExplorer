@@ -1,6 +1,12 @@
 use crate::{next_scan_id, ui::status::GlobalStatusIndicator, DB};
 use crate::utilities::archive::{ArchiveRegistry, entry_to_thumbnail};
 use std::{path::PathBuf, time::Duration};
+
+// Helper function to normalize internal path to a directory prefix
+fn normalize_prefix(internal: &str) -> String {
+    let t = internal.trim_matches('/');
+    if t.is_empty() { String::new() } else { format!("{}/", t) }
+}
 pub mod navigation;
 
 impl crate::ui::file_table::FileExplorer {
@@ -15,7 +21,7 @@ impl crate::ui::file_table::FileExplorer {
             let reg = ArchiveRegistry::default();
             if let Some(handler) = reg.by_scheme(&scheme) {
                 // Use cached password if present for this archive path
-                let pw_opt = self.archive_passwords.get(&archive_path).map(|s| s.as_str());
+                let pw_opt = self.viewer.archive_passwords.get(&archive_path).map(|s| s.as_str());
                 let params = crate::utilities::archive::ListParams {
                     archive_fs_path: &archive_path,
                     internal_path: &internal,
@@ -24,14 +30,72 @@ impl crate::ui::file_table::FileExplorer {
                 match handler.list(&params) {
                     Ok(entries) => {
                         for e in entries {
-                            let t = entry_to_thumbnail(&scheme, &archive_path, &internal, e);
+                            let t = entry_to_thumbnail(&scheme, &archive_path, &internal, e.clone());
                             self.table.push(t);
+                            
+                            // For media files, schedule asynchronous thumbnail generation
+                            let ext = std::path::Path::new(&e.name)
+                                .extension()
+                                .and_then(|x| x.to_str())
+                                .map(|s| s.to_ascii_lowercase())
+                                .unwrap_or_default();
+                            if !e.is_dir && (crate::utilities::types::is_image(&ext) || crate::utilities::types::is_video(&ext)) {
+                                let scheme_clone = scheme.clone();
+                                let archive_path_clone = archive_path.clone();
+                                let internal_clone = internal.clone();
+                                let filename_clone = e.name.clone();
+                                let password_clone = pw_opt.map(|s| s.to_string());
+                                let thumbnail_tx = self.thumbnail_tx.clone();
+                                
+                                // Generate virtual path for this file to identify the thumbnail
+                                let vpath = format!("{}://{}!/{}/{}",
+                                    scheme,
+                                    archive_path,
+                                    normalize_prefix(&internal).trim_end_matches('/'),
+                                    e.name
+                                ).replace("//!", "/!").replace("!//", "!/");
+                                
+                                tokio::spawn(async move {
+                                    log::info!("Starting thumbnail generation for archive file: {}", vpath);
+                                    match crate::utilities::archive::extract_and_generate_thumbnail(
+                                        &scheme_clone, &archive_path_clone, &internal_clone, &filename_clone, 
+                                        password_clone.as_deref()
+                                    ) {
+                                        Ok(Some(thumb_b64)) => {
+                                            log::info!("Generated thumbnail for archive file: {}", vpath);
+                                            let mut thumb = crate::Thumbnail::default();
+                                            thumb.path = vpath.clone();
+                                            thumb.thumbnail_b64 = Some(thumb_b64);
+                                            match thumbnail_tx.try_send(thumb) {
+                                                Ok(_) => log::info!("Sent thumbnail update for: {}", vpath),
+                                                Err(e) => log::error!("Failed to send thumbnail for {}: {:?}", vpath, e),
+                                            }
+                                        }
+                                        Ok(None) => {
+                                            log::warn!("No thumbnail generated for archive file: {}", vpath);
+                                        }
+                                        Err(err) => {
+                                            let es = err.to_string();
+                                            if es.contains("PasswordRequired") {
+                                                log::warn!("Password required for archive: {}", archive_path_clone);
+                                                // Send a control Thumbnail row with file_type marker to trigger UI modal
+                                                let mut t = crate::Thumbnail::default();
+                                                t.path = archive_path_clone.clone();
+                                                t.file_type = "<PASSWORD_REQUIRED>".to_string();
+                                                let _ = thumbnail_tx.try_send(t);
+                                            } else {
+                                                log::warn!("Failed to generate thumbnail for archive file: {}: {}", vpath, es);
+                                            }
+                                        }
+                                    }
+                                });
+                            }
                         }
                     }
                     Err(e) => {
                         log::error!("Failed listing {} archive '{}': {e:?}", scheme, archive_path);
                         // If likely a password issue or any error for 7z/zip, enqueue modal prompt
-                        if scheme == "7z" || scheme == "zip" {
+                        if e.to_string().contains("PasswordRequired") || scheme == "7z" || scheme == "zip" {
                             if !self.pending_zip_passwords.contains(&archive_path) {
                                 self.pending_zip_passwords.push_back(archive_path.clone());
                             }

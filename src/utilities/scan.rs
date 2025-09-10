@@ -116,10 +116,10 @@ fn enqueue_thumb_job(path: &Path, kind: MediaKind, scan_id: u64) {
 
 fn generate_thumb(path: &Path, kind: &MediaKind) -> Option<String> {
     match kind {
-        MediaKind::Image => crate::generate_image_thumb_data(path).ok(),
+        MediaKind::Image => crate::utilities::thumbs::generate_image_thumb_data(path).ok(),
         MediaKind::Video => {
             #[cfg(windows)]
-            { return crate::generate_video_thumb_data(path).ok(); }
+            { return crate::utilities::thumbs::generate_video_thumb_data(path).ok(); }
             #[cfg(not(windows))]
             { return None; }
         }
@@ -202,6 +202,7 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
         let s = p.to_string_lossy().to_string();
         std::path::PathBuf::from(crate::utilities::windows::normalize_wsl_unc(&s))
     };
+
     if !root.exists() {
         let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::Error(format!("Root does not exist: {}", root.display())) });
         let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::Done });
@@ -242,13 +243,50 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
         .skip_hidden(false)
         .follow_links(false)
         .parallelism(parallelism)
-        // Depth semantics: 0 = root only, 1 = root children only.
-        // For shallow scans we want the immediate children, not just the root dir itself.
         .max_depth(if recursive { usize::MAX } else { 1 })
         .process_read_dir(move |_depth, dir_path, _state, entries| {
+            // Helper function to check if a path matches any excluded directory
+            let path_matches_excluded = |path: &std::path::Path| -> bool {
+                excluded_dirs.iter().any(|excluded| {
+                    // Check if the path components match, ignoring drive letters
+                    let excluded_path = std::path::Path::new(excluded);
+                    let path_components: Vec<_> = path.components().collect();
+                    let excluded_components: Vec<_> = excluded_path.components().collect();
+                    
+                    // If excluded path is absolute, try both exact match and drive-agnostic match
+                    if excluded_path.is_absolute() {
+                        // First try exact match
+                        if path.starts_with(excluded) {
+                            return true;
+                        }
+                        // Then try drive-agnostic match - skip the first component if it's a drive
+                        if let (Some(std::path::Component::Prefix(_)), Some(std::path::Component::Prefix(_))) 
+                            = (path_components.first(), excluded_components.first()) {
+                            // Both have drive prefixes, compare without them
+                            if path_components.len() >= excluded_components.len() {
+                                let path_no_drive = &path_components[1..];
+                                let excluded_no_drive = &excluded_components[1..];
+                                return path_no_drive.starts_with(excluded_no_drive);
+                            }
+                        }
+                    } else {
+                        // Relative path - check if any suffix of the path matches
+                        if path_components.len() >= excluded_components.len() {
+                            for start_idx in 0..=(path_components.len() - excluded_components.len()) {
+                                let path_slice = &path_components[start_idx..start_idx + excluded_components.len()];
+                                if path_slice == excluded_components.as_slice() {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                    false
+                })
+            };
+
             // Only enforce recursive excludes during recursive scans.
             if recursive {
-                if excluded_dirs.iter().any(|d| dir_path.starts_with(d)) {
+                if path_matches_excluded(dir_path) {
                     entries.clear();
                     return;
                 }
@@ -260,7 +298,7 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
                     let p = entry.path();
                     if entry.file_type.is_dir() {
                         // In recursive mode, skip excluded directories entirely (and their children).
-                        if recursive && excluded_dirs.iter().any(|d| p.starts_with(d)) {
+                        if recursive && path_matches_excluded(&p) {
                             return false;
                         }
                         return true; // keep directory (walker decides whether to descend based on max_depth)

@@ -134,6 +134,45 @@ impl crate::app::SmartMediaContext {
                         });
                     });
 
+                    ui.separator();
+                    ui.label("Excluded Directories (for recursive scans):");
+                    ui.horizontal(|ui| {
+                        ui.label("Add new:");
+                        ui.text_edit_singleline(&mut self.new_excluded_dir);
+                        if ui.button("Add").clicked() && !self.new_excluded_dir.trim().is_empty() {
+                            if d.excluded_dirs.is_none() {
+                                d.excluded_dirs = Some(Vec::new());
+                            }
+                            if let Some(ref mut dirs) = d.excluded_dirs {
+                                let new_dir = self.new_excluded_dir.trim().to_string();
+                                if !dirs.contains(&new_dir) {
+                                    dirs.push(new_dir);
+                                }
+                            }
+                            self.new_excluded_dir.clear();
+                        }
+                    });
+                    
+                    if let Some(ref mut excluded_dirs) = d.excluded_dirs {
+                        let mut to_remove = None;
+                        for (idx, dir) in excluded_dirs.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("📁 {}", dir));
+                                if ui.small_button("✖").on_hover_text("Remove").clicked() {
+                                    to_remove = Some(idx);
+                                }
+                            });
+                        }
+                        if let Some(idx) = to_remove {
+                            excluded_dirs.remove(idx);
+                        }
+                        if excluded_dirs.is_empty() {
+                            d.excluded_dirs = None;
+                        }
+                    } else {
+                        ui.label("No excluded directories set.");
+                    }
+
                     ui.horizontal(|ui| {
                         ui.label("Overwrite existing descriptions");
                         ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {  

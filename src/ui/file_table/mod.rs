@@ -212,12 +212,16 @@ pub struct FileExplorer {
     zip_password_input: String,
     #[serde(skip)]
     show_zip_modal: bool,
-    // In-memory archive passwords for current session (keyed by archive filesystem path)
-    #[serde(skip)]
-    archive_passwords: std::collections::HashMap<String, String>,
     // Track which scan_id owns this explorer so updates don't leak across tabs
     #[serde(skip)]
     owning_scan_id: Option<u64>,
+    // Cached WSL data to avoid recomputing every frame
+    #[serde(skip)]
+    cached_wsl_distros: Option<Vec<String>>,
+    #[serde(skip)]
+    cached_physical_drives: Option<Vec<crate::utilities::explorer::PhysicalDrive>>,
+    #[serde(skip)]
+    last_wsl_cache_time: std::time::Instant,
 }
 
 impl FileExplorer {
@@ -303,8 +307,10 @@ impl FileExplorer {
             active_zip_prompt: None,
             zip_password_input: String::new(),
             show_zip_modal: false,
-            archive_passwords: std::collections::HashMap::new(),
             owning_scan_id: None,
+            cached_wsl_distros: None,
+            cached_physical_drives: None,
+            last_wsl_cache_time: std::time::Instant::now(),
         };
         // Preload saved filter groups
         {
@@ -330,6 +336,34 @@ impl FileExplorer {
             this.populate_current_directory();
         }
         this
+    }
+
+    pub fn get_cached_wsl_distros(&mut self) -> &Vec<String> {
+        const CACHE_DURATION: std::time::Duration = std::time::Duration::from_secs(30);
+        
+        if self.cached_wsl_distros.is_none() || self.last_wsl_cache_time.elapsed() > CACHE_DURATION {
+            self.cached_wsl_distros = Some(crate::utilities::explorer::list_wsl_distros());
+            self.last_wsl_cache_time = std::time::Instant::now();
+        }
+        
+        self.cached_wsl_distros.as_ref().unwrap()
+    }
+    
+    pub fn get_cached_physical_drives(&mut self) -> &Vec<crate::utilities::explorer::PhysicalDrive> {
+        const CACHE_DURATION: std::time::Duration = std::time::Duration::from_secs(30);
+        
+        if self.cached_physical_drives.is_none() || self.last_wsl_cache_time.elapsed() > CACHE_DURATION {
+            self.cached_physical_drives = Some(crate::utilities::explorer::list_physical_drives());
+            self.last_wsl_cache_time = std::time::Instant::now();
+        }
+        
+        self.cached_physical_drives.as_ref().unwrap()
+    }
+    
+    pub fn refresh_wsl_cache(&mut self) {
+        self.cached_wsl_distros = None;
+        self.cached_physical_drives = None;
+        self.last_wsl_cache_time = std::time::Instant::now() - std::time::Duration::from_secs(60);
     }
 
     /// Initialize this explorer to open a specific path in a new tab, optionally performing a recursive scan.
@@ -360,6 +394,12 @@ impl FileExplorer {
             filters.include_videos = self.viewer.types_show_videos;
             filters.skip_icons = self.viewer.ui_settings.filter_skip_icons;
             filters.excluded_terms = self.excluded_terms.clone();
+            // Add excluded directories from UI settings
+            if let Some(ref excluded_dirs) = self.viewer.ui_settings.excluded_dirs {
+                filters.recursive_excluded_dirs = excluded_dirs.iter()
+                    .map(|s| std::path::PathBuf::from(s))
+                    .collect();
+            }
             self.current_scan_id = Some(scan_id);
             tokio::spawn(async move { crate::spawn_scan(filters, tx, true, scan_id).await; });
         } else {
@@ -382,7 +422,9 @@ impl FileExplorer {
     }
 
     pub fn ui(&mut self, ui: &mut Ui) {
+
         self.receive(ui.ctx());
+
         // Keep global active group name snapshot in sync for viewer context menu
         {
             let guard = ACTIVE_GROUP_NAME.get_or_init(|| Mutex::new(None));
@@ -404,6 +446,7 @@ impl FileExplorer {
                     let _ = crate::database::LogicalGroup::create("Default").await;
                     if let Ok(groups) = crate::database::LogicalGroup::list_all().await { let _ = tx.try_send(groups); }
                 });
+
             } else if self.active_logical_group_name.is_none() {
                 // Choose a sensible default: previously used from settings or first available
                 let preferred = crate::ui::file_table::active_group_name();
@@ -1392,7 +1435,6 @@ impl FileExplorer {
             });
         });
 
-
         CentralPanel::default().show_inside(ui, |ui| {
             // Active filter preset summary
             if let Some(name) = self.active_filter_group.clone() {
@@ -1425,13 +1467,25 @@ impl FileExplorer {
                 });
                 ui.separator();
             }
+            // Check if we have a single empty default row and remove it
+            if self.table.len() == 1 {
+                let should_remove_empty = self.table.iter().next().map(|row| {
+                    row.filename.is_empty() && row.path.is_empty() && row.size == 0 && 
+                    row.file_type.is_empty() && row.thumbnail_b64.is_none()
+                }).unwrap_or(false);
+                
+                if should_remove_empty {
+                    self.table.clear();
+                }
+            }
+            
             Renderer::new(&mut self.table, &mut self.viewer)
-                .with_style_modify(|s| {
-                    s.single_click_edit_mode = true;
-                    s.table_row_height = Some(60.0);
-                    s.auto_shrink = [false, false].into();
-                })
-                .ui(ui);
+            .with_style_modify(|s| {
+                s.single_click_edit_mode = true;
+                s.table_row_height = Some(60.0);
+                s.auto_shrink = [false, false].into();
+            })
+            .ui(ui);
             // Modal password prompt (appears at end of scans or when browsing encrypted archives)
             if self.show_zip_modal {
                 egui::Window::new("Archive Password Required")
@@ -1443,25 +1497,21 @@ impl FileExplorer {
                         ui.label("One or more encrypted archives were found. Please enter the password.");
                         ui.separator();
                         ui.label(format!("Archive: {}", current));
+                        let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
                         let resp = egui::TextEdit::singleline(&mut self.zip_password_input)
                             .password(true)
                             .hint_text("Password")
                             .desired_width(240.)
                             .ui(ui);
                         ui.horizontal(|ui| {
-                            if ui.button("Submit").clicked() || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                            if (resp.lost_focus() && enter_pressed) || ui.button("Submit").clicked() {
                                 // Store in-memory for this session and refresh any open view for that archive
                                 let pw = std::mem::take(&mut self.zip_password_input);
                                 if !current.is_empty() {
-                                    self.archive_passwords.insert(current.clone(), pw);
+                                    self.viewer.archive_passwords.insert(current.clone(), pw);
                                 }
-                                // If currently browsing this archive, refresh to re-attempt list with password
-                                if self.current_path.starts_with(&format!("zip://{}!", current))
-                                    || self.current_path.starts_with(&format!("7z://{}!", current))
-                                    || self.current_path.starts_with(&format!("tar://{}!", current)) // tar typically not encrypted, but harmless
-                                {
-                                    self.populate_current_directory();
-                                }
+                                // Refresh current view (filesystem or virtual) so thumbnail tasks are scheduled with the new password
+                                self.populate_current_directory();
                                 // Advance the queue
                                 if let Some(_) = self.pending_zip_passwords.pop_front() {}
                                 self.active_zip_prompt = self.pending_zip_passwords.front().cloned();
@@ -1577,7 +1627,8 @@ impl FileExplorer {
             }
         });
 
-        // Removed modal; results shown inline in table
+        // Synchronize archive passwords with the viewer
+        self.viewer.archive_passwords = self.viewer.archive_passwords.clone();
     }
 
     // Load and display rows from a logical group by name

@@ -41,6 +41,8 @@ pub struct SmartMediaContext {
     // Map of dynamic tab title -> a dedicated FileExplorer instance with filters applied
     pub filtered_tabs: std::collections::HashMap<String, crate::ui::file_table::FileExplorer>,
     pub open_ui_settings: bool,
+    // UI state for adding excluded directories
+    pub new_excluded_dir: String,
 }
 
 #[derive(PartialEq, Debug, Serialize, Deserialize, Default)]
@@ -95,6 +97,7 @@ impl SmartMediaApp {
             open_tabs,
             filtered_tabs: std::collections::HashMap::new(),
             open_ui_settings: false,
+            new_excluded_dir: String::new(),
         };
 
         Self {

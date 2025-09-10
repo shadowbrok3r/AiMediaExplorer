@@ -97,6 +97,16 @@ fn uniquify_title(open_tabs: &std::collections::HashSet<String>, base: &str) -> 
 
 #[tokio::main]
 async fn main() -> eframe::Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        unsafe {
+            let _ = windows::Win32::System::Threading::SetPriorityClass(
+                windows::Win32::System::Threading::GetCurrentProcess(), 
+                windows::Win32::System::Threading::ABOVE_NORMAL_PRIORITY_CLASS
+            );
+        }
+    }
+
     egui_logger::builder()
         .max_level(log::LevelFilter::Info) // defaults to Debug
         .init()

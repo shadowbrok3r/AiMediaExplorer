@@ -383,11 +383,13 @@ impl crate::ui::file_table::FileExplorer {
                     self.file_scan_progress = 1.0;
                     self.scan_done = true;
                     self.current_scan_id = None;
+                    
                     // If we have pending encrypted archives, open the modal now
                     if !self.pending_zip_passwords.is_empty() {
                         self.active_zip_prompt = self.pending_zip_passwords.front().cloned();
                         self.show_zip_modal = true;
                     }
+
                     // Record the root associated with this scan for UX
                     self.last_scan_root = Some(self.current_path.clone());
                     if !self.pending_thumb_rows.is_empty() {

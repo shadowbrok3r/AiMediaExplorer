@@ -253,3 +253,144 @@ pub fn wsl_dynamic_mounts(distro: &str) -> Vec<QuickAccess> {
 
 #[cfg(not(windows))]
 pub fn wsl_dynamic_mounts(_distro: &str) -> Vec<QuickAccess> { Vec::new() }
+
+#[derive(Clone, Debug)]
+pub struct PhysicalDrive {
+    pub caption: String,
+    pub device_id: String,
+    pub model: String,
+    pub partitions: u32,
+    pub size: u64,
+}
+
+#[cfg(windows)]
+pub fn list_physical_drives() -> Vec<PhysicalDrive> {
+    use std::process::Command;
+    
+    let mut drives = Vec::new();
+    
+    // Use wmic to list physical drives
+    if let Ok(output) = Command::new("wmic")
+        .args(["diskdrive", "list", "brief"])
+        .output()
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let lines: Vec<&str> = stdout.lines().collect();
+            
+            // Skip header line
+            for line in lines.iter().skip(1) {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                
+                // Parse the line - format is usually:
+                // Caption       DeviceID            Model         Partitions  Size
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 5 {
+                    // Try to extract device ID (should contain \\.\PHYSICALDRIVE)
+                    if let Some(device_pos) = parts.iter().position(|&p| p.contains("PHYSICALDRIVE")) {
+                        let _device_id = parts[device_pos].to_string();
+                        
+                        // Extract other fields - this is a bit tricky due to spacing
+                        // Let's use a more robust approach with the full line
+                        if let Some(device_start) = line.find("\\\\") {
+                            if let Some(device_end) = line[device_start..].find(' ') {
+                                let device_id = line[device_start..device_start + device_end].to_string();
+                                
+                                // Extract size (should be the last number)
+                                if let Some(size_str) = parts.last() {
+                                    if let Ok(size) = size_str.parse::<u64>() {
+                                        // Extract partitions (second to last number)
+                                        let partitions = if parts.len() > 1 {
+                                            parts[parts.len() - 2].parse::<u32>().unwrap_or(0)
+                                        } else {
+                                            0
+                                        };
+                                        
+                                        // Extract caption and model (everything before device_id and after)
+                                        let caption = if device_start > 0 {
+                                            line[..device_start].trim().to_string()
+                                        } else {
+                                            "Unknown Drive".to_string()
+                                        };
+                                        
+                                        // Model is between device_id and partitions
+                                        let after_device = &line[device_start + device_id.len()..];
+                                        let model_part = after_device.trim().split_whitespace().collect::<Vec<_>>();
+                                        let model = if model_part.len() >= 3 {
+                                            model_part[..model_part.len() - 2].join(" ")
+                                        } else {
+                                            caption.clone()
+                                        };
+                                        
+                                        drives.push(PhysicalDrive {
+                                            caption,
+                                            device_id,
+                                            model,
+                                            partitions,
+                                            size,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    drives
+}
+
+#[cfg(not(windows))]
+pub fn list_physical_drives() -> Vec<PhysicalDrive> { Vec::new() }
+
+#[cfg(windows)]
+pub fn mount_wsl_drive(device_id: &str, partition: u32) -> Result<String, String> {
+    use std::process::Command;
+    log::info!("wsl --mount {device_id} --partition {partition}");
+
+    let output = Command::new("wsl")
+        .args(["--mount", device_id, "--partition", &partition.to_string()])
+        .output()
+        .map_err(|e| format!("Failed to execute wsl command: {}", e))?;
+    
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Ok(stdout.to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("WSL mount failed: {}", stderr))
+    }
+}
+
+#[cfg(not(windows))]
+pub fn mount_wsl_drive(_device_id: &str, _partition: u32) -> Result<String, String> {
+    Err("WSL mounting is only available on Windows".to_string())
+}
+
+#[cfg(windows)]
+pub fn unmount_wsl_drive(device_id: &str) -> Result<String, String> {
+    use std::process::Command;
+    
+    let output = Command::new("wsl")
+        .args(["--unmount", device_id])
+        .output()
+        .map_err(|e| format!("Failed to execute wsl command: {}", e))?;
+    
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Ok(stdout.to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("WSL unmount failed: {}", stderr))
+    }
+}
+
+#[cfg(not(windows))]
+pub fn unmount_wsl_drive(_device_id: &str) -> Result<String, String> {
+    Err("WSL unmounting is only available on Windows".to_string())
+}

@@ -2,12 +2,13 @@
 name = "smart-media"
 version = "0.1.0"
 edition = "2024"
+build = "build.rs"
 
 [dependencies]
 eframe = { version="0.32.2", features=["persistence", "serde",  "default_fonts", "glow", "x11"], default-features=false }
 egui_extras = { version = "0.32.2", features = ["datepicker", "syntect", "serde", "image", "all_loaders" ]}
-# egui-data-table = { path = "C:\\Users\\Owner\\Desktop\\egui-data-table", features = ["persistency"]} 
 egui-data-table = { git = "https://github.com/shadowbrok3r/egui-data-table", branch = "master", features = ["persistency"]}
+egui_dock = { version = "0.17.0", features = ["serde"] }
 egui_logger = "0.8"
 open = { version = "5.3.2" }
 chrono = { version = "0.4", features = ["clock", "std"] }
@@ -47,7 +48,8 @@ fastembed = { version = "5.1.0"}
 sevenz-rust2 = { version = "0.18" }
 widestring = "1"
 rawkit = "0.1"
-egui_dock = { version = "0.17.0", features = ["serde"] }
+tempfile = "3"
+
 [features]
 cpu = []
 
@@ -69,6 +71,10 @@ windows = { version = "0.62", features = [
     "UI_Shell",
 	"Win32_Graphics_Dxgi"
 ] }
+
+[target.'cfg(target_os = "windows")'.build-dependencies]
+static_vcruntime = "2"
+winres = "0.1"
 
 [dependencies.egui]
 version = "0.32"

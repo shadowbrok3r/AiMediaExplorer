@@ -130,32 +130,106 @@ impl super::FileExplorer {
                         .show(ui, |ui| {
                             #[cfg(windows)]
                             {
-                                let distros = crate::utilities::explorer::list_wsl_distros();
+                                ui.horizontal(|ui| {
+                                    ui.label("WSL Distros:");
+                                    if ui.button("🔄").on_hover_text("Refresh WSL data").clicked() {
+                                        self.refresh_wsl_cache();
+                                    }
+                                });
+                                
+                                let distros = self.get_cached_wsl_distros();
                                 if distros.is_empty() {
                                     ui.label(RichText::new("No WSL distros detected (check `wsl -l -q`) ").weak());
-                                }
-                                for d in distros.iter().filter(|d| !d.is_empty()) {
-                                    ui.separator();
-                                    ui.label(RichText::new(format!("Distro: {}", d)).strong());
-                                    for access in crate::utilities::explorer::wsl_dynamic_mounts(d) {
-                                        let resp = Button::new(&access.label)
-                                        .right_text(RichText::new(&access.icon).color(ui.style().visuals.error_fg_color))
-                                        .ui(ui)
-                                        .on_hover_text("Click: open recursive in new tab (Shift: recursive)");
+                                } else {
+                                    for d in distros.iter().filter(|d| !d.is_empty()) {
+                                        ui.separator();
+                                        ui.label(RichText::new(format!("Distro: {}", d)).strong());
+                                        for access in crate::utilities::explorer::wsl_dynamic_mounts(d) {
+                                            let resp = Button::new(&access.label)
+                                            .right_text(RichText::new(&access.icon).color(ui.style().visuals.error_fg_color))
+                                            .ui(ui)
+                                            .on_hover_text("Click: open recursive in new tab (Shift: recursive)");
 
-                                        let ctrl = ui.input(|i| i.modifiers.command || i.modifiers.ctrl);
-                                        let middle = resp.middle_clicked();
-                                        if resp.clicked() || middle {
-                                            let title = access.label.clone();
-                                            let path = access.path.to_string_lossy().to_string();
-                                            let recursive = ui.input(|i| i.modifiers.shift);
-                                            let background = ctrl || middle;
-                                            crate::app::OPEN_TAB_REQUESTS
-                                                .lock()
-                                                .unwrap()
-                                                .push(crate::ui::file_table::FilterRequest::OpenPath { title, path, recursive, background });
+                                            let ctrl = ui.input(|i| i.modifiers.command || i.modifiers.ctrl);
+                                            let middle = resp.middle_clicked();
+                                            if resp.clicked() || middle {
+                                                let title = access.label.clone();
+                                                let path = access.path.to_string_lossy().to_string();
+                                                let recursive = ui.input(|i| i.modifiers.shift);
+                                                let background = ctrl || middle;
+                                                crate::app::OPEN_TAB_REQUESTS
+                                                    .lock()
+                                                    .unwrap()
+                                                    .push(crate::ui::file_table::FilterRequest::OpenPath { title, path, recursive, background });
+                                            }
                                         }
                                     }
+                                }
+                                
+                                // Physical Drives for WSL mounting
+                                ui.separator();
+                                ui.label(RichText::new("Physical Drives (WSL Mount)").strong());
+                                let drives = self.get_cached_physical_drives();
+                                if drives.is_empty() {
+                                    ui.label(RichText::new("No physical drives detected").weak());
+                                } else {
+                                    ScrollArea::vertical().max_height(200.).show(ui, |ui| {
+                                        for drive in drives {
+                                            ui.separator();
+                                            ui.horizontal(|ui| {
+                                                ui.label(RichText::new(&drive.model).strong());
+                                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                                    let size_gb = drive.size as f64 / (1024.0 * 1024.0 * 1024.0);
+                                                    ui.label(format!("{:.1} GB", size_gb));
+                                                });
+                                            });
+                                            ui.label(format!("Device: {} ({} partitions)", drive.device_id, drive.partitions));
+                                            
+                                            // Show partition mount buttons
+                                            ui.horizontal(|ui| {
+                                                for partition in 0..drive.partitions {
+                                                    let mount_btn = Button::new(format!("Mount P{}", partition))
+                                                        .small()
+                                                        .ui(ui)
+                                                        .on_hover_text(format!("Mount partition {} of {}", partition, drive.device_id));
+                                                    
+                                                    if mount_btn.clicked() {
+                                                        let device_id = drive.device_id.clone();
+                                                        tokio::spawn(async move {
+                                                            match crate::utilities::explorer::mount_wsl_drive(&device_id, partition) {
+                                                                Ok(msg) => {
+                                                                    log::info!("WSL mount successful: {}", msg);
+                                                                }
+                                                                Err(e) => {
+                                                                    log::error!("WSL mount failed: {}", e);
+                                                                }
+                                                            }
+                                                        });
+                                                    }
+                                                }
+                                                
+                                                // Unmount button
+                                                let unmount_btn = Button::new("Unmount")
+                                                    .small()
+                                                    .ui(ui)
+                                                    .on_hover_text(format!("Unmount all partitions of {}", drive.device_id));
+                                                
+                                                if unmount_btn.clicked() {
+                                                    let device_id = drive.device_id.clone();
+                                                    tokio::spawn(async move {
+                                                        match crate::utilities::explorer::unmount_wsl_drive(&device_id) {
+                                                            Ok(msg) => {
+                                                                log::info!("WSL unmount successful: {}", msg);
+                                                            }
+                                                            Err(e) => {
+                                                                log::error!("WSL unmount failed: {}", e);
+                                                            }
+                                                        }
+                                                    });
+                                                }
+                                            });
+                                        }
+                                    });
                                 }
                             }
                             #[cfg(not(windows))]
