@@ -1,6 +1,7 @@
-use crate::ui::{status::{self, GlobalStatusIndicator}, tabs::TABS};
+use crate::{utilities::windows::{gpu_mem_mb, system_mem_mb, smoothed_cpu01, smoothed_ram01, smoothed_vram01}, ui::{status::{self, GlobalStatusIndicator}, tabs::TABS}};
 use eframe::egui::*;
 use egui_dock::SurfaceIndex;
+use humansize::DECIMAL;
 
 // We assume SmartMediaApp has (or will get) a boolean `ai_initializing` and `ai_ready` flags plus `open_settings_modal`.
 // If they don't exist yet, they need to be added to `SmartMediaApp` (app.rs). For now we optimistically reference via super::MainPage's parent.
@@ -150,6 +151,177 @@ impl crate::app::SmartMediaApp {
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     status::status_bar_inline(ui);
+                });
+            });
+        });
+
+        TopBottomPanel::bottom("FileExplorer Bottom Panel")
+        .exact_height(22.)
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                if self.context.file_explorer.file_scan_progress > 0.0 {
+                    let mut bar = ProgressBar::new(self.context.file_explorer.file_scan_progress)
+                        .animate(true)
+                        .desired_width(100.)
+                        .show_percentage();
+
+                    if self.context.file_explorer.scan_done {
+                        self.context.file_explorer.file_scan_progress = 0.;
+                        bar = bar.text(RichText::new("Scan Complete").color(Color32::LIGHT_GREEN));
+                    }
+                    bar.ui(ui);
+                    ui.add_space(5.);
+                    ui.separator();
+                    ui.add_space(5.);
+                }
+
+                // AI status & progress
+                // Determine AI readiness via index worker activity (vision model removed)
+                let ai_ready = {
+                    use std::sync::atomic::Ordering;
+                    let queued = crate::ai::GLOBAL_AI_ENGINE
+                        .index_queue_len
+                        .load(Ordering::Relaxed);
+                    let active = crate::ai::GLOBAL_AI_ENGINE
+                        .index_active
+                        .load(Ordering::Relaxed);
+                    let completed = crate::ai::GLOBAL_AI_ENGINE
+                        .index_completed
+                        .load(Ordering::Relaxed);
+                    // If we've performed any indexing or have worker activity, treat as 'ready'
+                    (active + completed) > 0 || queued > 0
+                };
+                use std::sync::atomic::Ordering;
+                let q = crate::ai::GLOBAL_AI_ENGINE
+                    .index_queue_len
+                    .load(Ordering::Relaxed);
+                let active = crate::ai::GLOBAL_AI_ENGINE
+                    .index_active
+                    .load(Ordering::Relaxed);
+                let completed = crate::ai::GLOBAL_AI_ENGINE
+                    .index_completed
+                    .load(Ordering::Relaxed);
+                let total_for_ratio = q + active + completed;
+                // Vision generation state
+                let vision_active = !self.context.file_explorer.streaming_interim.is_empty();
+                let vision_pending = self.context.file_explorer.vision_pending;
+                let vision_started = self.context.file_explorer.vision_started;
+                let vision_completed = self.context.file_explorer.vision_completed;
+                // Build status strings
+                if total_for_ratio > 0 {
+                    let ratio = (completed as f32) / (total_for_ratio as f32);
+                    ProgressBar::new(ratio.clamp(0.0, 1.0))
+                        .desired_width(140.)
+                        .show_percentage()
+                        .text(format!(
+                            "Index {} ({} / {})",
+                            if ai_ready { "ing" } else { "load" },
+                            completed,
+                            total_for_ratio
+                        ))
+                        .ui(ui);
+
+                    ui.add_space(5.);
+                    ui.separator();
+                    ui.add_space(5.);
+                }
+                if vision_started > 0 {
+                    let done_ratio = if vision_started == 0 {
+                        0.0
+                    } else {
+                        (vision_completed as f32) / (vision_started as f32)
+                    };
+                    let bar = ProgressBar::new(done_ratio.clamp(0.0, 1.0))
+                        .desired_width(140.)
+                        .show_percentage()
+                        .text(format!(
+                            "Vision {} act:{} pend:{}",
+                            vision_completed,
+                            self.context.file_explorer.streaming_interim.len(),
+                            vision_pending.saturating_sub(self.context.file_explorer.streaming_interim.len())
+                        ));
+                    bar.ui(ui);
+                } else if vision_active || vision_pending > 0 {
+                    ui.label("Vision: starting...");
+                } else {
+                    ui.label("AI: Idle");
+                }
+
+                ui.add_space(5.);
+                ui.separator();
+                ui.add_space(5.);
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(300));
+                let vram01 = smoothed_vram01();
+                let (v_used, v_total) = gpu_mem_mb().unwrap_or_default();
+                ui.label(format!("VRAM: {:.0}/{:.0} MiB", v_used, v_total)); 
+                ProgressBar::new(vram01)
+                .desired_width(100.)
+                .desired_height(3.)
+                .fill(ui.style().visuals.error_fg_color)
+                .ui(ui);
+
+                ui.separator();
+
+                // System metrics (CPU, RAM, VRAM)
+                let cpu01 = smoothed_cpu01();
+                ui.label(format!("CPU: {:.2}%", cpu01 * 100.0));
+                ProgressBar::new(cpu01)
+                .desired_width(100.)
+                .desired_height(3.)
+                .fill(ui.style().visuals.error_fg_color)
+                .ui(ui);
+
+                ui.separator(); 
+
+                let ram01 = smoothed_ram01();
+                if let Some((used_mb, total_mb)) = system_mem_mb() {
+                    ui.label(format!("RAM: {:.0}/{:.0} MiB", used_mb, total_mb));
+                } else {
+                    ui.label("RAM: n/a");
+                }
+                ProgressBar::new(ram01)
+                .desired_width(100.)
+                .desired_height(3.)
+                .fill(ui.style().visuals.error_fg_color)
+                .ui(ui);
+                    
+                ui.separator(); 
+
+                ui.add_space(10.);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let mut img_cnt = 0usize;
+                    let mut vid_cnt = 0usize;
+                    let mut dir_cnt = 0usize;
+                    let mut total_size = 0u64;
+                    for r in self.context.file_explorer.table.iter() {
+                        if r.file_type == "<DIR>" {
+                            dir_cnt += 1;
+                            continue;
+                        }
+                        if let Some(ext) = std::path::Path::new(&r.path)
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .map(|s| s.to_ascii_lowercase())
+                        {
+                            if crate::is_image(ext.as_str()) {
+                                img_cnt += 1;
+                            }
+                            if crate::is_video(ext.as_str()) {
+                                vid_cnt += 1;
+                            }
+                        }
+                        total_size += r.size;
+                    }
+                    ui.label(format!("Dirs: {dir_cnt}"));
+                    ui.separator();
+                    ui.label(format!("Images: {img_cnt}"));
+                    ui.separator();
+                    ui.label(format!("Videos: {vid_cnt}"));
+                    ui.separator();
+                    ui.label(format!(
+                        "Total Size: {}",
+                        humansize::format_size(total_size, DECIMAL)
+                    ));
                 });
             });
         });

@@ -1,7 +1,7 @@
-use crate::{ScanEnvelope, Thumbnail, utilities::windows::{gpu_mem_mb, system_mem_mb, smoothed_cpu01, smoothed_ram01, smoothed_vram01}};
 use egui::{containers::menu::{MenuButton, MenuConfig}, style::StyleModifier};
 use std::{borrow::Cow, collections::HashMap, sync::Arc};
 use crossbeam::channel::{Receiver, Sender};
+use crate::{ScanEnvelope, Thumbnail};
 use std::sync::{Mutex, OnceLock};
 use egui_data_table::Renderer;
 use table::FileTableViewer;
@@ -79,15 +79,15 @@ pub struct SimilarResult {
 #[derive(Serialize)]
 pub struct FileExplorer {
     #[serde(skip)]
-    table: egui_data_table::DataTable<Thumbnail>,
+    pub table: egui_data_table::DataTable<Thumbnail>,
     pub viewer: FileTableViewer,
     files: Vec<Thumbnail>,
     pub current_path: String,
     open_preview_pane: bool,
     open_quick_access: bool,
-    file_scan_progress: f32,
+    pub file_scan_progress: f32,
     recursive_scan: bool,
-    scan_done: bool,
+    pub scan_done: bool,
     excluded_term_input: String,
     excluded_terms: Vec<String>,
     pub current_thumb: Thumbnail,
@@ -110,7 +110,7 @@ pub struct FileExplorer {
     #[serde(skip)]
     ai_update_rx: Receiver<AIUpdate>,
     #[serde(skip)]
-    streaming_interim: std::collections::HashMap<String, String>,
+    pub streaming_interim: std::collections::HashMap<String, String>,
     #[serde(skip)]
     thumb_scheduled: std::collections::HashSet<String>,
     #[serde(skip)]
@@ -125,11 +125,11 @@ pub struct FileExplorer {
     clip_embedding_rx: Receiver<crate::ClipEmbeddingRow>,
     // Vision description generation tracking (bulk vision progress separate from indexing)
     #[serde(skip)]
-    vision_started: usize,
+    pub vision_started: usize,
     #[serde(skip)]
-    vision_completed: usize,
+    pub vision_completed: usize,
     #[serde(skip)]
-    vision_pending: usize, // scheduled but not yet final
+    pub vision_pending: usize, // scheduled but not yet final
     // Database paging state
     #[serde(skip)]
     pub db_offset: usize,
@@ -227,9 +227,9 @@ impl FileExplorer {
         let (scan_tx, scan_rx) = crossbeam::channel::unbounded();
         let (ai_update_tx, ai_update_rx) = crossbeam::channel::unbounded();
         let (clip_embedding_tx, clip_embedding_rx) = crossbeam::channel::unbounded();
-    let (db_preload_tx, db_preload_rx) = crossbeam::channel::unbounded();
-    let (logical_groups_tx, logical_groups_rx) = crossbeam::channel::unbounded();
-    let (filter_groups_tx, filter_groups_rx) = crossbeam::channel::unbounded();
+        let (db_preload_tx, db_preload_rx) = crossbeam::channel::unbounded();
+        let (logical_groups_tx, logical_groups_rx) = crossbeam::channel::unbounded();
+        let (filter_groups_tx, filter_groups_rx) = crossbeam::channel::unbounded();
         let current_path = directories::UserDirs::new()
             .unwrap()
             .picture_dir()
@@ -388,10 +388,12 @@ impl FileExplorer {
             let guard = ACTIVE_GROUP_NAME.get_or_init(|| Mutex::new(None));
             if let Ok(mut g) = guard.lock() { *g = self.active_logical_group_name.clone(); }
         }
+
         // Integrate any freshly loaded filter groups
         while let Ok(groups) = self.filter_groups_rx.try_recv() {
             self.filter_groups = groups;
         }
+
         // Integrate any freshly loaded logical groups
         while let Ok(groups) = self.logical_groups_rx.try_recv() {
             self.logical_groups = groups;
@@ -413,6 +415,7 @@ impl FileExplorer {
                 }
             }
         }
+        
         // If DB became ready after construction and list is empty, try fetching groups automatically (no manual refresh needed)
         if self.logical_groups.is_empty() {
             let now = std::time::Instant::now();
@@ -1389,176 +1392,6 @@ impl FileExplorer {
             });
         });
 
-        TopBottomPanel::bottom("FileExplorer Bottom Panel")
-        .exact_height(22.)
-        .show_inside(ui, |ui| {
-            ui.horizontal(|ui| {
-                if self.file_scan_progress > 0.0 {
-                    let mut bar = ProgressBar::new(self.file_scan_progress)
-                        .animate(true)
-                        .desired_width(100.)
-                        .show_percentage();
-
-                    if self.scan_done {
-                        self.file_scan_progress = 0.;
-                        bar = bar.text(RichText::new("Scan Complete").color(Color32::LIGHT_GREEN));
-                    }
-                    bar.ui(ui);
-                    ui.add_space(5.);
-                    ui.separator();
-                    ui.add_space(5.);
-                }
-
-                // AI status & progress
-                // Determine AI readiness via index worker activity (vision model removed)
-                let ai_ready = {
-                    use std::sync::atomic::Ordering;
-                    let queued = crate::ai::GLOBAL_AI_ENGINE
-                        .index_queue_len
-                        .load(Ordering::Relaxed);
-                    let active = crate::ai::GLOBAL_AI_ENGINE
-                        .index_active
-                        .load(Ordering::Relaxed);
-                    let completed = crate::ai::GLOBAL_AI_ENGINE
-                        .index_completed
-                        .load(Ordering::Relaxed);
-                    // If we've performed any indexing or have worker activity, treat as 'ready'
-                    (active + completed) > 0 || queued > 0
-                };
-                use std::sync::atomic::Ordering;
-                let q = crate::ai::GLOBAL_AI_ENGINE
-                    .index_queue_len
-                    .load(Ordering::Relaxed);
-                let active = crate::ai::GLOBAL_AI_ENGINE
-                    .index_active
-                    .load(Ordering::Relaxed);
-                let completed = crate::ai::GLOBAL_AI_ENGINE
-                    .index_completed
-                    .load(Ordering::Relaxed);
-                let total_for_ratio = q + active + completed;
-                // Vision generation state
-                let vision_active = !self.streaming_interim.is_empty();
-                let vision_pending = self.vision_pending;
-                let vision_started = self.vision_started;
-                let vision_completed = self.vision_completed;
-                // Build status strings
-                if total_for_ratio > 0 {
-                    let ratio = (completed as f32) / (total_for_ratio as f32);
-                    ProgressBar::new(ratio.clamp(0.0, 1.0))
-                        .desired_width(140.)
-                        .show_percentage()
-                        .text(format!(
-                            "Index {} ({} / {})",
-                            if ai_ready { "ing" } else { "load" },
-                            completed,
-                            total_for_ratio
-                        ))
-                        .ui(ui);
-
-                    ui.add_space(5.);
-                    ui.separator();
-                    ui.add_space(5.);
-                }
-                if vision_started > 0 {
-                    let done_ratio = if vision_started == 0 {
-                        0.0
-                    } else {
-                        (vision_completed as f32) / (vision_started as f32)
-                    };
-                    let bar = ProgressBar::new(done_ratio.clamp(0.0, 1.0))
-                        .desired_width(140.)
-                        .show_percentage()
-                        .text(format!(
-                            "Vision {} act:{} pend:{}",
-                            vision_completed,
-                            self.streaming_interim.len(),
-                            vision_pending.saturating_sub(self.streaming_interim.len())
-                        ));
-                    bar.ui(ui);
-                } else if vision_active || vision_pending > 0 {
-                    ui.label("Vision: starting...");
-                } else {
-                    ui.label("AI: Idle");
-                }
-
-                ui.add_space(5.);
-                ui.separator();
-                ui.add_space(5.);
-                ui.ctx().request_repaint_after(std::time::Duration::from_millis(300));
-                let vram01 = smoothed_vram01();
-                let (v_used, v_total) = gpu_mem_mb().unwrap_or_default();
-                ui.label(format!("VRAM: {:.0}/{:.0} MiB", v_used, v_total)); 
-                ProgressBar::new(vram01)
-                .desired_width(100.)
-                .desired_height(3.)
-                .fill(ui.style().visuals.error_fg_color)
-                .ui(ui);
-
-                ui.separator();
-
-                // System metrics (CPU, RAM, VRAM)
-                let cpu01 = smoothed_cpu01();
-                ui.label(format!("CPU: {:.2}%", cpu01 * 100.0));
-                ProgressBar::new(cpu01)
-                .desired_width(100.)
-                .desired_height(3.)
-                .fill(ui.style().visuals.error_fg_color)
-                .ui(ui);
-
-                ui.separator(); 
-
-                let ram01 = smoothed_ram01();
-                if let Some((used_mb, total_mb)) = system_mem_mb() {
-                    ui.label(format!("RAM: {:.0}/{:.0} MiB", used_mb, total_mb));
-                } else {
-                    ui.label("RAM: n/a");
-                }
-                ProgressBar::new(ram01)
-                .desired_width(100.)
-                .desired_height(3.)
-                .fill(ui.style().visuals.error_fg_color)
-                .ui(ui);
-                    
-                ui.separator(); 
-
-                ui.add_space(10.);
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let mut img_cnt = 0usize;
-                    let mut vid_cnt = 0usize;
-                    let mut dir_cnt = 0usize;
-                    let mut total_size = 0u64;
-                    for r in self.table.iter() {
-                        if r.file_type == "<DIR>" {
-                            dir_cnt += 1;
-                            continue;
-                        }
-                        if let Some(ext) = std::path::Path::new(&r.path)
-                            .extension()
-                            .and_then(|e| e.to_str())
-                            .map(|s| s.to_ascii_lowercase())
-                        {
-                            if crate::is_image(ext.as_str()) {
-                                img_cnt += 1;
-                            }
-                            if crate::is_video(ext.as_str()) {
-                                vid_cnt += 1;
-                            }
-                        }
-                        total_size += r.size;
-                    }
-                    ui.label(format!("Dirs: {dir_cnt}"));
-                    ui.separator();
-                    ui.label(format!("Images: {img_cnt}"));
-                    ui.separator();
-                    ui.label(format!("Videos: {vid_cnt}"));
-                    ui.separator();
-                    ui.label(format!(
-                        "Total Size: {}",
-                        humansize::format_size(total_size, DECIMAL)
-                    ));
-                });
-            });
-        });
 
         CentralPanel::default().show_inside(ui, |ui| {
             // Active filter preset summary
