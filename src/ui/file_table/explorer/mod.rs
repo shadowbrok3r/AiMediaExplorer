@@ -2,12 +2,8 @@ use crate::{next_scan_id, ui::status::GlobalStatusIndicator, DB};
 use crate::utilities::archive::{ArchiveRegistry, entry_to_thumbnail};
 use std::{path::PathBuf, time::Duration};
 
-// Helper function to normalize internal path to a directory prefix
-fn normalize_prefix(internal: &str) -> String {
-    let t = internal.trim_matches('/');
-    if t.is_empty() { String::new() } else { format!("{}/", t) }
-}
 pub mod navigation;
+pub mod backup;
 
 impl crate::ui::file_table::FileExplorer {
     pub fn populate_current_directory(&mut self) {
@@ -155,6 +151,12 @@ impl crate::ui::file_table::FileExplorer {
             }
         });
     }
+}
+
+// Helper function to normalize internal path to a directory prefix
+fn normalize_prefix(internal: &str) -> String {
+    let t = internal.trim_matches('/');
+    if t.is_empty() { String::new() } else { format!("{}/", t) }
 }
 
 // Parse any supported virtual path: <scheme>://<archive>!/<internal>

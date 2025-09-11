@@ -1,6 +1,7 @@
 use std::time::Instant;
 
 use crate::DB;
+use crate::database::{db_activity, db_set_progress, db_set_detail, db_set_error};
 use surrealdb::RecordId;
 use chrono::Utc;
 
@@ -10,6 +11,8 @@ impl crate::Thumbnail {
     pub async fn get_thumbnail_by_path(
         path: &str,
     ) -> anyhow::Result<Option<Self>, anyhow::Error> {
+    let _ga = db_activity(format!("Load thumbnail by path"));
+    db_set_detail(format!("Loading thumbnail by path"));
         let resp: Option<Self> = DB
             .query("SELECT * FROM thumbnails WHERE path = $path")
             .bind(("path", path.to_string()))
@@ -24,6 +27,8 @@ impl crate::Thumbnail {
         path: &str,
     ) -> anyhow::Result<Vec<Self>, anyhow::Error> {
         let now = Instant::now();
+    let _ga = db_activity("Load thumbnails by parent directory");
+    db_set_detail("Loading thumbnails (by directory)".to_string());
         let resp: Vec<Self> = DB
             .query("SELECT * FROM thumbnails WITH INDEX idx_parent_dir WHERE parent_dir = $parent_directory")
             .bind(("parent_directory", path.to_string()))
@@ -37,6 +42,8 @@ impl crate::Thumbnail {
         path: &str,
     ) -> anyhow::Result<Option<RecordId>, anyhow::Error> {
         log::info!("Getting thumbnail for path: {path:?}");
+    let _ga = db_activity("Lookup thumbnail id by path");
+    db_set_detail("Looking up thumbnail id".to_string());
         let resp: Option<RecordId> = DB
             .query("SELECT VALUE id FROM thumbnails WHERE path = $path")
             .bind(("path", path.to_string()))
@@ -48,6 +55,8 @@ impl crate::Thumbnail {
 
     pub async fn get_embedding(self) -> anyhow::Result<super::ClipEmbeddingRow, anyhow::Error> {
         log::info!("Checking embedding with thumb_ref == {:?}", self.id.clone());
+    let _ga = db_activity("Load clip embedding by thumb_ref");
+    db_set_detail("Loading clip embedding for thumbnail".to_string());
         let embedding: Option<super::ClipEmbeddingRow> = DB
             .query("SELECT * FROM clip_embeddings WITH INDEX clip_thumb_ref_idx WHERE thumb_ref = $id")
             .bind(("id", self.id.clone()))
@@ -61,6 +70,8 @@ impl crate::Thumbnail {
     pub async fn find_thumbs_from_paths(
         chunk_vec: Vec<String>,
     ) -> anyhow::Result<Vec<Self>, anyhow::Error> {
+    let _ga = db_activity("Load thumbnails by path set");
+    db_set_detail("Loading thumbnails by set".to_string());
         let thumbs: Vec<Self> = DB
         .query("SELECT id, db_created, path, filename, file_type, size, modified, hash, description, caption, tags, category FROM thumbnails WHERE array::find($paths, path) != NONE")
         .bind(("paths", chunk_vec))
@@ -73,10 +84,16 @@ impl crate::Thumbnail {
     // Save (insert) a single thumbnail row (best-effort). Does not deduplicate existing rows.
     pub async fn save_thumbnail_row(self) -> anyhow::Result<(), anyhow::Error> {
         log::info!("SAVING: {:?}", self.path);
+        let _ga = db_activity("Insert thumbnail row");
+        db_set_detail("Inserting thumbnail".to_string());
         let _: Option<Self> = DB
             .create("thumbnails")
             .content::<Self>(self)
-            .await?
+            .await
+            .map_err(|e| {
+                db_set_error(format!("Insert thumbnail failed: {e}"));
+                e
+            })?
             .take();
         Ok(())
     }
@@ -87,6 +104,8 @@ impl crate::Thumbnail {
         thumb_b64: Option<String>,
     ) -> anyhow::Result<(), anyhow::Error> {
         // Only update fields if new content present
+    let _ga = db_activity("Upsert thumbnail by path");
+    db_set_detail("Saving thumbnail".to_string());
         if let Some(desc) = &metadata.description {
             if desc.trim().len() > 0 {
                 self.description = Some(desc.clone());
@@ -148,7 +167,11 @@ impl crate::Thumbnail {
             .bind(("modified", self.modified.clone()))
             .bind(("hash", self.hash.clone()))
             .bind(("path", self.path.clone()))
-            .await?
+            .await
+            .map_err(|e| {
+                db_set_error(format!("Thumbnail upsert failed: {e}"));
+                e
+            })?
             .take(0)?;
 
         log::info!("Cached data Is Some: {:?}", updated.is_some());
@@ -161,24 +184,42 @@ pub async fn save_thumbnail_batch(
     thumbs: Vec<super::Thumbnail>,
 ) -> anyhow::Result<(), anyhow::Error> {
     log::info!("save_thumbnail_batch");
+    let _ga = db_activity("Insert thumbnail batch");
+    db_set_detail(format!("Saving {} thumbnails", thumbs.len()));
+    db_set_progress(0, thumbs.len() as u64);
     let _: Vec<super::Thumbnail> = DB
         .insert("thumbnails")
         .content::<Vec<super::Thumbnail>>(thumbs)
-        .await?;
+        .await
+        .map_err(|e| {
+            db_set_error(format!("Batch insert failed: {e}"));
+            e
+        })?;
+    db_set_progress(1, 1);
     Ok(())
 }
 
 pub async fn get_thumbnail_paths() -> anyhow::Result<Vec<String>, anyhow::Error> {
+    let _ga = db_activity("SELECT VALUE path FROM thumbnails");
     let paths: Vec<String> = DB.query("SELECT VALUE path FROM thumbnails").await?.take(0)?;
     Ok(paths)
 }
 
 // Upsert a list of thumbnail rows (by path) and return their RecordIds
 pub async fn upsert_rows_and_get_ids(rows: Vec<super::Thumbnail>) -> anyhow::Result<Vec<RecordId>, anyhow::Error> {
+    let total = rows.len() as u64;
+    let _ga = db_activity(format!("Upsert {} thumbnails", total));
+    db_set_detail(format!("Saving thumbnails (0/{total})"));
+    db_set_progress(0, total);
     let mut ids: Vec<RecordId> = Vec::new();
-    for meta in rows.into_iter() {
+    for (i, meta) in rows.into_iter().enumerate() {
+        db_set_detail(format!("Saving thumbnails ({} / {total})", i+1));
         let base = crate::Thumbnail::get_thumbnail_by_path(&meta.path)
-            .await?
+            .await
+            .map_err(|e| {
+                db_set_error(format!("Load existing thumb failed: {e}"));
+                e
+            })?
             .unwrap_or_else(|| crate::Thumbnail {
                 id: None,
                 db_created: Some(Utc::now().into()),
@@ -194,14 +235,19 @@ pub async fn upsert_rows_and_get_ids(rows: Vec<super::Thumbnail>) -> anyhow::Res
                 modified: meta.modified.clone(),
                 hash: meta.hash.clone(),
                 parent_dir: meta.parent_dir.clone(),
+                logical_group: None,
             });
         // Prefer any provided thumbnail data in meta
-        base.update_or_create_thumbnail(&meta, meta.thumbnail_b64.clone()).await?;
-        if let Some(id) = crate::Thumbnail::get_thumbnail_id_by_path(&meta.path).await? {
+        base.update_or_create_thumbnail(&meta, meta.thumbnail_b64.clone()).await
+            .map_err(|e| { db_set_error(format!("Update/create thumb failed: {e}")); e })?;
+        if let Some(id) = crate::Thumbnail::get_thumbnail_id_by_path(&meta.path).await
+            .map_err(|e| { db_set_error(format!("Fetch id after upsert failed: {e}")); e })?
+        {
             if !ids.iter().any(|x| x == &id) {
                 ids.push(id);
             }
         }
+        db_set_progress((i as u64) + 1, total);
     }
     Ok(ids)
 }

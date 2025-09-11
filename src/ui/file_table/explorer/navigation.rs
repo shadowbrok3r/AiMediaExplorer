@@ -10,6 +10,70 @@ impl crate::ui::file_table::FileExplorer {
         t.file_type = "<DIR>".into();
         Some(t)
     }
+    
+    pub fn refresh_wsl_cache(&mut self) {
+        self.cached_wsl_distros = Some(crate::utilities::explorer::list_wsl_distros());
+        self.cached_physical_drives = Some(crate::utilities::explorer::list_physical_drives());
+    }
+
+    /// Initialize this explorer to open a specific path in a new tab, optionally performing a recursive scan.
+    /// This encapsulates internal state and avoids external code touching private fields.
+    pub fn init_open_path(&mut self, path: &str, recursive: bool) {
+        self.current_path = path.to_string();
+        // reset view state
+        self.viewer.showing_similarity = false;
+        self.viewer.similar_scores.clear();
+        self.table.clear();
+        if recursive {
+            self.recursive_scan = true;
+            self.scan_done = false;
+            self.file_scan_progress = 0.0;
+            // Reset previous scan snapshot
+            self.last_scan_rows.clear();
+            self.last_scan_paths.clear();
+            self.last_scan_root = Some(self.current_path.clone());
+            // Spawn recursive scan with current filters
+            let scan_id = crate::next_scan_id();
+            self.owning_scan_id = Some(scan_id);
+            let tx = self.scan_tx.clone();
+            let mut filters = crate::Filters::default();
+            filters.root = std::path::PathBuf::from(self.current_path.clone());
+            filters.min_size_bytes = self.viewer.ui_settings.db_min_size_bytes;
+            filters.max_size_bytes = self.viewer.ui_settings.db_max_size_bytes;
+            filters.include_images = self.viewer.types_show_images;
+            filters.include_videos = self.viewer.types_show_videos;
+            filters.skip_icons = self.viewer.ui_settings.filter_skip_icons;
+            filters.excluded_terms = self.excluded_terms.clone();
+            // Add excluded directories from UI settings
+            if let Some(ref excluded_dirs) = self.viewer.ui_settings.excluded_dirs {
+                filters.recursive_excluded_dirs = excluded_dirs.iter()
+                    .map(|s| std::path::PathBuf::from(s))
+                    .collect();
+            }
+            // Add excluded extensions (lowercase, without dot) from UI settings
+            if let Some(ref exts) = self.viewer.ui_settings.db_excluded_exts {
+                filters.recursive_excluded_exts = exts.iter().map(|s| s.to_ascii_lowercase()).collect();
+            }
+            self.current_scan_id = Some(scan_id);
+            tokio::spawn(async move { crate::spawn_scan(filters, tx, true, scan_id).await; });
+        } else {
+            // Shallow scan / directory populate
+            self.populate_current_directory();
+        }
+    }
+    
+    pub fn set_rows(&mut self, rows: Vec<crate::database::Thumbnail>) {
+        self.viewer.mode = crate::ui::file_table::table::ExplorerMode::Database;
+        self.table.clear();
+        for r in rows.into_iter() { self.table.push(r); }
+    }
+    
+    // Set the table rows from DB results and switch to Database viewing mode
+    pub fn set_rows_from_db(&mut self, rows: Vec<crate::database::Thumbnail>) {
+        self.viewer.mode = crate::ui::file_table::table::ExplorerMode::Database;
+        self.table.clear();
+        for r in rows.into_iter() { self.table.push(r); }
+    }
 
     pub fn push_history(&mut self, new_path: String) {
         if self.current_path != new_path {

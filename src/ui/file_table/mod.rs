@@ -1,3 +1,4 @@
+use chrono::{DateTime, Local, NaiveDate};
 use egui::{containers::menu::{MenuButton, MenuConfig}, style::StyleModifier};
 use std::{borrow::Cow, collections::HashMap, sync::Arc};
 use crossbeam::channel::{Receiver, Sender};
@@ -179,12 +180,9 @@ pub struct FileExplorer {
     #[serde(skip)]
     logical_groups: Vec<crate::database::LogicalGroup>,
     #[serde(skip)]
-    logical_groups_tx: Sender<Vec<crate::database::LogicalGroup>>,
+    pub logical_groups_tx: Sender<Vec<crate::database::LogicalGroup>>,
     #[serde(skip)]
     logical_groups_rx: Receiver<Vec<crate::database::LogicalGroup>>,
-    // Prefetch throttle for logical groups when DB becomes ready after construction
-    #[serde(skip)]
-    last_groups_fetch_attempt: Option<std::time::Instant>,
     // UI state: group management
     #[serde(skip)]
     group_create_name_input: String,
@@ -220,8 +218,6 @@ pub struct FileExplorer {
     cached_wsl_distros: Option<Vec<String>>,
     #[serde(skip)]
     cached_physical_drives: Option<Vec<crate::utilities::explorer::PhysicalDrive>>,
-    #[serde(skip)]
-    last_wsl_cache_time: std::time::Instant,
 }
 
 impl FileExplorer {
@@ -240,6 +236,7 @@ impl FileExplorer {
             .unwrap()
             .to_string_lossy()
             .to_string();
+        
         let mut this = Self {
             table: Default::default(),
             viewer: FileTableViewer::new(thumbnail_tx.clone(), ai_update_tx, clip_embedding_tx.clone()),
@@ -294,7 +291,6 @@ impl FileExplorer {
             logical_groups: Vec::new(),
             logical_groups_tx,
             logical_groups_rx,
-            last_groups_fetch_attempt: None,
             group_create_name_input: String::new(),
             group_rename_target: None,
             group_rename_input: String::new(),
@@ -308,9 +304,8 @@ impl FileExplorer {
             zip_password_input: String::new(),
             show_zip_modal: false,
             owning_scan_id: None,
-            cached_wsl_distros: None,
-            cached_physical_drives: None,
-            last_wsl_cache_time: std::time::Instant::now(),
+            cached_wsl_distros: Some(crate::utilities::explorer::list_wsl_distros()),
+            cached_physical_drives: Some(crate::utilities::explorer::list_physical_drives()),
         };
         // Preload saved filter groups
         {
@@ -338,147 +333,14 @@ impl FileExplorer {
         this
     }
 
-    pub fn get_cached_wsl_distros(&mut self) -> &Vec<String> {
-        const CACHE_DURATION: std::time::Duration = std::time::Duration::from_secs(30);
-        
-        if self.cached_wsl_distros.is_none() || self.last_wsl_cache_time.elapsed() > CACHE_DURATION {
-            self.cached_wsl_distros = Some(crate::utilities::explorer::list_wsl_distros());
-            self.last_wsl_cache_time = std::time::Instant::now();
-        }
-        
-        self.cached_wsl_distros.as_ref().unwrap()
-    }
-    
-    pub fn get_cached_physical_drives(&mut self) -> &Vec<crate::utilities::explorer::PhysicalDrive> {
-        const CACHE_DURATION: std::time::Duration = std::time::Duration::from_secs(30);
-        
-        if self.cached_physical_drives.is_none() || self.last_wsl_cache_time.elapsed() > CACHE_DURATION {
-            self.cached_physical_drives = Some(crate::utilities::explorer::list_physical_drives());
-            self.last_wsl_cache_time = std::time::Instant::now();
-        }
-        
-        self.cached_physical_drives.as_ref().unwrap()
-    }
-    
-    pub fn refresh_wsl_cache(&mut self) {
-        self.cached_wsl_distros = None;
-        self.cached_physical_drives = None;
-        self.last_wsl_cache_time = std::time::Instant::now() - std::time::Duration::from_secs(60);
-    }
-
-    /// Initialize this explorer to open a specific path in a new tab, optionally performing a recursive scan.
-    /// This encapsulates internal state and avoids external code touching private fields.
-    pub fn init_open_path(&mut self, path: &str, recursive: bool) {
-        self.current_path = path.to_string();
-        // reset view state
-        self.viewer.showing_similarity = false;
-        self.viewer.similar_scores.clear();
-        self.table.clear();
-        if recursive {
-            self.recursive_scan = true;
-            self.scan_done = false;
-            self.file_scan_progress = 0.0;
-            // Reset previous scan snapshot
-            self.last_scan_rows.clear();
-            self.last_scan_paths.clear();
-            self.last_scan_root = Some(self.current_path.clone());
-            // Spawn recursive scan with current filters
-            let scan_id = crate::next_scan_id();
-            self.owning_scan_id = Some(scan_id);
-            let tx = self.scan_tx.clone();
-            let mut filters = crate::Filters::default();
-            filters.root = std::path::PathBuf::from(self.current_path.clone());
-            filters.min_size_bytes = self.viewer.ui_settings.db_min_size_bytes;
-            filters.max_size_bytes = self.viewer.ui_settings.db_max_size_bytes;
-            filters.include_images = self.viewer.types_show_images;
-            filters.include_videos = self.viewer.types_show_videos;
-            filters.skip_icons = self.viewer.ui_settings.filter_skip_icons;
-            filters.excluded_terms = self.excluded_terms.clone();
-            // Add excluded directories from UI settings
-            if let Some(ref excluded_dirs) = self.viewer.ui_settings.excluded_dirs {
-                filters.recursive_excluded_dirs = excluded_dirs.iter()
-                    .map(|s| std::path::PathBuf::from(s))
-                    .collect();
-            }
-            self.current_scan_id = Some(scan_id);
-            tokio::spawn(async move { crate::spawn_scan(filters, tx, true, scan_id).await; });
-        } else {
-            // Shallow scan / directory populate
-            self.populate_current_directory();
-        }
-    }
-    
-    pub fn set_rows(&mut self, rows: Vec<crate::database::Thumbnail>) {
-        self.viewer.mode = table::ExplorerMode::Database;
-        self.table.clear();
-        for r in rows.into_iter() { self.table.push(r); }
-    }
-    
-    // Set the table rows from DB results and switch to Database viewing mode
-    pub fn set_rows_from_db(&mut self, rows: Vec<crate::database::Thumbnail>) {
-        self.viewer.mode = table::ExplorerMode::Database;
-        self.table.clear();
-        for r in rows.into_iter() { self.table.push(r); }
-    }
-
     pub fn ui(&mut self, ui: &mut Ui) {
-
         self.receive(ui.ctx());
-
-        // Keep global active group name snapshot in sync for viewer context menu
-        {
-            let guard = ACTIVE_GROUP_NAME.get_or_init(|| Mutex::new(None));
-            if let Ok(mut g) = guard.lock() { *g = self.active_logical_group_name.clone(); }
-        }
-
-        // Integrate any freshly loaded filter groups
-        while let Ok(groups) = self.filter_groups_rx.try_recv() {
-            self.filter_groups = groups;
-        }
-
-        // Integrate any freshly loaded logical groups
-        while let Ok(groups) = self.logical_groups_rx.try_recv() {
-            self.logical_groups = groups;
-            if self.logical_groups.is_empty() {
-                // Ensure at least Default exists, then refresh list
-                let tx = self.logical_groups_tx.clone();
-                tokio::spawn(async move {
-                    let _ = crate::database::LogicalGroup::create("Default").await;
-                    if let Ok(groups) = crate::database::LogicalGroup::list_all().await { let _ = tx.try_send(groups); }
-                });
-
-            } else if self.active_logical_group_name.is_none() {
-                // Choose a sensible default: previously used from settings or first available
-                let preferred = crate::ui::file_table::active_group_name();
-                if let Some(name) = preferred {
-                    if self.logical_groups.iter().any(|g| g.name == name) { self.active_logical_group_name = Some(name); }
-                }
-                if self.active_logical_group_name.is_none() {
-                    self.active_logical_group_name = Some(self.logical_groups[0].name.clone());
-                }
-            }
-        }
-        
-        // If DB became ready after construction and list is empty, try fetching groups automatically (no manual refresh needed)
-        if self.logical_groups.is_empty() {
-            let now = std::time::Instant::now();
-            let should = match self.last_groups_fetch_attempt {
-                None => true,
-                Some(t) => now.duration_since(t) > std::time::Duration::from_secs(2),
-            };
-            if should {
-                self.last_groups_fetch_attempt = Some(now);
-                let tx = self.logical_groups_tx.clone();
-                tokio::spawn(async move {
-                    if let Ok(groups) = crate::database::LogicalGroup::list_all().await { let _ = tx.try_send(groups); }
-                });
-            }
-        }
         self.preview_pane(ui);
         self.quick_access_pane(ui);
 
         let style = StyleModifier::default();
         style.apply(ui.style_mut());
+
         MenuBar::new()
         .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside))
         .style(style)
@@ -609,7 +471,7 @@ impl FileExplorer {
                     MenuButton::new("🔻")
                     .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside))
                     .ui(ui, |ui| {
-                        ui.label(RichText::new("Excluded Terms (substring, case-insensitive)").italics());
+                        ui.heading("Excluded Terms (substring, case-insensitive)");
                         ui.horizontal(|ui| {
                             let resp = TextEdit::singleline(&mut self.excluded_term_input)
                                 .hint_text("term")
@@ -657,9 +519,65 @@ impl FileExplorer {
                                 }
                             }
                         });
+                        ui.horizontal(|ui| {
+                            // Parse current settings or default to today (without forcing persistence until user changes)
+                            let today: NaiveDate = Local::now().date_naive();
+                            let mut after_date: NaiveDate = self.viewer.ui_settings
+                                .filter_modified_after
+                                .as_deref()
+                                .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+                                .unwrap_or(today);
+    
+                            let mut before_date: NaiveDate = self.viewer.ui_settings
+                                .filter_modified_before
+                                .as_deref()
+                                .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+                                .unwrap_or(today);
+    
+                            ui.label("From:");
+    
+                            let id_start_salt = format!("{after_date} Start date");
+                            let resp_after = egui_extras::DatePickerButton::new(&mut after_date)
+                            .id_salt(&id_start_salt)
+                            .ui(ui);
+    
+                            if resp_after.changed() {
+                                self.viewer.ui_settings.filter_modified_after = Some(after_date.format("%Y-%m-%d").to_string());
+                                crate::database::settings::save_settings(&self.viewer.ui_settings);
+                                self.active_filter_group = None;
+                                self.apply_filters_to_current_table();
+                            }
+                            if ui.button("✖").on_hover_text("Clear start date").clicked() {
+                                self.viewer.ui_settings.filter_modified_after = None;
+                                crate::database::settings::save_settings(&self.viewer.ui_settings);
+                                self.active_filter_group = None;
+                                self.apply_filters_to_current_table();
+                            }
+    
+                            ui.label("  to  ");
+    
+                            let id_end_salt = format!("{before_date} End date");
+                            let resp_before = egui_extras::DatePickerButton::new(&mut before_date)
+                            .id_salt(&id_end_salt)
+                            .ui(ui);
+    
+                            if resp_before.changed() {
+                                self.viewer.ui_settings.filter_modified_before = Some(before_date.format("%Y-%m-%d").to_string());
+                                crate::database::settings::save_settings(&self.viewer.ui_settings);
+                                self.active_filter_group = None;
+                                self.apply_filters_to_current_table();
+                            }
+                            if ui.button("✖").on_hover_text("Clear end date").clicked() {
+                                self.viewer.ui_settings.filter_modified_before = None;
+                                crate::database::settings::save_settings(&self.viewer.ui_settings);
+                                self.active_filter_group = None;
+                                self.apply_filters_to_current_table();
+                            }
+                        });
+
                         ui.separator();
                         ui.add_space(4.0);
-                        ui.label(RichText::new("Size Filters (KB)").italics());
+                        ui.heading("Size Filters (KB)");
                         ui.horizontal(|ui| {
                             ui.label("Min:");
                             let mut min_kb: i64 = self.viewer.ui_settings.db_min_size_bytes
@@ -705,7 +623,7 @@ impl FileExplorer {
                         });
                         ui.separator();
                         ui.add_space(4.0);
-                        ui.label(RichText::new("Extension filters").italics());
+                        ui.heading("Extension filters");
                         ui.horizontal(|ui| {
                             let changed_i = ui.checkbox(&mut self.viewer.types_show_images, "Images").changed();
                             let changed_v = ui.checkbox(&mut self.viewer.types_show_videos, "Videos").changed();
@@ -755,7 +673,7 @@ impl FileExplorer {
                         });
                         ui.separator();
                         ui.add_space(4.0);
-                        ui.label(RichText::new("Save filters as group").italics());
+                        ui.heading("Save filters as group");
                         ui.horizontal(|ui| {
                             ui.add_sized([180., 22.], TextEdit::singleline(&mut self.filter_group_name_input).hint_text("Group name"));
                             let save_clicked = ui.button("Save").clicked();
@@ -815,7 +733,7 @@ impl FileExplorer {
                         if self.filter_groups.is_empty() {
                             ui.label(RichText::new("No saved groups yet.").weak());
                         } else {
-                            egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
+                            egui::ScrollArea::vertical().max_height(250.0).show(ui, |ui| {
                                 let groups = self.filter_groups.clone();
                                 for g in groups.iter() {
                                     ui.horizontal(|ui| {
@@ -904,6 +822,21 @@ impl FileExplorer {
                         }
 
                     });
+                    // Always-visible date range summary next to the menu & search
+                    {
+                        let after = self.viewer.ui_settings.filter_modified_after.as_deref();
+                        let before = self.viewer.ui_settings.filter_modified_before.as_deref();
+                        let date_str = match (after, before) {
+                            (None, None) => "Date: any".to_string(),
+                            (Some(a), None) => format!("Date: ≥{}", a),
+                            (None, Some(b)) => format!("Date: ≤{}", b),
+                            (Some(a), Some(b)) => format!("Date: {}..{}", a, b),
+                        };
+                        ui.label(RichText::new(date_str).monospace());
+                    }
+
+                    ui.separator();
+
                     TextEdit::singleline(&mut self.viewer.filter)
                     .desired_width(200.0)
                     .hint_text("Search for files")
@@ -959,6 +892,7 @@ impl FileExplorer {
                             }
                             ui.separator();
                             ui.heading("Database Save");
+                            
                             if ui.button("Save Current View to DB").on_hover_text("Upsert all currently visible rows into the database and add them to the active logical group").clicked() {
                                 if let Some(group_name) = self.active_logical_group_name.clone() {
                                     let rows: Vec<crate::database::Thumbnail> = self
@@ -1024,7 +958,9 @@ impl FileExplorer {
                                     // Respect size bounds
                                     if let Some(minb) = self.viewer.ui_settings.db_min_size_bytes { if row.size < minb { continue; } }
                                     if let Some(maxb) = self.viewer.ui_settings.db_max_size_bytes { if row.size > maxb { continue; } }
-                                    if row.caption.is_some() || row.description.is_some() { continue; }
+                                    // Respect overwrite setting: skip existing descriptions unless overwrite_descriptions is enabled
+                                    let overwrite = self.viewer.ui_settings.overwrite_descriptions;
+                                    if !overwrite && (row.caption.is_some() || row.description.is_some()) { continue; }
                                     let path_str = row.path.clone();
                                     let path_str_clone = path_str.clone();
                                     let tx_updates = self.viewer.ai_update_tx.clone();
@@ -1262,7 +1198,7 @@ impl FileExplorer {
                                         if !src.is_empty() && !dst.is_empty() && src != dst {
                                             tokio::spawn(async move {
                                                 if let Ok(Some(src_g)) = crate::database::LogicalGroup::get_by_name(&src).await {
-                                                    let ids = src_g.thumbnails.clone();
+                                                    let ids = crate::Thumbnail::fetch_ids_by_logical_group_id(src_g.id.as_ref().unwrap()).await.unwrap_or_default();
                                                     if !ids.is_empty() {
                                                         // Ensure destination exists
                                                         let dst_gid = match crate::database::LogicalGroup::get_by_name(&dst).await {
@@ -1381,9 +1317,9 @@ impl FileExplorer {
                                             if self.group_rename_target.as_deref() == Some(g.name.as_str()) {
                                                 ui.add_sized([180., 22.], TextEdit::singleline(&mut self.group_rename_input));
                                                 if ui.button("Save").on_hover_text("Rename group").clicked() {
-                                                    if let Some(gid) = g.id.clone() {
-                                                        let new_name = self.group_rename_input.trim().to_string();
-                                                        if !new_name.is_empty() {
+                                                    let new_name = self.group_rename_input.trim().to_string();
+                                                    if !new_name.is_empty() {
+                                                        if let Some(gid) = g.id.clone() {
                                                             let tx = self.logical_groups_tx.clone();
                                                             tokio::spawn(async move {
                                                                 match crate::database::LogicalGroup::rename(&gid, &new_name).await {
@@ -1396,6 +1332,8 @@ impl FileExplorer {
                                                                     Err(e) => log::error!("rename group failed: {e:?}"),
                                                                 }
                                                             });
+                                                        } else {
+                                                            log::warn!("rename requested for group without id: {}", g.name);
                                                         }
                                                     }
                                                     self.group_rename_target = None;
@@ -1482,6 +1420,16 @@ impl FileExplorer {
                     };
                     ui.label(size_str);
                     ui.separator();
+                    let after = self.viewer.ui_settings.filter_modified_after.as_deref();
+                    let before = self.viewer.ui_settings.filter_modified_before.as_deref();
+                    let date_str = match (after, before) {
+                        (None, None) => "Date: any".to_string(),
+                        (Some(a), None) => format!("Date: ≥{}", a),
+                        (None, Some(b)) => format!("Date: ≤{}", b),
+                        (Some(a), Some(b)) => format!("Date: {}..{}", a, b),
+                    };
+                    ui.label(date_str);
+                    ui.separator();
                     ui.label(format!("Skip icons: {}", if self.viewer.ui_settings.filter_skip_icons { "on" } else { "off" }));
                     if !self.excluded_terms.is_empty() {
                         ui.separator();
@@ -1505,10 +1453,11 @@ impl FileExplorer {
             Renderer::new(&mut self.table, &mut self.viewer)
             .with_style_modify(|s| {
                 s.single_click_edit_mode = true;
-                s.table_row_height = Some(60.0);
+                s.table_row_height = Some(75.0);
                 s.auto_shrink = [false, false].into();
             })
             .ui(ui);
+
             // Modal password prompt (appears at end of scans or when browsing encrypted archives)
             if self.show_zip_modal {
                 egui::Window::new("Archive Password Required")
@@ -1555,6 +1504,7 @@ impl FileExplorer {
                         });
                     });
             }
+            
             // Check for tag/category open-tab actions requested by the viewer
             if !self.viewer.requested_tabs.is_empty() {
                 let actions = std::mem::take(&mut self.viewer.requested_tabs);
@@ -1625,11 +1575,13 @@ impl FileExplorer {
                     }
                 }
             }
+            
             // Summary inline (counts) if selection active
             if !self.selected.is_empty() {
                 ui.separator();
                 ui.label(format!("Selected: {}", self.selected.len()));
             }
+            
             if self.viewer.mode == table::ExplorerMode::Database && !self.viewer.showing_similarity {
                 ui.separator();
                 ui.horizontal(|ui| {
@@ -1649,9 +1601,6 @@ impl FileExplorer {
                 });
             }
         });
-
-        // Synchronize archive passwords with the viewer
-        self.viewer.archive_passwords = self.viewer.archive_passwords.clone();
     }
 
     // Load and display rows from a logical group by name
@@ -1660,7 +1609,7 @@ impl FileExplorer {
         tokio::spawn(async move {
             match crate::database::LogicalGroup::get_by_name(&name).await {
                 Ok(Some(group)) => {
-                    match crate::Thumbnail::fetch_by_ids(group.thumbnails.clone()).await {
+                    match crate::Thumbnail::fetch_by_logical_group_id(group.id.as_ref().unwrap()).await {
                         Ok(rows) => {
                             let count = rows.len();
                             for r in rows.into_iter() { let _ = tx.try_send(r); }
@@ -1676,68 +1625,62 @@ impl FileExplorer {
     }
 
     fn apply_filters_to_current_table(&mut self) {
-        // Type toggles: retain allowed types (always keep directories if include_dirs true)
-        let include_images = self.viewer.types_show_images;
-        let include_videos = self.viewer.types_show_videos;
+        use crate::utilities::filtering::FiltersExt;
+        // Build a Filters value from UI settings for consistent evaluation
+        let mut filters = crate::Filters::default();
+        filters.include_images = self.viewer.types_show_images;
+        filters.include_videos = self.viewer.types_show_videos;
+        // Archives are not shown in DB table rows normally; keep false
+        filters.include_archives = false;
+        filters.min_size_bytes = self.viewer.ui_settings.db_min_size_bytes;
+        filters.max_size_bytes = self.viewer.ui_settings.db_max_size_bytes;
+        filters.skip_icons = self.viewer.ui_settings.filter_skip_icons;
+        // Date filters from UI
+        filters.modified_after = self.viewer.ui_settings.filter_modified_after.clone();
+        filters.modified_before = self.viewer.ui_settings.filter_modified_before.clone();
         let include_dirs = self.viewer.types_show_dirs;
-        let minb = self.viewer.ui_settings.db_min_size_bytes;
-        let maxb = self.viewer.ui_settings.db_max_size_bytes;
-        let skip_icons = self.viewer.ui_settings.filter_skip_icons;
         let excluded_terms = self.excluded_terms.clone();
+        let have_date_filters = filters.modified_after.is_some() || filters.modified_before.is_some();
+
         self.table.retain(|r| {
-            // Dir handling
+            // Keep directories independent of FiltersExt logic
             if r.file_type == "<DIR>" { return include_dirs; }
-            // Extension type
-            let mut type_ok = true;
-            if let Some(ext) = std::path::Path::new(&r.path)
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|s| s.to_ascii_lowercase())
-            {
-                if crate::is_image(ext.as_str()) { type_ok = include_images; }
-                else if crate::is_video(ext.as_str()) { type_ok = include_videos; }
-                else { type_ok = false; }
-            }
-            if !type_ok { return false; }
-            // Size bounds
-            if let Some(mn) = minb { if r.size < mn { return false; } }
-            if let Some(mx) = maxb { if r.size > mx { return false; } }
-            // Excluded terms
+
+            // Excluded terms (path/filename contains any term)
             if !excluded_terms.is_empty() {
                 let lp = r.path.to_ascii_lowercase();
                 if excluded_terms.iter().any(|t| lp.contains(t)) { return false; }
             }
-            // Skip icons heuristic
-            if skip_icons {
-                let tiny_thresh = minb.unwrap_or(10 * 1024);
-                // ico extension
-                let is_ico = std::path::Path::new(&r.path)
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .map(|s| s.eq_ignore_ascii_case("ico"))
-                    .unwrap_or(false);
-                if is_ico { return false; }
-                // Size check
-                let mut size_val = r.size;
-                if size_val == 0 { if let Ok(md) = std::fs::metadata(&r.path) { size_val = md.len(); } }
-                if size_val <= tiny_thresh {
-                    // Only images: check dims
-                    let is_img = std::path::Path::new(&r.path)
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .map(|s| s.to_ascii_lowercase())
-                        .map(|ext| crate::is_image(ext.as_str()))
-                        .unwrap_or(false);
-                    if is_img {
-                        let tiny_dims = image::ImageReader::open(&r.path)
-                            .ok()
-                            .and_then(|r| r.with_guessed_format().ok())
-                            .and_then(|r| r.into_dimensions().ok())
-                            .map(|(w,h)| w <= 64 && h <= 64)
-                            .unwrap_or(false);
-                        if tiny_dims { return false; }
-                    }
-                }
+
+            let path = std::path::Path::new(&r.path);
+            // Quick kind check from extension to mirror scanner behavior
+            let is_archive_file = path.extension()
+                .and_then(|e| e.to_str())
+                .map(|s| s.to_ascii_lowercase())
+                .map(|e| crate::is_archive(e.as_str()))
+                .unwrap_or(false);
+            let kind = if let Some(ext) = path.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()) {
+                if crate::is_image(ext.as_str()) { crate::utilities::types::MediaKind::Image }
+                else if crate::is_video(ext.as_str()) { crate::utilities::types::MediaKind::Video }
+                else if crate::is_archive(ext.as_str()) { crate::utilities::types::MediaKind::Archive }
+                else { crate::utilities::types::MediaKind::Other }
+            } else { crate::utilities::types::MediaKind::Other };
+            if !filters.kind_allowed(&kind, is_archive_file) { return false; }
+
+            // Use FiltersExt to evaluate size and skip_icons heuristics (dates are not applied to DB view here)
+            let size_val = if r.size == 0 {
+                std::fs::metadata(&r.path).ok().map(|m| m.len()).unwrap_or(0)
+            } else { r.size };
+            // Use strict UI variant: still allows small non-image files, but filters tiny icon-like images
+            if !filters.skip_icons_strict_allows(path, size_val) { return false; }
+            if !filters.size_ok(size_val) { return false; }
+            // Apply date filter if active (use filesystem metadata; DB may not have timezone-local timestamps)
+            if have_date_filters {
+                let modified: Option<DateTime<Local>> = std::fs::metadata(&r.path)
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .map(|st| DateTime::<Local>::from(st));
+                if !filters.date_ok(modified, None, /*recursive*/ false) { return false; }
             }
             true
         });
@@ -1756,10 +1699,13 @@ impl FileExplorer {
             self.table.clear();
             self.thumb_scheduled.clear();
             self.pending_thumb_rows.clear();
+            // Reset CLIP presence caches for a fresh page
+            self.viewer.clip_presence.clear();
+            self.viewer.clip_presence_hashes.clear();
         }
         let tx = self.thumbnail_tx.clone();
         let offset = self.db_offset;
-    let _limit = self.db_limit; // reserved for future paging reuse
+        let _limit = self.db_limit; // reserved for future paging reuse
         let path = self.current_path.clone();
         tokio::spawn(async move {
             match crate::Thumbnail::get_all_thumbnails_from_directory(&path).await {
@@ -1777,95 +1723,7 @@ impl FileExplorer {
         });
     }
 
-    // --- Backup helpers ---
-    fn collect_visible_files(&self) -> Vec<std::path::PathBuf> {
-        self.table
-            .iter()
-            .filter(|r| r.file_type != "<DIR>")
-            .map(|r| std::path::PathBuf::from(r.path.clone()))
-            .collect()
-    }
 
-    fn unique_dest_path(dest: std::path::PathBuf) -> std::path::PathBuf {
-        if !dest.exists() { return dest; }
-        let stem = dest.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-        let ext_opt = dest.extension().and_then(|s| s.to_str());
-        let parent = dest.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-        let mut idx = 1u32;
-        loop {
-            let name = match ext_opt {
-                Some(ext) => format!("{} ({}).{}", stem, idx, ext),
-                None => format!("{} ({})", stem, idx),
-            };
-            let mut cand = parent.clone();
-            cand.push(name);
-            if !cand.exists() { return cand; }
-            idx += 1;
-            if idx > 10_000 { return dest; }
-        }
-    }
-
-    fn do_copy_files(paths: Vec<std::path::PathBuf>, dest_dir: std::path::PathBuf) {
-        tokio::spawn(async move {
-            for src in paths {
-                if !src.is_file() { continue; }
-                let mut dest = dest_dir.clone();
-                if let Some(name) = src.file_name() { dest.push(name); } else { continue; }
-                if dest.exists() { dest = FileExplorer::unique_dest_path(dest); }
-                let s2 = src.clone();
-                let d2 = dest.clone();
-                let res = tokio::task::spawn_blocking(move || std::fs::copy(&s2, &d2)).await;
-                match res {
-                    Ok(Ok(_)) => {}
-                    Ok(Err(e)) => log::error!("Backup copy failed {} -> {}: {e:?}", src.display(), dest.display()),
-                    Err(e) => log::error!("Backup copy join error {} -> {}: {e:?}", src.display(), dest.display()),
-                }
-            }
-            log::info!("Backup copy complete to {}", dest_dir.display());
-        });
-    }
-
-    fn do_move_files(paths: Vec<std::path::PathBuf>, dest_dir: std::path::PathBuf) {
-        tokio::spawn(async move {
-            for src in paths {
-                if !src.is_file() { continue; }
-                let mut dest = dest_dir.clone();
-                if let Some(name) = src.file_name() { dest.push(name); } else { continue; }
-                if dest.exists() { dest = FileExplorer::unique_dest_path(dest); }
-                // Try rename first (fast within same volume), else fallback to copy+remove
-                let s2 = src.clone();
-                let d2 = dest.clone();
-                let res = tokio::task::spawn_blocking(move || std::fs::rename(&s2, &d2)).await;
-                let renamed_ok = matches!(res, Ok(Ok(())));
-                if !renamed_ok {
-                    let s3 = src.clone();
-                    let d3 = dest.clone();
-                    let copy_res = tokio::task::spawn_blocking(move || std::fs::copy(&s3, &d3)).await;
-                    match copy_res {
-                        Ok(Ok(_)) => {
-                            let s4 = src.clone();
-                            let _ = tokio::task::spawn_blocking(move || std::fs::remove_file(&s4)).await;
-                        }
-                        Ok(Err(e)) => log::error!("Backup move (copy phase) failed {} -> {}: {e:?}", src.display(), dest.display()),
-                        Err(e) => log::error!("Backup move (copy phase) join error {} -> {}: {e:?}", src.display(), dest.display()),
-                    }
-                }
-            }
-            log::info!("Backup move complete to {}", dest_dir.display());
-        });
-    }
-
-    pub fn backup_copy_visible_to_dir(&mut self, dir: std::path::PathBuf) {
-        let files = self.collect_visible_files();
-        if files.is_empty() { return; }
-        Self::do_copy_files(files, dir);
-    }
-
-    pub fn backup_move_visible_to_dir(&mut self, dir: std::path::PathBuf) {
-        let files = self.collect_visible_files();
-        if files.is_empty() { return; }
-        Self::do_move_files(files, dir);
-    }
 }
 
 pub fn get_img_ui(

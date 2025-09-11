@@ -1,5 +1,7 @@
 use crossbeam::channel::Sender;
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use crate::ui::status::{GlobalStatusIndicator, StatusState, DB_STATUS};
 use surrealdb::{Surreal, engine::local::Db};
 pub mod clip_embeddings;
 pub mod files;
@@ -24,7 +26,63 @@ pub const LOGICAL_GROUPS: &str = "logical_groups";
 pub const DB_DEFAULT_TABLE: &str = "./db/default.surql";
 pub const DB_BACKUP_PATH: &str = "./db/backup.surql";
 
+// --- DB activity indicator helpers ---
+static ACTIVE_DB_OPS: LazyLock<AtomicUsize> = LazyLock::new(|| AtomicUsize::new(0));
+
+pub struct DbActivityGuard(());
+
+impl Drop for DbActivityGuard {
+    fn drop(&mut self) {
+        // Decrement and update status; when zero, clear to Idle and reset progress
+        let remaining = ACTIVE_DB_OPS.fetch_sub(1, Ordering::SeqCst).saturating_sub(1);
+        if remaining == 0 {
+            // Only reset to Idle if not currently in Error state.
+            if !matches!(DB_STATUS.snapshot().state, StatusState::Error) {
+                DB_STATUS.set_progress(0, 0);
+                DB_STATUS.set_state(StatusState::Idle, "");
+                DB_STATUS.set_detail("");
+            }
+        } else {
+            if !matches!(DB_STATUS.snapshot().state, StatusState::Error) {
+                DB_STATUS.set_state(StatusState::Running, format!("Active ({remaining})"));
+            }
+        }
+    }
+}
+
+/// Mark a DB operation as active for the duration of this guard.
+pub fn db_activity(detail: impl Into<String>) -> DbActivityGuard {
+    let detail = detail.into();
+    let new_count = ACTIVE_DB_OPS.fetch_add(1, Ordering::SeqCst) + 1;
+    let msg = if new_count > 1 {
+        format!("{detail} ({new_count} active)")
+    } else {
+        detail
+    };
+    if !matches!(DB_STATUS.snapshot().state, StatusState::Error) {
+        DB_STATUS.set_state(StatusState::Running, &msg);
+    }
+    DB_STATUS.set_detail(msg);
+    DbActivityGuard(())
+}
+
+/// Convenience to set DB progress (e.g., during batch upserts).
+pub fn db_set_progress(current: u64, total: u64) {
+    DB_STATUS.set_progress(current, total);
+}
+
+/// Update detail text for DB operations without changing state.
+pub fn db_set_detail(detail: impl Into<String>) {
+    DB_STATUS.set_detail(detail);
+}
+
+/// Surface an error to the DB status card.
+pub fn db_set_error(err: impl Into<String>) {
+    DB_STATUS.set_error(err);
+}
+
 pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
+    DB_STATUS.set_state(StatusState::Initializing, "Connecting DB");
     // let capabilities = surrealdb::capabilities::Capabilities::all().with_all_experimental_features_allowed();
     // let config = surrealdb::opt::Config::new().capabilities(capabilities); // ("./db/ai_search", config)
     DB.connect::<surrealdb::engine::local::SurrealKv>("./db/ai_search").await?;
@@ -34,7 +92,7 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
     let query = r#" 
         BEGIN;
         DEFINE TABLE IF NOT EXISTS thumbnails TYPE NORMAL SCHEMAFULL PERMISSIONS FULL;
-        DEFINE TABLE IF NOT EXISTS user_settings TYPE NORMAL SCHEMAFULL PERMISSIONS FULL;
+        DEFINE TABLE IF NOT EXISTS user_settings TYPE NORMAL SCHEMALESS PERMISSIONS FULL;
         DEFINE TABLE IF NOT EXISTS filter_groups TYPE NORMAL SCHEMAFULL PERMISSIONS FULL;
         DEFINE TABLE IF NOT EXISTS logical_groups TYPE NORMAL SCHEMAFULL PERMISSIONS FULL;
         DEFINE TABLE IF NOT EXISTS clip_embeddings TYPE NORMAL SCHEMAFULL PERMISSIONS FULL;
@@ -62,31 +120,15 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
         DEFINE FIELD IF NOT EXISTS similarity_score ON clip_embeddings TYPE option<float> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS clip_similarity_score ON clip_embeddings TYPE option<float> PERMISSIONS FULL;
         
-        DEFINE FIELD IF NOT EXISTS qa_collapsed ON user_settings TYPE bool PERMISSIONS FULL;
-        DEFINE FIELD IF NOT EXISTS drives_collapsed ON user_settings TYPE bool PERMISSIONS FULL;
-        DEFINE FIELD IF NOT EXISTS preview_collapsed ON user_settings TYPE bool PERMISSIONS FULL;
-        DEFINE FIELD IF NOT EXISTS preview_width ON user_settings TYPE number PERMISSIONS FULL;
-        DEFINE FIELD IF NOT EXISTS sort ON user_settings TYPE object PERMISSIONS FULL;
-        DEFINE FIELD IF NOT EXISTS sort.by ON user_settings TYPE string PERMISSIONS FULL;
-        DEFINE FIELD IF NOT EXISTS sort.asc ON user_settings TYPE bool PERMISSIONS FULL;
-        DEFINE FIELD IF NOT EXISTS view_mode ON user_settings TYPE option<string> PERMISSIONS FULL;
-        DEFINE FIELD IF NOT EXISTS left_width ON user_settings TYPE number PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS ext_enabled ON user_settings TYPE option<array<any>> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS excluded_dirs ON user_settings TYPE option<array<string>> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS group_by_category ON user_settings TYPE bool PERMISSIONS FULL;
-        DEFINE FIELD IF NOT EXISTS detail_column_widths ON user_settings TYPE option<array<number>> PERMISSIONS FULL;
-        DEFINE FIELD IF NOT EXISTS category_col_width ON user_settings TYPE option<number> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS auto_indexing ON user_settings TYPE bool PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS ai_prompt_template ON user_settings TYPE string PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS overwrite_descriptions ON user_settings TYPE bool PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS filter_modified_after ON user_settings TYPE option<string> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS filter_modified_before ON user_settings TYPE option<string> PERMISSIONS FULL;
-        DEFINE FIELD IF NOT EXISTS filter_category_multi ON user_settings TYPE option<array<string>> PERMISSIONS FULL;
-        DEFINE FIELD IF NOT EXISTS filter_only_with_thumb ON user_settings TYPE bool PERMISSIONS FULL;
-        DEFINE FIELD IF NOT EXISTS filter_only_with_description ON user_settings TYPE bool PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS filter_skip_icons ON user_settings TYPE bool PERMISSIONS FULL;
-        DEFINE FIELD IF NOT EXISTS last_root ON user_settings TYPE option<string> PERMISSIONS FULL;
-        DEFINE FIELD IF NOT EXISTS show_progress_overlay ON user_settings TYPE bool PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS db_min_size_bytes ON user_settings TYPE option<number> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS db_max_size_bytes ON user_settings TYPE option<number> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS db_excluded_exts ON user_settings TYPE option<array<string>> PERMISSIONS FULL;
@@ -96,6 +138,7 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
         DEFINE FIELD IF NOT EXISTS clip_model ON user_settings TYPE option<string> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS recent_paths ON user_settings TYPE array<string> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS auto_save_to_database ON user_settings TYPE bool PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS egui_preferences ON user_settings TYPE object DEFAULT {} PERMISSIONS FULL;
         
         DEFINE FIELD IF NOT EXISTS name ON filter_groups TYPE string PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS include_images ON filter_groups TYPE bool PERMISSIONS FULL;
@@ -108,18 +151,21 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
         DEFINE FIELD IF NOT EXISTS created ON filter_groups TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS updated ON filter_groups TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
         
-        DEFINE FIELD IF NOT EXISTS name ON logical_groups TYPE string PERMISSIONS FULL;
-        DEFINE FIELD IF NOT EXISTS thumbnails ON logical_groups TYPE array<record<thumbnails>> PERMISSIONS FULL;
+    DEFINE FIELD IF NOT EXISTS name ON logical_groups TYPE string PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS created ON logical_groups TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS updated ON logical_groups TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
 
-        DEFINE INDEX IF NOT EXISTS lg_name_idx ON logical_groups FIELDS name UNIQUE;
+    // New: pivot to many-to-one by storing the owning logical group on each thumbnail
+    DEFINE FIELD IF NOT EXISTS logical_group ON thumbnails TYPE option<record<logical_groups>> PERMISSIONS FULL;
+
+    DEFINE INDEX IF NOT EXISTS lg_name_idx ON logical_groups FIELDS name UNIQUE;
         DEFINE INDEX IF NOT EXISTS category_idx ON thumbnails FIELDS category;
         DEFINE INDEX IF NOT EXISTS tags_idx ON thumbnails FIELDS tags;
         DEFINE INDEX IF NOT EXISTS path_idx ON thumbnails FIELDS path UNIQUE;
         DEFINE INDEX IF NOT EXISTS clip_path_idx ON clip_embeddings FIELDS path UNIQUE;
         DEFINE INDEX IF NOT EXISTS clip_thumb_ref_idx ON clip_embeddings FIELDS thumb_ref;
         DEFINE INDEX IF NOT EXISTS idx_parent_dir ON thumbnails FIELDS parent_dir;
+    DEFINE INDEX IF NOT EXISTS idx_thumb_logical_group ON thumbnails FIELDS logical_group;
         DEFINE INDEX IF NOT EXISTS idx_clip_hnsw ON clip_embeddings FIELDS embedding HNSW DIMENSION 1024 TYPE F32 DIST COSINE EFC 120 M 12;
 
         COMMIT;
@@ -132,5 +178,8 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
         let _ = crate::database::LogicalGroup::create("Default").await;
     }
     let _ = tx.send(());
+    DB_STATUS.set_progress(0, 0);
+    DB_STATUS.set_detail("");
+    DB_STATUS.set_state(StatusState::Idle, "");
     Ok(())
 }

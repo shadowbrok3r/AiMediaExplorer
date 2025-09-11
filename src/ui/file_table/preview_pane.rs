@@ -36,8 +36,18 @@ impl super::FileExplorer {
                         ui.label(humansize::format_size(self.current_thumb.size, DECIMAL));
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             ui.label(&self.current_thumb.file_type.to_uppercase());
-                                
-                            let badge = if self.clip_presence.get(&self.current_thumb.path).is_some() { 
+                            // CLIP badge considers both path and content-hash presence (duplicates across paths)
+                            let has_clip = {
+                                let by_path = self.clip_presence.contains(&self.current_thumb.path);
+                                let by_hash = self
+                                    .current_thumb
+                                    .hash
+                                    .as_ref()
+                                    .map(|h| self.viewer.clip_presence_hashes.contains(h))
+                                    .unwrap_or(false);
+                                by_path || by_hash
+                            };
+                            let badge = if has_clip { 
                                 RichText::new("CLIP").color(Color32::LIGHT_GREEN) 
                             } else { 
                                 RichText::new("CLIP").color(ui.style().visuals.error_fg_color) 

@@ -30,7 +30,8 @@ impl crate::ai::AISearchEngine {
                 thumbnail_b64: None,
                 modified: metadata.modified.clone(),
                 hash: metadata.hash.clone(),
-                parent_dir: metadata.parent_dir.clone()
+                parent_dir: metadata.parent_dir.clone(),
+                logical_group: None,
             })
             .update_or_create_thumbnail(metadata, thumb_b64)
             .await?;

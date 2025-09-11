@@ -1,4 +1,5 @@
-use crate::utilities::types::{DateField, Filters, FoundFile, MediaKind, DirItem, is_image, is_video, is_archive};
+use crate::utilities::types::{Filters, FoundFile, MediaKind, DirItem, is_image, is_video, is_archive};
+use crate::utilities::filtering::FiltersExt;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use jwalk::{WalkDirGeneric, Parallelism};
 use crossbeam::channel::{Sender, Receiver, bounded};
@@ -225,18 +226,15 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
         msg: ScanMsg::Progress { scanned: 0, total } 
     });
 
-    let filters_clone = filters.clone();
+    // Clone once for the walker closure; keep original `filters` for later processing
+    let filters_for_walker = filters.clone();
     let logical = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(16);
     let mut batch: Vec<FoundFile> = vec![];
     let mut scanned_paths: usize = 0;
     let parallelism = Parallelism::RayonNewPool(std::cmp::max(8, std::cmp::min(logical, 16)));
 
-    let excluded_dirs = filters_clone.recursive_excluded_dirs.clone();
-    let excluded_exts = filters_clone.recursive_excluded_exts.clone();
-
-    // Precompute lowercase excluded extensions into a small HashSet for faster matching.
-    use std::collections::HashSet as _HashSet;
-    let excluded_exts_set: _HashSet<String> = excluded_exts.iter().map(|s| s.to_ascii_lowercase()).collect();
+    let excluded_dirs = filters.recursive_excluded_dirs.clone();
+    let excluded_terms = filters.excluded_terms.clone();
 
     // Use jwalk for both recursive and shallow traversal.
     let walker = WalkDirGeneric::<((), Option<u64>)>::new(&root)
@@ -296,6 +294,11 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
             entries.retain(|res| {
                 if let Ok(entry) = res {
                     let p = entry.path();
+                    // Early substring filter on full lowercased path when configured
+                    if !excluded_terms.is_empty() {
+                        let lp = p.to_string_lossy().to_ascii_lowercase();
+                        if excluded_terms.iter().any(|t| lp.contains(t)) { return false; }
+                    }
                     if entry.file_type.is_dir() {
                         // In recursive mode, skip excluded directories entirely (and their children).
                         if recursive && path_matches_excluded(&p) {
@@ -305,12 +308,10 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
                     }
                     if entry.file_type.is_file() {
                         if let Some(ext) = p.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()) {
-                            // Quick pre-filter: only keep potentially supported media.
-                            if !crate::is_supported_media_ext(ext.as_str()) { return false; }
-                            // Only apply extension excludes in recursive mode (as per Filters contract).
-                            if recursive && excluded_exts_set.contains(&ext) { return false; }
+                            // Quick pre-filter via trait: includes toggles + recursive excludes
+                            if !filters_for_walker.ext_allowed(&ext, recursive) { return false; }
                             // In shallow scans we optionally include archives (.zip) in listing
-                            if !recursive && is_archive(ext.as_str()) && !filters_clone.include_archives { return false; }
+                            if !recursive && is_archive(ext.as_str()) && !filters_for_walker.include_archives { return false; }
                             return true;
                         } else { return false; }
                     }
@@ -367,7 +368,7 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
                             }
                         }
                     }
-                    if let Some(found) = process_path_collect(path, &filters_clone, after, before) {
+                    if let Some(found) = process_path_collect(path, &filters, after, before) {
                         batch.push(found);
                         let _ = tx.send(ScanEnvelope { 
                             scan_id, 
@@ -463,64 +464,25 @@ fn process_path_collect(
     before: Option<chrono::NaiveDateTime>,
 ) -> Option<FoundFile> {
     if let Some(name) = path.file_name().and_then(|s| s.to_str()) { if name.starts_with("._") { return None; } }
+    // Guard against excluded terms again (extra safety in case of path changes between read_dir and metadata fetch)
+    if !filters.excluded_terms.is_empty() {
+        let lp = path.to_string_lossy().to_ascii_lowercase();
+        if filters.excluded_terms.iter().any(|t| lp.contains(t)) { return None; }
+    }
     let kind = is_media_kind(path);
     // Permit archives when explicitly requested for shallow scans (represented as MediaKind::Other)
     let is_archive_file = path.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()).map(|e| is_archive(e.as_str())).unwrap_or(false);
-    if !(
-        (filters.include_images && kind == MediaKind::Image)
-        || (filters.include_videos && kind == MediaKind::Video)
-        || (filters.include_archives && is_archive_file)
-    ) { return None; }
+    if !filters.kind_allowed(&kind, is_archive_file) { return None; }
     let md = match path.metadata() {
         Ok(m) => m,
         Err(_) => return None,
     };
     let modified = md.modified().ok().map(systemtime_to_local);
     let created = md.created().ok().map(systemtime_to_local);
-    match filters.date_field {
-        DateField::Modified => {
-            if let Some(m) = modified {
-                if let Some(a) = after {
-                    if m.naive_local() < a {
-                        return None;
-                    }
-                }
-                if let Some(b) = before {
-                    if m.naive_local() > b {
-                        return None;
-                    }
-                }
-            }
-        }
-        DateField::Created => {
-            if let Some(c) = created {
-                if let Some(a) = after {
-                    if c.naive_local() < a {
-                        return None;
-                    }
-                }
-                if let Some(b) = before {
-                    if c.naive_local() > b {
-                        return None;
-                    }
-                }
-            }
-        }
-    }
+    if !filters.date_ok(modified, created, /*recursive*/ after.is_some() || before.is_some()) { return None; }
     let size_val = md.len();
-    // Heuristic: skip likely icons/asset images
-    if filters.skip_icons {
-        let is_icon_ext = path.extension()
-            .and_then(|e| e.to_str())
-            .map(|s| s.eq_ignore_ascii_case("ico"))
-            .unwrap_or(false);
-        let tiny_thresh = filters.min_size_bytes.unwrap_or(10 * 1024);
-        let is_tiny_file = size_val <= tiny_thresh;
-        // No image decoding here; only extension + size heuristics
-        if is_icon_ext || is_tiny_file { return None; }
-    }
-    if let Some(minb) = filters.min_size_bytes { if size_val < minb { return None; } }
-    if let Some(maxb) = filters.max_size_bytes { if size_val > maxb { return None; } }
+    if !filters.skip_icons_heuristic_allows(path, size_val) { return None; }
+    if !filters.size_ok(size_val) { return None; }
     let size = Some(size_val);
     let item = FoundFile {
         path: path.to_path_buf(),

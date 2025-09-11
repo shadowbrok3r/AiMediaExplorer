@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use crate::database::{db_activity, db_set_detail, db_set_error};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FilterGroup {
@@ -37,24 +38,32 @@ fn slugify_name(name: &str) -> String {
 }
 
 pub async fn save_filter_group(mut g: FilterGroup) -> anyhow::Result<FilterGroup, anyhow::Error> {
+    let _ga = db_activity("Upsert filter_group");
+    db_set_detail(format!("Saving filter group '{}'", g.name));
     let key = slugify_name(&g.name);
     let rid = surrealdb::RecordId::from_table_key(super::FILTER_GROUPS, key);
     g.id = Some(rid.clone());
     super::DB
         .upsert::<Option<FilterGroup>>(rid)
         .content::<FilterGroup>(g.clone())
-        .await?;
+        .await
+        .map_err(|e| { db_set_error(format!("Save filter group failed: {e}")); e })?;
     Ok(g)
 }
 
 pub async fn list_filter_groups() -> anyhow::Result<Vec<FilterGroup>, anyhow::Error> {
+    let _ga = db_activity("Select all filter_groups");
+    db_set_detail("Loading filter groups".to_string());
     let res: Vec<FilterGroup> = super::DB.select(super::FILTER_GROUPS).await?;
     Ok(res)
 }
 
 pub async fn delete_filter_group_by_name(name: &str) -> anyhow::Result<(), anyhow::Error> {
+    let _ga = db_activity("Delete filter_group by name");
+    db_set_detail(format!("Deleting filter group '{}'", name));
     let key = slugify_name(name);
     let rid = surrealdb::RecordId::from_table_key(super::FILTER_GROUPS, key);
-    let _deleted: Option<FilterGroup> = super::DB.delete(rid).await?;
+    let _deleted: Option<FilterGroup> = super::DB.delete(rid).await
+        .map_err(|e| { db_set_error(format!("Delete filter group failed: {e}")); e })?;
     Ok(())
 }

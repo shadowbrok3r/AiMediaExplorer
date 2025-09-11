@@ -188,12 +188,12 @@ impl crate::ai::AISearchEngine {
             };
 
             if already_embedded {
-                    let overwrite = crate::database::settings::load_settings().as_ref().map(|s| s.clip_overwrite_embeddings).unwrap_or(false);
+                let overwrite = crate::database::settings::load_settings().as_ref().map(|s| s.clip_overwrite_embeddings).unwrap_or(false);
                 if !overwrite {
-                log::warn!("[CLIP] Skip already embedded {p}");
-                processed += 1;
-                CLIP_STATUS.set_progress(processed as u64, paths.len() as u64);
-                continue;
+                    log::warn!("[CLIP] Skip already embedded {p}");
+                    processed += 1;
+                    CLIP_STATUS.set_progress(processed as u64, paths.len() as u64);
+                    continue;
                 }
             }
             log::warn!("[CLIP] Embedding image {p}");

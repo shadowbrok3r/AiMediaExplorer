@@ -1,5 +1,26 @@
+use std::path::PathBuf;
+
 use eframe::egui::Context;
 use crate::ui::file_table::AIUpdate;
+
+#[inline]
+fn paths_equivalent_windows(a: &str, b: &str) -> bool {
+    // Normalize path separators and compare case-insensitively (Windows semantics)
+    if a.is_empty() || b.is_empty() { return a == b; }
+    let na = a.replace('/', "\\");
+    let nb = b.replace('/', "\\");
+    na.eq_ignore_ascii_case(&nb)
+}
+
+fn find_row_loose<'a>(rows: &'a [crate::database::Thumbnail], path: &str) -> Option<&'a crate::database::Thumbnail> {
+    // 1) Exact match (fast path)
+    if let Some(r) = rows.iter().find(|r| r.path == path) { return Some(r); }
+    // 2) Windows-equivalent path match
+    if let Some(r) = rows.iter().find(|r| paths_equivalent_windows(&r.path, path)) { return Some(r); }
+    // 3) Fallback by filename + size (helps with duplicates across mounts when streaming source path differs)
+    let fname = std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or("");
+    rows.iter().find(|r| r.filename.eq_ignore_ascii_case(fname) && r.size > 0)
+}
 
 impl crate::ui::file_table::FileExplorer {
     pub fn receive_ai_update(&mut self, ctx: &Context) {
@@ -10,8 +31,10 @@ impl crate::ui::file_table::FileExplorer {
                 AIUpdate::Interim { path, text } => {
                     // Auto-follow: always advance to the currently streaming image if enabled.
                     if self.follow_active_vision && !path.is_empty() {
-                        if self.current_thumb.path != path {
-                            if let Some(row) = self.table.iter().find(|r| r.path == path) {
+                        let need_follow = !paths_equivalent_windows(&self.current_thumb.path, &path);
+                        if need_follow {
+                            let rows: Vec<crate::database::Thumbnail> = self.table.iter().cloned().collect();
+                            if let Some(row) = find_row_loose(rows.as_slice(), &path) {
                                 self.current_thumb = row.clone();
                                 self.open_preview_pane = true; // ensure visible
                             }
@@ -27,8 +50,10 @@ impl crate::ui::file_table::FileExplorer {
                     tags,
                 } => {
                     if self.follow_active_vision && !path.is_empty() {
-                        if self.current_thumb.path != path {
-                            if let Some(row) = self.table.iter().find(|r| r.path == path) {
+                        let need_follow = !paths_equivalent_windows(&self.current_thumb.path, &path);
+                        if need_follow {
+                            let rows: Vec<crate::database::Thumbnail> = self.table.iter().cloned().collect();
+                            if let Some(row) = find_row_loose(rows.as_slice(), &path) {
                                 self.current_thumb = row.clone();
                                 self.open_preview_pane = true;
                             }
@@ -147,7 +172,7 @@ impl crate::ui::file_table::FileExplorer {
                             }
                             rows.push(r.thumb);
                         }
-                        let title = format!("Similar to {}", origin_path);
+                        let title = format!("Similar to {}", PathBuf::from(&origin_path).file_name().unwrap_or_default().to_str().unwrap_or(&origin_path));
                         crate::app::OPEN_TAB_REQUESTS
                         .lock()
                         .unwrap()

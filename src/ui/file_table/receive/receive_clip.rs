@@ -7,10 +7,16 @@ impl crate::ui::file_table::FileExplorer {
                 log::warn!("WE HAVE AN EMBEDDING");
                 self.clip_presence.insert(clip_embedding.path.clone());
                 self.viewer.clip_presence.insert(clip_embedding.path.clone());
+                if let Some(h) = clip_embedding.hash.as_ref() {
+                    self.viewer.clip_presence_hashes.insert(h.clone());
+                }
             } else {
                 log::error!("WE DO NOT HAVE EMBEDDINGS");
                 self.clip_presence.remove(&clip_embedding.path);
                 self.viewer.clip_presence.remove(&clip_embedding.path);
+                if let Some(h) = clip_embedding.hash.as_ref() {
+                    self.viewer.clip_presence_hashes.remove(h);
+                }
             }
             ctx.request_repaint();
         }

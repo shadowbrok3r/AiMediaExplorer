@@ -173,7 +173,8 @@ impl crate::ai::AISearchEngine {
             caption: Some(format!("generated image: {}", prompt)),
             tags: vec!["generated".into()],
             category: Some("generated".into()),
-            parent_dir
+            parent_dir,
+            logical_group: None,
         };
         // Ignore errors silently for now
         let _ = self.index_file(meta).await;

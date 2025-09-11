@@ -193,7 +193,8 @@ pub fn file_to_thumbnail(f: &crate::utilities::types::FoundFile) -> Option<crate
         thumbnail_b64: f.thumb_data.clone(), 
         modified: if let Some(date) = modified { Some(date.into()) } else { Some(Utc::now().into()) },
         hash: None,
-        parent_dir
+        parent_dir,
+        logical_group: None,
     })
 }
 

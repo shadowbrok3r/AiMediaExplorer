@@ -137,10 +137,9 @@ impl super::FileExplorer {
                                     }
                                 });
                                 
-                                let distros = self.get_cached_wsl_distros();
-                                if distros.is_empty() {
+                                if self.cached_wsl_distros.is_none() {
                                     ui.label(RichText::new("No WSL distros detected (check `wsl -l -q`) ").weak());
-                                } else {
+                                } else if let Some(distros) = &self.cached_wsl_distros {
                                     for d in distros.iter().filter(|d| !d.is_empty()) {
                                         ui.separator();
                                         ui.label(RichText::new(format!("Distro: {}", d)).strong());
@@ -169,10 +168,9 @@ impl super::FileExplorer {
                                 // Physical Drives for WSL mounting
                                 ui.separator();
                                 ui.label(RichText::new("Physical Drives (WSL Mount)").strong());
-                                let drives = self.get_cached_physical_drives();
-                                if drives.is_empty() {
+                                if self.cached_physical_drives.is_none() {
                                     ui.label(RichText::new("No physical drives detected").weak());
-                                } else {
+                                } else if let Some(drives) = &self.cached_physical_drives {
                                     ScrollArea::vertical().max_height(200.).show(ui, |ui| {
                                         for drive in drives {
                                             ui.separator();

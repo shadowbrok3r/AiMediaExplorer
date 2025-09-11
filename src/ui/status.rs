@@ -67,6 +67,12 @@ pub trait GlobalStatusIndicator {
     /// Set or update the model string shown in the hover card.
     /// Note: stored as a leaked &'static str to match StatusMeta's lifetime.
     fn set_model(&self, model: &str);
+    /// Set an error message and mark state as Error (displayed in hover card).
+    fn set_error(&self, err: impl Into<String>);
+    /// Clear any existing error message (does not change state).
+    fn clear_error(&self);
+    /// Update just the detail string without changing the state.
+    fn set_detail(&self, detail: impl Into<String>);
 }
 
 // Internal representation stored globally.
@@ -137,6 +143,22 @@ impl GlobalStatusIndicator for RegisteredStatus {
             // Leak to obtain 'static lifetime acceptable for process lifetime.
             let leaked: &'static str = Box::leak(model.to_string().into_boxed_str());
             inner.meta.model = Some(leaked);
+        }
+    }
+    fn set_error(&self, err: impl Into<String>) {
+        if let Some(inner) = STATUSES.write().unwrap().get_mut(self.key) {
+            inner.meta.error = Some(err.into());
+            inner.meta.state = StatusState::Error;
+        }
+    }
+    fn clear_error(&self) {
+        if let Some(inner) = STATUSES.write().unwrap().get_mut(self.key) {
+            inner.meta.error = None;
+        }
+    }
+    fn set_detail(&self, detail: impl Into<String>) {
+        if let Some(inner) = STATUSES.write().unwrap().get_mut(self.key) {
+            inner.meta.detail = detail.into();
         }
     }
 }

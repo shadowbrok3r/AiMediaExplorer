@@ -59,6 +59,9 @@ pub struct FileTableViewer {
     // Track which paths have a CLIP embedding
     #[serde(skip)]
     pub clip_presence: std::collections::HashSet<String>,
+    // Track which hashes have CLIP embeddings (for duplicate content across paths)
+    #[serde(skip)]
+    pub clip_presence_hashes: std::collections::HashSet<String>,
     // Type visibility toggles (UI): affect table view filtering and scans
     pub types_show_images: bool,
     pub types_show_videos: bool,
@@ -92,6 +95,7 @@ impl FileTableViewer {
             showing_similarity: false,
             similar_scores: HashMap::new(),
             clip_presence: std::collections::HashSet::new(),
+            clip_presence_hashes: std::collections::HashSet::new(),
             types_show_images: true,
             types_show_videos: true,
             types_show_dirs: true,
@@ -209,7 +213,13 @@ impl RowViewer<Thumbnail> for FileTableViewer {
         // CLIP is now column 5. Similarity (if shown) is appended at the end.
         let clip_idx = 5usize;
         if column == clip_idx {
-            let has = self.clip_presence.contains(&row.path);
+            let has_by_path = self.clip_presence.contains(&row.path);
+            let has_by_hash = row
+                .hash
+                .as_ref()
+                .map(|h| self.clip_presence_hashes.contains(h))
+                .unwrap_or(false);
+            let has = has_by_path || has_by_hash;
             ui.label(if has { "Yes" } else { "No" });
         }
         let similarity_idx = if self.showing_similarity {
@@ -227,54 +237,58 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                 ui.vertical_centered_justified(|ui| {
                     // Thumbnail (mode-agnostic currently)
                     if row.file_type == "<DIR>" {
-                        ui.add_sized(
-                            ui.available_size(),
-                            egui::Image::new(eframe::egui::include_image!(
-                                "../../../../assets/Icons/folder.png"
-                            )).texture_options(TextureOptions::default().with_mipmap_mode(Some(egui::TextureFilter::Linear))),
-                        );
+                        egui::Image::new(eframe::egui::include_image!(
+                            "../../../../assets/Icons/folder.png"
+                        ))
+                        .fit_to_exact_size(ui.available_size())
+                        .texture_options(
+                            TextureOptions::default().with_mipmap_mode(Some(egui::TextureFilter::Linear))
+                        ).ui(ui);
                     } else if row.file_type == "<ARCHIVE>" {
-                        ui.add_sized(
-                            ui.available_size(),
-                            egui::Image::new(eframe::egui::include_image!(
-                                "../../../../assets/Icons/zip.png"
-                            )).texture_options(TextureOptions::default().with_mipmap_mode(Some(egui::TextureFilter::Linear))),
-                        );
-                    }
-                    let cache_key = row.path.clone();
-                    if row.thumbnail_b64.is_none() {
-                        ui.add_sized(
-                            ui.available_size(),
+                        egui::Image::new(eframe::egui::include_image!(
+                            "../../../../assets/Icons/zip.png"
+                        ))
+                        .fit_to_exact_size(ui.available_size())
+                        .texture_options(
+                            TextureOptions::default().with_mipmap_mode(Some(egui::TextureFilter::Linear))
+                        ).ui(ui);
+                    } else {
+                        let cache_key = row.path.clone();
+                        if row.thumbnail_b64.is_none() {
                             egui::Image::new(eframe::egui::include_image!(
                                 "../../../../assets/Icons/broken_link.png"
-                            )).texture_options(TextureOptions::default().with_mipmap_mode(Some(egui::TextureFilter::Linear))),
-                        );
-                    } else {
-                        if !self.thumb_cache.contains_key(&cache_key) {
-                            if let Some(mut b64) = row.thumbnail_b64.clone() {
-                                if b64.starts_with("data:image/png;base64,") {
-                                    let (_, end) =
-                                        b64.split_once("data:image/png;base64,").unwrap_or_default();
-                                    b64 = end.to_string();
-                                }
-                                if let Ok(decoded) = B64.decode(b64.as_bytes()) {
-                                    self.thumb_cache.insert(
-                                        cache_key.clone(),
-                                        Arc::from(decoded.into_boxed_slice()),
-                                    );
+                            ))
+                            .fit_to_exact_size(ui.available_size())
+                            .texture_options(
+                                TextureOptions::default().with_mipmap_mode(Some(egui::TextureFilter::Linear))
+                            ).ui(ui);
+                        } else {
+                            if !self.thumb_cache.contains_key(&cache_key) {
+                                if let Some(mut b64) = row.thumbnail_b64.clone() {
+                                    if b64.starts_with("data:image/png;base64,") {
+                                        let (_, end) =
+                                            b64.split_once("data:image/png;base64,").unwrap_or_default();
+                                        b64 = end.to_string();
+                                    }
+                                    if let Ok(decoded) = B64.decode(b64.as_bytes()) {
+                                        self.thumb_cache.insert(
+                                            cache_key.clone(),
+                                            Arc::from(decoded.into_boxed_slice()),
+                                        );
+                                    }
                                 }
                             }
-                        }
-                        if let Some(bytes_arc) = self.thumb_cache.get(&cache_key) {
-                            let img_src = ImageSource::Bytes {
-                                uri: Cow::from(format!("bytes://{}", cache_key)),
-                                bytes: egui::load::Bytes::Shared(bytes_arc.clone()),
-                            };
-                            Image::new(img_src)
+                            if let Some(bytes_arc) = self.thumb_cache.get(&cache_key) {
+                                let img_src = ImageSource::Bytes {
+                                    uri: Cow::from(format!("bytes://{}", cache_key)),
+                                    bytes: egui::load::Bytes::Shared(bytes_arc.clone()),
+                                };
+                                Image::new(img_src)
                                 .show_loading_spinner(true)
-                                .max_size(ui.available_size())
+                                .fit_to_exact_size(ui.available_size())
                                 .texture_options(TextureOptions::default().with_mipmap_mode(Some(egui::TextureFilter::Linear)))
-                                .ui(ui); // .bg_fill(Color32::WHITE)
+                                .ui(ui); 
+                            }
                         }
                     }
                 });
@@ -688,7 +702,8 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                         let tx = self.clip_embedding_tx.clone();
                         let thumb = row.clone();
                         tokio::spawn(async move {
-                            let _ = tx.try_send(thumb.get_embedding().await.unwrap_or_default());
+                            let row = thumb.get_embedding().await.unwrap_or_default();
+                            let _ = tx.try_send(row);
                         });
                     }
                 }
@@ -717,9 +732,13 @@ impl RowViewer<Thumbnail> for FileTableViewer {
         use std::cmp::Ordering::*;
         // Special columns: CLIP (5), Similarity (last if present)
         if column == 5 {
-            // CLIP presence (Yes before No)
-            let sl = self.clip_presence.contains(&l.path) as u8;
-            let sr = self.clip_presence.contains(&r.path) as u8;
+            // CLIP presence (Yes before No), considering both path and hash presence
+            let l_has = self.clip_presence.contains(&l.path)
+                || l.hash.as_ref().map(|h| self.clip_presence_hashes.contains(h)).unwrap_or(false);
+            let r_has = self.clip_presence.contains(&r.path)
+                || r.hash.as_ref().map(|h| self.clip_presence_hashes.contains(h)).unwrap_or(false);
+            let sl = l_has as u8;
+            let sr = r_has as u8;
             return sr.cmp(&sl);
         }
         let similarity_idx = if self.showing_similarity {
@@ -752,7 +771,7 @@ impl RowViewer<Thumbnail> for FileTableViewer {
     fn column_render_config(&mut self, column: usize, _is_editing: bool) -> TableColumnConfig {
         let base = TableColumnConfig::auto();
         match column {
-            0 => base.at_least(50.).at_most(75.).resizable(true), // thumbnail
+            0 => base.at_least(75.).at_most(100.).resizable(true), // thumbnail
             1 => base.at_least(160.).clip(true).resizable(true),  // name
             2 => base.at_least(220.).clip(true).resizable(true),  // path
             3 => base.at_least(70.).at_most(90.),                 // size
@@ -842,7 +861,9 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                     // Respect size bounds from UiSettings
                     if let Some(minb) = self.ui_settings.db_min_size_bytes { if row.size < minb { continue; } }
                     if let Some(maxb) = self.ui_settings.db_max_size_bytes { if row.size > maxb { continue; } }
-                    if row.caption.is_some() || row.description.is_some() { continue; }
+                    // Respect overwrite setting: skip if existing data and overwrite disabled
+                    let overwrite = self.ui_settings.overwrite_descriptions;
+                    if !overwrite && (row.caption.is_some() || row.description.is_some()) { continue; }
                     let path_str = row.path.clone();
                     let path_str_clone = path_str.clone();
                     let tx_updates = self.ai_update_tx.clone();

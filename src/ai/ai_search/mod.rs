@@ -115,6 +115,7 @@ impl AISearchEngine {
                             caption: thumb.caption.clone(),
                             tags: thumb.tags.clone(),
                             category: thumb.category.clone(),
+                            logical_group: thumb.logical_group.clone(),
                         };
                         files_guard.push(fm);
                         inserted += 1;
@@ -196,6 +197,7 @@ impl AISearchEngine {
                         } else {
                             Some(vd.category.clone())
                         },
+                        logical_group: None,
                     };
                     let mut files3 = self.files.lock().await;
                     files3.push(stub);
@@ -254,6 +256,7 @@ impl AISearchEngine {
             tags: row.tags.clone(),
             category: row.category.clone(),
             parent_dir,
+            logical_group: row.logical_group.clone(),
         };
         Ok(Some(fm))
     }
@@ -318,7 +321,8 @@ impl AISearchEngine {
             caption: None,
             tags: Vec::new(),
             category: None,
-            parent_dir
+            parent_dir,
+            logical_group: None,
         };
         let mut files = self.files.lock().await;
         files.push(stub);
@@ -469,7 +473,8 @@ impl AISearchEngine {
                     caption: None,
                     tags: Vec::new(),
                     category: None,
-                    parent_dir
+                    parent_dir,
+                    logical_group: None,
                 });
             }
         }
@@ -775,7 +780,8 @@ pub fn found_file_to_metadata(
         caption: None,
         tags: Vec::new(),
         category: None,
-        parent_dir: std::path::Path::new(&found_file.path).parent().map(|p| p.to_string_lossy().to_string().clone()).unwrap_or_default()
+        parent_dir: std::path::Path::new(&found_file.path).parent().map(|p| p.to_string_lossy().to_string().clone()).unwrap_or_default(),
+        logical_group: None,
     }
 }
 

@@ -1,125 +1,57 @@
 use crate::USER_SETTINGS;
+use egui::Options;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use surrealdb::RecordId;
 use tokio::task;
+use crate::database::{db_activity, db_set_detail, db_set_error};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UiSettings {
     pub id: RecordId,
-    pub qa_collapsed: bool,
-    pub drives_collapsed: bool,
-    pub preview_collapsed: bool,
-    pub preview_width: u32,
-    pub sort: Option<SortSetting>,
     // "icons" | "details"
-    pub view_mode: Option<String>,
-    pub left_width: u32,
     pub ext_enabled: Option<Vec<(String, bool)>>,
     pub excluded_dirs: Option<Vec<String>>,
-    #[serde(default)]
     pub group_by_category: bool,
     // Name, Path, Size, Modified, Created, Type
-    #[serde(default)]
-    pub detail_column_widths: Option<[f32; 6]>,
-    #[serde(default)]
-    pub category_col_width: Option<f32>,
-    #[serde(default)]
     pub auto_indexing: bool,
-    #[serde(default)]
     pub ai_prompt_template: String,
-    #[serde(default)]
     pub overwrite_descriptions: bool,
     // Persisted filter state
-    #[serde(default)]
     pub filter_modified_after: Option<String>,
-    #[serde(default)]
     pub filter_modified_before: Option<String>,
-    // multi-select categories
-    #[serde(default)]
-    pub filter_category_multi: Option<Vec<String>>,
-    #[serde(default)]
-    pub filter_only_with_thumb: bool,
-    #[serde(default)]
-    pub filter_only_with_description: bool,
     // Skip likely icon/asset images in scans (small sizes/dimensions, .ico, etc.)
-    #[serde(default)]
     pub filter_skip_icons: bool,
-    #[serde(default)]
-    pub last_root: Option<String>,
-    #[serde(default)]
-    pub show_progress_overlay: bool,
-    #[serde(default)]
     pub db_min_size_bytes: Option<u64>,
-    #[serde(default)]
     pub db_max_size_bytes: Option<u64>,
-    #[serde(default)]
     pub db_excluded_exts: Option<Vec<String>>, // lowercase extensions (without dot)
     // --- New CLIP settings ---
-    #[serde(default)]
     pub auto_clip_embeddings: bool, // automatically generate CLIP embeddings during indexing
-    #[serde(default)]
     pub clip_augment_with_text: bool, // blend image + textual metadata into a joint CLIP vector
     // Overwrite existing CLIP embeddings when auto generation runs
-    #[serde(default)]
     pub clip_overwrite_embeddings: bool,
     // Selected CLIP/SigLIP model key
-    #[serde(default)]
     pub clip_model: Option<String>,
-    #[serde(default)]
     pub recent_paths: Vec<String>,
     // When true, new scan results and thumbnail updates are saved into the DB automatically (if a logical group is active)
-    #[serde(default)]
     pub auto_save_to_database: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SortSetting {
-    pub by: SortBy,
-    pub asc: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub enum SortBy {
-    Name,
-    Category,
-    Modified,
-    Created,
-    Size,
-    Type,
+    pub egui_preferences: Options
 }
 
 impl Default for UiSettings {
     fn default() -> Self {
         Self {
             id: RecordId::from_table_key(USER_SETTINGS, "ShadowbrokerPC"),
-            qa_collapsed: false,
-            drives_collapsed: false,
-            preview_collapsed: false,
-            preview_width: 320,
-            sort: Some(SortSetting {
-                by: SortBy::Name,
-                asc: true,
-            }),
-            view_mode: Some("list".into()),
-            left_width: 240,
             ext_enabled: None,
             excluded_dirs: None,
             group_by_category: false,
-            detail_column_widths: None,
-            category_col_width: None,
             auto_indexing: false,
             ai_prompt_template: "Analyze the supplied image and return JSON with keys: description (detailed multi-sentence), caption (short), tags (array of lowercase single words), category (single general category). Return ONLY JSON.".into(),
             overwrite_descriptions: false,
             filter_modified_after: None,
             filter_modified_before: None,
-            filter_category_multi: None,
-            filter_only_with_thumb: false,
-            filter_only_with_description: false,
             filter_skip_icons: false,
-            last_root: None,
-            show_progress_overlay: true,
             // Default lower bound: 10 KiB to avoid tiny files
             db_min_size_bytes: Some(10 * 1024),
             db_max_size_bytes: None,
@@ -127,9 +59,11 @@ impl Default for UiSettings {
             auto_clip_embeddings: false,
             clip_augment_with_text: true,
             clip_overwrite_embeddings: false,
-            clip_model: Some("unicom-vit-b32".into()),
+            clip_model: Some("siglip2-large-patch16-512".into()),
             recent_paths: Vec::new(),
             auto_save_to_database: false,
+            egui_preferences: Options::default()
+
         }
     }
 }
@@ -143,7 +77,7 @@ impl UiSettings {
         }
         self.recent_paths.insert(0, p);
         // Cap at 20
-        if self.recent_paths.len() > 20 { self.recent_paths.truncate(20); }
+        if self.recent_paths.len() > 10 { self.recent_paths.truncate(10); }
     }
 }
 // In-memory snapshot (optional) to avoid extra DB selects for callers that load early.
@@ -175,14 +109,19 @@ pub fn save_settings(s: &UiSettings) {
 }
 
 pub async fn save_settings_in_db(s: UiSettings) -> anyhow::Result<(), anyhow::Error> {
+    let _ga = db_activity("UPSERT user settings");
+    db_set_detail("Saving user settings".to_string());
     super::DB
         .upsert::<Option<UiSettings>>(UiSettings::default().id)
         .content::<UiSettings>(s)
-        .await?;
+        .await
+        .map_err(|e| { db_set_error(format!("Save settings failed: {e}")); e })?;
     Ok(())
 }
 
 pub async fn get_settings() -> anyhow::Result<UiSettings, anyhow::Error> {
+    let _ga = db_activity("SELECT user settings");
+    db_set_detail("Loading user settings".to_string());
     let settings_res: Option<UiSettings> = super::DB.select(UiSettings::default().id).await?;
     // log::info!("Got settings: {:?}", settings_res.is_some());
     if let Some(settings) = settings_res {

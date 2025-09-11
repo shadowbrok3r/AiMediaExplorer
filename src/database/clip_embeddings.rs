@@ -1,5 +1,6 @@
 use chrono::Utc;
 use surrealdb::RecordId;
+use crate::database::{db_activity, db_set_detail, db_set_error};
 
 #[derive(Debug, serde::Deserialize)]
 pub struct SimilarHit {
@@ -14,6 +15,8 @@ impl super::ClipEmbeddingRow {
     // Load all clip embedding rows and return mapping path -> (embedding, hash, thumb_ref)
     pub async fn load_all_clip_embeddings()
     -> anyhow::Result<Vec<Self>, anyhow::Error> {
+        let _ga = db_activity("Select all clip_embeddings");
+        db_set_detail("Loading clip embeddings".to_string());
         let rows: Vec<super::ClipEmbeddingRow> = super::DB.select("clip_embeddings").await?;
         Ok(rows)
     }
@@ -21,6 +24,8 @@ impl super::ClipEmbeddingRow {
     pub async fn load_clip_embeddings_for_path(
         path: &str,
     ) -> anyhow::Result<Vec<Self>, anyhow::Error> {
+        let _ga = db_activity("Select clip_embeddings by path");
+        db_set_detail("Loading clip embeddings for path".to_string());
         let rows: Vec<super::ClipEmbeddingRow> = super::DB
             .query("SELECT * FROM clip_embeddings WHERE path = $path")
             .bind(("path", path.to_string()))
@@ -38,6 +43,8 @@ impl super::ClipEmbeddingRow {
         ef: usize,
     ) -> anyhow::Result<Vec<SimilarHit>, anyhow::Error> {
         log::info!("find_similar_by_embedding");
+        let _ga = db_activity("KNN clip_embeddings");
+        db_set_detail("Searching similar embeddings".to_string());
         // let ef = ef_for(top_n);
         let res: Vec<SimilarHit> = super::DB
             .query(
@@ -74,6 +81,8 @@ pub async fn upsert_clip_embedding(
     embedding: &[f32],
 ) -> anyhow::Result<(), anyhow::Error> {
     log::info!("upsert_clip_embedding");
+    let _ga = db_activity("Upsert clip_embedding");
+    db_set_detail("Saving CLIP embedding".to_string());
     let thumbnail_id = crate::Thumbnail::get_thumbnail_id_by_path(path).await?;
     let query = if let Some(id) = &thumbnail_id {
         let _ = super::DB.set("id", id.clone()).await;
@@ -83,7 +92,9 @@ pub async fn upsert_clip_embedding(
         "SELECT VALUE id FROM clip_embeddings WHERE path = $path"
     };
 
-    let existing: Option<surrealdb::RecordId> = super::DB.query(query).await?.take(0)?;
+    let existing: Option<surrealdb::RecordId> = super::DB.query(query).await
+        .map_err(|e| { db_set_error(format!("Embedding lookup failed: {e}")); e })?
+        .take(0)?;
 
     if let Some(id) = existing {
         log::info!("Existing clip_embeddings");
@@ -93,7 +104,8 @@ pub async fn upsert_clip_embedding(
             .bind(("hash", hash.map(|h| h.to_string())))
             .bind(("path", path.to_string()))
             .bind(("id", id))
-            .await?
+            .await
+            .map_err(|e| { db_set_error(format!("Update embedding failed: {e}")); e })?
             .take(0)?;
 
         log::info!("Record is Some: {:?}", record.is_some());
@@ -112,7 +124,8 @@ pub async fn upsert_clip_embedding(
                 similarity_score: None,
                 clip_similarity_score: None,
             })
-            .await?;
+            .await
+            .map_err(|e| { db_set_error(format!("Insert embedding failed: {e}")); e })?;
         log::info!("New clip_embeddings: {:?}", new.is_some());
     }
 

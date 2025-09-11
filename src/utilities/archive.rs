@@ -232,6 +232,7 @@ pub fn entry_to_thumbnail(scheme: &str, archive_fs_path: &str, internal_path: &s
             modified: None,
             hash: None,
             parent_dir: format!("{}://{}!/{}", scheme, archive_fs_path, normalize_prefix(internal_path).trim_end_matches('/')),
+            logical_group: None,
         }
     }
 }

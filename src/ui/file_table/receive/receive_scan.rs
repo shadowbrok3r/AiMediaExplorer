@@ -111,7 +111,8 @@ impl crate::ui::file_table::FileExplorer {
                                 caption: None,
                                 tags: Vec::new(),
                                 category: None,
-                                parent_dir: parent_dir
+                                parent_dir: parent_dir,
+                                logical_group: None,
                             }
                         };
 
@@ -138,6 +139,27 @@ impl crate::ui::file_table::FileExplorer {
                                 }
                             });
                         }
+                        // If auto CLIP is enabled but auto indexing is off, schedule CLIP embedding for images here
+                        if self.viewer.ui_settings.auto_clip_embeddings && !self.viewer.ui_settings.auto_indexing {
+                            if let Some(ext) = std::path::Path::new(&row.path)
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .map(|s| s.to_ascii_lowercase())
+                            {
+                                if crate::is_image(ext.as_str()) {
+                                    let path = row.path.clone();
+                                    tokio::spawn(async move {
+                                        // Ensure engine ready and generate embedding for this single path
+                                        let _ = crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await;
+                                        let _ = crate::ai::GLOBAL_AI_ENGINE.clip_generate_for_paths(&[path]).await;
+                                        Ok::<(), anyhow::Error>(())
+                                    });
+                                }
+                            }
+                        }
+                        // Re-apply UI filters after adding a new item (important during long recursive scans)
+                        // This ensures min/max size and other active filters are enforced on newly appended rows.
+                        self.apply_filters_to_current_table();
                     }
                 }
                 crate::utilities::scan::ScanMsg::FoundBatch(batch) => {
@@ -232,8 +254,27 @@ impl crate::ui::file_table::FileExplorer {
                                     caption: None,
                                     tags: Vec::new(),
                                     category: None,
-                                    parent_dir
+                                    parent_dir,
+                                    logical_group: None,
                                 });
+                            }
+                            // If auto CLIP is enabled but auto indexing is off, schedule CLIP embedding for images here
+                            if self.viewer.ui_settings.auto_clip_embeddings && !self.viewer.ui_settings.auto_indexing {
+                                if let Some(ext) = item
+                                    .path
+                                    .extension()
+                                    .and_then(|e| e.to_str())
+                                    .map(|s| s.to_ascii_lowercase())
+                                {
+                                    if crate::is_image(ext.as_str()) {
+                                        let path = item.path.to_string_lossy().to_string();
+                                        tokio::spawn(async move {
+                                            let _ = crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await;
+                                            let _ = crate::ai::GLOBAL_AI_ENGINE.clip_generate_for_paths(&[path]).await;
+                                            Ok::<(), anyhow::Error>(())
+                                        });
+                                    }
+                                }
                             }
                         }
                         if self.pending_thumb_rows.len() >= 32 {
@@ -260,6 +301,9 @@ impl crate::ui::file_table::FileExplorer {
                             });
                         }
                     }
+                    // After processing the incoming batch, re-apply active filters to prune newly added rows
+                    // that don't match current constraints (size bounds, type toggles, excluded terms, skip icons).
+                    self.apply_filters_to_current_table();
                     if !to_index.is_empty() {
                         let do_index = self.viewer.ui_settings.auto_indexing;
                         let auto_save = self.viewer.ui_settings.auto_save_to_database;
