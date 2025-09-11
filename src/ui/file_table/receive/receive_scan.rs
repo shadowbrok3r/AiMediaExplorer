@@ -4,15 +4,22 @@ use std::{path::PathBuf, sync::Arc};
 impl crate::ui::file_table::FileExplorer {
     pub fn receive_scan(&mut self, ctx: &eframe::egui::Context) {
         while let Ok(env) = self.scan_rx.try_recv() {
-            // Only process messages for our owning scan_id if set, else accept any
+            // Only process messages for scans owned by this explorer. If we don't yet
+            // have an owning_scan_id, we accept only when this scan is the actively
+            // initiated one (current_scan_id). This prevents cross-tab leakage.
+            let mut accept = false;
             if let Some(owner) = self.owning_scan_id {
-                if env.scan_id != owner {
-                    // Ignore stray messages for other tabs/scans
-                    continue;
+                accept = env.scan_id == owner;
+            } else if let Some(current) = self.current_scan_id {
+                accept = env.scan_id == current;
+                if accept {
+                    // Bind ownership to this explorer for the lifetime of this scan
+                    self.owning_scan_id = Some(current);
                 }
-            } else {
-                // If we don't have an owner set yet, take the first seen scan_id as ours
-                self.owning_scan_id = Some(env.scan_id);
+            }
+            if !accept {
+                // Ignore stray messages for other tabs/scans
+                continue;
             }
             match env.msg {
                 crate::utilities::scan::ScanMsg::FoundDir(dir) => {
@@ -108,8 +115,8 @@ impl crate::ui::file_table::FileExplorer {
                             }
                         };
 
-                        let settings = crate::database::settings::load_settings();
-                        if settings.as_ref().map(|s| s.auto_save_to_database).unwrap_or(false) {
+                        let auto_save = self.viewer.ui_settings.auto_save_to_database;
+                        if auto_save {
                             let group_name = self.active_logical_group_name.clone();
                             let meta_clone = meta.clone();
                             let do_index = self.viewer.ui_settings.auto_indexing;
@@ -232,22 +239,20 @@ impl crate::ui::file_table::FileExplorer {
                         if self.pending_thumb_rows.len() >= 32 {
                             let batch = std::mem::take(&mut self.pending_thumb_rows);
                             let group_name = self.active_logical_group_name.clone();
-                            let settings = crate::database::settings::load_settings();
+                            let auto_save = self.viewer.ui_settings.auto_save_to_database;
                             tokio::spawn(async move {
-                                if settings.as_ref().map(|s| s.auto_save_to_database).unwrap_or(false) {
-                                    if let Some(gname) = group_name {
-                                        match crate::database::upsert_rows_and_get_ids(batch).await {
-                                            Ok(ids) => {
+                                if auto_save {
+                                    match crate::database::upsert_rows_and_get_ids(batch).await {
+                                        Ok(ids) => {
+                                            if let Some(gname) = group_name {
                                                 if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&gname).await {
                                                     if let Some(gid) = g.id.as_ref() {
                                                         let _ = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await;
                                                     }
                                                 }
                                             }
-                                            Err(e) => log::error!("scan batch upsert failed: {e}"),
                                         }
-                                    } else {
-                                        log::debug!("Skipping batch DB save: no active logical group");
+                                        Err(e) => log::error!("scan batch upsert failed: {e}"),
                                     }
                                 } else {
                                     log::debug!("Skipping batch DB save: auto_save_to_database disabled");
@@ -256,13 +261,12 @@ impl crate::ui::file_table::FileExplorer {
                         }
                     }
                     if !to_index.is_empty() {
-                        let settings = crate::database::settings::load_settings();
                         let do_index = self.viewer.ui_settings.auto_indexing;
-                        if settings.as_ref().map(|s| s.auto_save_to_database).unwrap_or(false) {
-                            let group_name = self.active_logical_group_name.clone();
-                            tokio::spawn(async move {
+                        let auto_save = self.viewer.ui_settings.auto_save_to_database;
+                        let group_name = self.active_logical_group_name.clone();
+                        tokio::spawn(async move {
+                            if auto_save {
                                 if let Ok(ids) = crate::database::upsert_rows_and_get_ids(to_index.clone()).await {
-                                    // Optionally add to group if one is active
                                     if let Some(group_name) = group_name {
                                         if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&group_name).await {
                                             if let Some(gid) = g.id.as_ref() {
@@ -271,13 +275,13 @@ impl crate::ui::file_table::FileExplorer {
                                         }
                                     }
                                 }
-                                if do_index {
-                                    for meta in to_index.into_iter() {
-                                        let _ = crate::ai::GLOBAL_AI_ENGINE.enqueue_index(meta).await;
-                                    }
+                            }
+                            if do_index {
+                                for meta in to_index.into_iter() {
+                                    let _ = crate::ai::GLOBAL_AI_ENGINE.enqueue_index(meta).await;
                                 }
-                            });
-                        }
+                            }
+                        });
                     }
                     if !newly_enqueued.is_empty() {
                         let scan_tx = self.scan_tx.clone();
@@ -339,22 +343,20 @@ impl crate::ui::file_table::FileExplorer {
                     if self.pending_thumb_rows.len() >= 32 {
                         let batch = std::mem::take(&mut self.pending_thumb_rows);
                         let group_name = self.active_logical_group_name.clone();
-                        let settings = crate::database::settings::load_settings();
+                        let auto_save = self.viewer.ui_settings.auto_save_to_database;
                         tokio::spawn(async move {
-                            if settings.as_ref().map(|s| s.auto_save_to_database).unwrap_or(false) {
-                                if let Some(gname) = group_name {
-                                    match crate::database::upsert_rows_and_get_ids(batch).await {
-                                        Ok(ids) => {
+                            if auto_save {
+                                match crate::database::upsert_rows_and_get_ids(batch).await {
+                                    Ok(ids) => {
+                                        if let Some(gname) = group_name {
                                             if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&gname).await {
                                                 if let Some(gid) = g.id.as_ref() {
                                                     let _ = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await;
                                                 }
                                             }
                                         }
-                                        Err(e) => log::error!("thumb update batch upsert failed: {e}"),
                                     }
-                                } else {
-                                    log::debug!("Skipping batch DB save: no active logical group");
+                                    Err(e) => log::error!("thumb update batch upsert failed: {e}"),
                                 }
                             } else {
                                 log::debug!("Skipping batch DB save: auto_save_to_database disabled");
@@ -395,22 +397,20 @@ impl crate::ui::file_table::FileExplorer {
                     if !self.pending_thumb_rows.is_empty() {
                         let batch = std::mem::take(&mut self.pending_thumb_rows);
                         let group_name = self.active_logical_group_name.clone();
-                        let settings = crate::database::settings::load_settings();
+                        let auto_save = self.viewer.ui_settings.auto_save_to_database;
                         tokio::spawn(async move {
-                            if settings.as_ref().map(|s| s.auto_save_to_database).unwrap_or(false) {
-                                if let Some(gname) = group_name {
-                                    match crate::database::upsert_rows_and_get_ids(batch).await {
-                                        Ok(ids) => {
+                            if auto_save {
+                                match crate::database::upsert_rows_and_get_ids(batch).await {
+                                    Ok(ids) => {
+                                        if let Some(gname) = group_name {
                                             if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&gname).await {
                                                 if let Some(gid) = g.id.as_ref() {
                                                     let _ = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await;
                                                 }
                                             }
                                         }
-                                        Err(e) => log::error!("final scan batch upsert failed: {e}"),
                                     }
-                                } else {
-                                    log::debug!("Skipping final batch DB save: no active logical group");
+                                    Err(e) => log::error!("final scan batch upsert failed: {e}"),
                                 }
                             } else {
                                 log::debug!("Skipping final batch DB save: auto_save_to_database disabled");

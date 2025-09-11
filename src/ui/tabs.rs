@@ -15,11 +15,7 @@ impl egui_dock::TabViewer for crate::app::SmartMediaContext {
 
     fn ui(&mut self, ui: &mut Ui, tab: &mut Self::Tab) {
         match tab.as_str() {
-            "File Explorer" => if let Some(ex) = self.filtered_tabs.get_mut(tab) {
-                ex.ui(ui);
-            } else {
-                self.file_explorer.ui(ui);
-            },
+            "File Explorer" => self.file_explorer.ui(ui),
             "Logs" => egui_logger::logger_ui()
                 .warn_color(Color32::from_rgb(94, 215, 221)) 
                 .error_color(Color32::from_rgb(255, 55, 102)) 
@@ -31,7 +27,11 @@ impl egui_dock::TabViewer for crate::app::SmartMediaContext {
                 .show(ui),
             _ => {
                 // Dynamic tabs: delegate to filtered explorers if present
-
+                if let Some(ex) = self.filtered_tabs.get_mut(tab) {
+                    ex.ui(ui);
+                } else {
+                    ui.label(tab.as_str());
+                }
             }
         }
     }
