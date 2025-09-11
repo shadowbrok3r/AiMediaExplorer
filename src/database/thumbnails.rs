@@ -7,6 +7,16 @@ use chrono::Utc;
 
 
 impl crate::Thumbnail {
+    /// Fetch all thumbnail rows across the entire database.
+    pub async fn get_all_thumbnails() -> anyhow::Result<Vec<Self>, anyhow::Error> {
+        let _ga = db_activity("Load all thumbnails");
+        db_set_detail("Loading all thumbnails".to_string());
+        let resp: Vec<Self> = DB
+            .query("SELECT * FROM thumbnails")
+            .await?
+            .take(0)?;
+        Ok(resp)
+    }
     // Fetch a single thumbnail row by exact path (leverages UNIQUE index on path)
     pub async fn get_thumbnail_by_path(
         path: &str,

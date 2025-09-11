@@ -6,6 +6,11 @@ const STYLE: &str = r#"{"override_text_style":null,"override_font_id":null,"over
 
 impl crate::app::SmartMediaContext {
     pub fn receive(&mut self, ctx: &eframe::egui::Context) {
+        // Drain and render toasts
+        while let Ok((kind, msg)) = self.toast_rx.try_recv() {
+            self.toasts.add(egui_toast::Toast { kind, text: eframe::egui::RichText::new(msg).into(), ..Default::default() });
+        }
+        self.toasts.show(ctx);
         if self.first_run {
             egui_extras::install_image_loaders(ctx);
             let db_ready_tx = self.db_ready_tx.clone();
@@ -109,6 +114,30 @@ impl crate::app::SmartMediaContext {
             ui.separator();
             {
                 let d = unsafe { &mut *draft_ptr };
+                ui.collapsing("Database", |ui| {
+                    let current_path = crate::database::get_db_path();
+                    ui.horizontal(|ui| {
+                        ui.label("Database folder:");
+                        ui.monospace(current_path.clone());
+                        if ui.button("Change…").clicked() {
+                            if let Some(dir) = rfd::FileDialog::new().set_title("Choose database folder").pick_folder() {
+                                let p = dir.display().to_string();
+                                if let Err(e) = crate::database::set_db_path(&p) {
+                                    log::error!("set_db_path failed: {e}");
+                                } else {
+                                    // reconnect DB
+                                    let db_ready_tx = self.db_ready_tx.clone();
+                                    tokio::spawn(async move {
+                                        crate::ui::status::DB_STATUS.set_state(crate::ui::status::StatusState::Initializing, format!("Opening DB at {}", p));
+                                        let _ = crate::database::new(db_ready_tx.clone()).await;
+                                        crate::ui::status::DB_STATUS.set_state(crate::ui::status::StatusState::Idle, "Ready");
+                                    });
+                                }
+                            }
+                        }
+                    });
+                    ui.label("Tip: Export/Import .surql from File > Database menu.");
+                });
                 ui.collapsing("AI", |ui| {
                     ui.horizontal(|ui| {
                         ui.label("Auto Indexing");

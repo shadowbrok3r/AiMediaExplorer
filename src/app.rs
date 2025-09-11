@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
 use crate::{ui::file_table::FileExplorer, UiSettings};
+use egui_toast::Toasts;
 
 // Global atomic flag to request opening the settings modal from anywhere (e.g., navbar without direct &mut SmartMediaApp access)
 pub static OPEN_SETTINGS_REQUEST: Lazy<std::sync::atomic::AtomicBool> = Lazy::new(|| std::sync::atomic::AtomicBool::new(false));
@@ -43,6 +44,10 @@ pub struct SmartMediaContext {
     pub open_ui_settings: bool,
     // UI state for adding excluded directories
     pub new_excluded_dir: String,
+    // Toasts manager and channel for async notifications
+    pub toasts: Toasts,
+    pub toast_tx: Sender<(egui_toast::ToastKind, String)>,
+    pub toast_rx: Receiver<(egui_toast::ToastKind, String)>,
 }
 
 #[derive(PartialEq, Debug, Serialize, Deserialize, Default)]
@@ -56,6 +61,7 @@ impl SmartMediaApp {
         setup_custom_fonts(&cc.egui_ctx);
         let (ui_settings_tx, ui_settings_rx) = crossbeam::channel::bounded(1);
         let (db_ready_tx, db_ready_rx) = crossbeam::channel::bounded(1);
+    let (toast_tx, toast_rx) = crossbeam::channel::unbounded();
         
         let mut tree = DockState::new(vec![
             "File Explorer".to_owned(),
@@ -82,7 +88,7 @@ impl SmartMediaApp {
             }
         }
 
-        let context = SmartMediaContext {
+    let context = SmartMediaContext {
             first_run: true,
             page: Default::default(),
             ui_settings: UiSettings::default(),
@@ -98,6 +104,9 @@ impl SmartMediaApp {
             filtered_tabs: std::collections::HashMap::new(),
             open_ui_settings: false,
             new_excluded_dir: String::new(),
+            toasts: Toasts::new().anchor(eframe::egui::Align2::RIGHT_TOP, (-10.0, 10.0)),
+            toast_tx,
+            toast_rx,
         };
 
         Self {

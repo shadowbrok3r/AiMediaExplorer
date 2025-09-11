@@ -13,6 +13,82 @@ impl crate::app::SmartMediaApp {
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.menu_button(" File ", |ui| {
+                    ui.menu_button("Database", |ui| {
+                        // When in Database mode, allow viewing the entire DB at once
+                        if self.context.file_explorer.viewer.mode == crate::ui::file_table::table::ExplorerMode::Database {
+                            if ui.button("View Entire Database").on_hover_text("Show all thumbnails from all directories").clicked() {
+                                self.context.file_explorer.load_all_database_rows();
+                                ui.close();
+                            }
+                            ui.separator();
+                        }
+                        if ui.button("Choose DB Folder…").clicked() {
+                            if let Some(dir) = rfd::FileDialog::new().set_title("Choose database folder").pick_folder() {
+                                let path_str = dir.display().to_string();
+                                // Persist path and reconnect DB
+                                if let Err(e) = crate::database::set_db_path(&path_str) { log::error!("set_db_path failed: {e}"); }
+                                // Reconnect asynchronously and refresh state
+                                let db_ready_tx = self.context.db_ready_tx.clone();
+                                tokio::spawn(async move {
+                                    // Close and re-init is not exposed directly; re-call new() which connects and defines schema
+                                    crate::ui::status::DB_STATUS.set_state(crate::ui::status::StatusState::Initializing, format!("Opening DB at {}", path_str));
+                                    let _ = crate::database::new(db_ready_tx.clone()).await;
+                                    crate::ui::status::DB_STATUS.set_state(crate::ui::status::StatusState::Idle, "Ready");
+                                });
+                                ui.close();
+                            }
+                        }
+                        if ui.button("Export Backup…").clicked() {
+                            if let Some(file) = rfd::FileDialog::new()
+                                .set_title("Export SurrealDB backup to .surql")
+                                .add_filter("SurrealQL", &["surql"])
+                                .set_file_name("backup.surql")
+                                .save_file()
+                            {
+                                // Confirm export
+                                let do_it = rfd::MessageDialog::new()
+                                    .set_title("Export Database")
+                                    .set_description(&format!("Export database to {}?", file.display()))
+                                    .set_level(rfd::MessageLevel::Info)
+                                    .set_buttons(rfd::MessageButtons::YesNo)
+                                    .show();
+                                if do_it == rfd::MessageDialogResult::Yes {
+                                    let tx = self.context.toast_tx.clone();
+                                    tokio::spawn(async move {
+                                        match crate::database::export_to(&file) .await {
+                                            Ok(_) => { let _ = tx.try_send((egui_toast::ToastKind::Success, format!("Exported DB to {}", file.display()))); },
+                                            Err(e) => { let _ = tx.try_send((egui_toast::ToastKind::Error, format!("DB export failed: {e}"))); },
+                                        }
+                                    });
+                                }
+                                ui.close();
+                            }
+                        }
+                        if ui.button("Import…").clicked() {
+                            if let Some(file) = rfd::FileDialog::new()
+                                .set_title("Import SurrealDB .surql file")
+                                .add_filter("SurrealQL", &["surql"]).pick_file()
+                            {
+                                // Confirm import (can overwrite)
+                                let do_it = rfd::MessageDialog::new()
+                                    .set_title("Import Database")
+                                    .set_description(&format!("Import from {}? This may overwrite existing data.", file.display()))
+                                    .set_level(rfd::MessageLevel::Warning)
+                                    .set_buttons(rfd::MessageButtons::YesNo)
+                                    .show();
+                                if do_it == rfd::MessageDialogResult::Yes {
+                                    let tx = self.context.toast_tx.clone();
+                                    tokio::spawn(async move {
+                                        match crate::database::import_from(&file).await {
+                                            Ok(_) => { let _ = tx.try_send((egui_toast::ToastKind::Success, format!("Imported DB from {}", file.display()))); },
+                                            Err(e) => { let _ = tx.try_send((egui_toast::ToastKind::Error, format!("DB import failed: {e}"))); },
+                                        }
+                                    });
+                                }
+                                ui.close();
+                            }
+                        }
+                    });
                     ui.menu_button("AI", |ui| {
                         // Enable AI Search: spawn async global init if not already in progress
                         if ui.button("Enable AI Search").clicked() {

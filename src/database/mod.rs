@@ -3,6 +3,8 @@ use std::sync::LazyLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::ui::status::{GlobalStatusIndicator, StatusState, DB_STATUS};
 use surrealdb::{Surreal, engine::local::Db};
+use std::fs;
+use std::path::{Path, PathBuf};
 pub mod clip_embeddings;
 pub mod files;
 pub mod settings;
@@ -25,6 +27,37 @@ pub const FILTER_GROUPS: &str = "filter_groups";
 pub const LOGICAL_GROUPS: &str = "logical_groups";
 pub const DB_DEFAULT_TABLE: &str = "./db/default.surql";
 pub const DB_BACKUP_PATH: &str = "./db/backup.surql";
+pub const DB_PATH_FILE: &str = "./db/path.txt";
+pub const DB_DEFAULT_PATH: &str = "./db/ai_search";
+
+/// Read the configured SurrealKV database folder path from disk (./db/path.txt)
+/// falling back to ./db/ai_search if not present or invalid.
+pub fn get_db_path() -> String {
+    match fs::read_to_string(DB_PATH_FILE) {
+        Ok(s) => {
+            let p = s.trim();
+            if p.is_empty() { DB_DEFAULT_PATH.to_string() } else { p.to_string() }
+        }
+        Err(_) => DB_DEFAULT_PATH.to_string(),
+    }
+}
+
+/// Persist the SurrealKV database folder path to ./db/path.txt.
+/// Returns Ok(()) if saved. Actual reconnection may require app restart.
+pub fn set_db_path<P: AsRef<Path>>(dir: P) -> anyhow::Result<(), anyhow::Error> {
+    let dir = dir.as_ref();
+    if !dir.exists() {
+        fs::create_dir_all(dir)?;
+    }
+    if !dir.is_dir() {
+        anyhow::bail!("Provided path is not a directory: {}", dir.display());
+    }
+    let mut pb = PathBuf::new();
+    pb.push(DB_PATH_FILE);
+    if let Some(parent) = pb.parent() { fs::create_dir_all(parent)?; }
+    fs::write(&pb, dir.as_os_str().to_string_lossy().as_ref())?;
+    Ok(())
+}
 
 // --- DB activity indicator helpers ---
 static ACTIVE_DB_OPS: LazyLock<AtomicUsize> = LazyLock::new(|| AtomicUsize::new(0));
@@ -85,7 +118,8 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
     DB_STATUS.set_state(StatusState::Initializing, "Connecting DB");
     // let capabilities = surrealdb::capabilities::Capabilities::all().with_all_experimental_features_allowed();
     // let config = surrealdb::opt::Config::new().capabilities(capabilities); // ("./db/ai_search", config)
-    DB.connect::<surrealdb::engine::local::SurrealKv>("./db/ai_search").await?;
+    let db_path = get_db_path();
+    DB.connect::<surrealdb::engine::local::SurrealKv>(&db_path).await?;
     DB.use_ns(NS).use_db(DB_NAME).await?;
 
     // DEFINE BUCKET userfiles BACKEND "memory";
@@ -182,4 +216,19 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
     DB_STATUS.set_detail("");
     DB_STATUS.set_state(StatusState::Idle, "");
     Ok(())
+}
+
+/// Export the current database (namespace+db) to a SurrealQL file.
+pub async fn export_to<P: AsRef<Path>>(path: P) -> anyhow::Result<(), anyhow::Error> {
+    let _ga = db_activity("EXPORT DB");
+    db_set_detail(format!("Exporting to {}", path.as_ref().display()));
+    // SurrealDB v2 exposes DB.export taking a file path or writer; use the path API.
+    super::DB.export(path.as_ref()).await.map_err(|e| { db_set_error(format!("DB export failed: {e}")); e.into() })
+}
+
+/// Import a SurrealQL file into the current database (namespace+db).
+pub async fn import_from<P: AsRef<Path>>(path: P) -> anyhow::Result<(), anyhow::Error> {
+    let _ga = db_activity("IMPORT DB");
+    db_set_detail(format!("Importing from {}", path.as_ref().display()));
+    super::DB.import(path.as_ref()).await.map_err(|e| { db_set_error(format!("DB import failed: {e}")); e.into() })
 }

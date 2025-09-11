@@ -140,6 +140,9 @@ pub struct FileExplorer {
     pub db_last_batch_len: usize,
     #[serde(skip)]
     db_loading: bool,
+    // When true, the Database view shows all thumbnails in the DB (not filtered by current_path)
+    #[serde(skip)]
+    pub db_all_view: bool,
     // Toggle: when true and in Database mode, the path input performs AI semantic search over the whole DB
     #[serde(skip)]
     ai_search_enabled: bool,
@@ -272,6 +275,7 @@ impl FileExplorer {
             db_limit: 500,
             db_last_batch_len: 0,
             db_loading: false,
+            db_all_view: false,
             ai_search_enabled: false,
             current_scan_id: None,
             db_lookup: std::collections::HashMap::new(),
@@ -1585,6 +1589,7 @@ impl FileExplorer {
             if self.viewer.mode == table::ExplorerMode::Database && !self.viewer.showing_similarity {
                 ui.separator();
                 ui.horizontal(|ui| {
+                    if self.db_all_view { ui.colored_label(Color32::LIGHT_BLUE, "All DB"); ui.separator(); }
                     if self.db_loading {
                         ui.label(RichText::new("Loading page ...").italics());
                     } else {
@@ -1690,6 +1695,7 @@ impl FileExplorer {
         if self.db_loading {
             return;
         }
+        self.db_all_view = false;
         // Reset similarity state when (re)loading DB pages
         self.viewer.showing_similarity = false;
         self.viewer.similar_scores.clear();
@@ -1719,6 +1725,37 @@ impl FileExplorer {
                 Err(e) => {
                     log::error!("DB page load failed: {e}");
                 }
+            }
+        });
+    }
+
+    // Load and display all rows from the entire database (no directory filter)
+    pub fn load_all_database_rows(&mut self) {
+        if self.db_loading {
+            return;
+        }
+        // Reset similarity state and table caches
+        self.viewer.showing_similarity = false;
+        self.viewer.similar_scores.clear();
+        self.db_loading = true;
+        self.db_offset = 0;
+        self.db_all_view = true;
+        self.table.clear();
+        self.thumb_scheduled.clear();
+        self.pending_thumb_rows.clear();
+        self.viewer.clip_presence.clear();
+        self.viewer.clip_presence_hashes.clear();
+
+        let tx = self.thumbnail_tx.clone();
+        tokio::spawn(async move {
+            match crate::Thumbnail::get_all_thumbnails().await {
+                Ok(rows) => {
+                    for r in rows.into_iter() {
+                        let _ = tx.try_send(r);
+                    }
+                    log::info!("[DB] Loaded entire database");
+                }
+                Err(e) => log::error!("DB full load failed: {e}"),
             }
         });
     }
