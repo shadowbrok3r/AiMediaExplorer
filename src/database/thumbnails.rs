@@ -262,4 +262,39 @@ pub async fn upsert_rows_and_get_ids(rows: Vec<super::Thumbnail>) -> anyhow::Res
     Ok(ids)
 }
 
+/// Delete thumbnails and their associated CLIP embeddings for a given set of file paths.
+/// This operation only affects the database (does not delete files on disk).
+/// Returns (deleted_embeddings_count, deleted_thumbnails_count).
+pub async fn delete_thumbnails_and_embeddings_by_paths(
+    paths: Vec<String>,
+) -> anyhow::Result<(usize, usize), anyhow::Error> {
+    if paths.is_empty() { return Ok((0, 0)); }
+    let _ga = db_activity(format!("Delete {} rows from DB", paths.len()));
+    db_set_detail("Deleting thumbnails and embeddings".to_string());
+    // Use a single multi-statement query: collect thumbnail ids, delete embeddings by thumb_ref or path, then delete thumbnails by path.
+    let mut resp = DB
+        .query(
+            r#"
+            LET paths = $paths;
+            LET ids = (
+                SELECT VALUE id FROM thumbnails WHERE array::find(paths, path) != NONE
+            );
+            DELETE clip_embeddings WHERE array::find(paths, path) != NONE OR array::find(ids, thumb_ref) != NONE;
+            DELETE thumbnails WHERE array::find(paths, path) != NONE;
+            "#,
+        )
+        .bind(("paths", paths))
+        .await
+        .map_err(|e| { db_set_error(format!("DB delete query failed: {e}")); e })?;
+
+    // Statement order: 0 LET, 1 LET, 2 DELETE embeddings, 3 DELETE thumbnails
+    let deleted_embeddings: Vec<super::ClipEmbeddingRow> = resp
+        .take(2)
+        .map_err(|e| { db_set_error(format!("Read deleted embeddings failed: {e}")); e })?;
+    let deleted_thumbs: Vec<super::Thumbnail> = resp
+        .take(3)
+        .map_err(|e| { db_set_error(format!("Read deleted thumbnails failed: {e}")); e })?;
+    Ok((deleted_embeddings.len(), deleted_thumbs.len()))
+}
+
 

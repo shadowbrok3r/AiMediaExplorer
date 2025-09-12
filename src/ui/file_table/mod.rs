@@ -1069,6 +1069,38 @@ impl FileExplorer {
                             // }
                             if ui.button("Reload Page").clicked() { self.load_database_rows(); }
                             if ui.button("Clear Table").clicked() { self.table.clear(); }
+                            ui.separator();
+                            if ui.button(RichText::new("Delete Visible From DB").color(ui.style().visuals.error_fg_color))
+                                .on_hover_text("Delete all currently visible (filtered) rows from the database, including their CLIP embeddings. Files on disk are NOT affected.")
+                                .clicked()
+                            {
+                                // Confirm destructive action
+                                let count = self.table.iter().filter(|r| r.file_type != "<DIR>").count();
+                                if count > 0 {
+                                    if rfd::MessageDialog::new()
+                                        .set_title("Delete from Database")
+                                        .set_description(&format!("Permanently delete {} records from the database (and their embeddings)? This will not delete files on disk.", count))
+                                        .set_level(rfd::MessageLevel::Warning)
+                                        .set_buttons(rfd::MessageButtons::YesNo)
+                                        .show() == rfd::MessageDialogResult::Yes
+                                    {
+                                        let paths: Vec<String> = self
+                                            .table
+                                            .iter()
+                                            .filter(|r| r.file_type != "<DIR>")
+                                            .map(|r| r.path.clone())
+                                            .collect();
+                                        tokio::spawn(async move {
+                                            match crate::database::delete_thumbnails_and_embeddings_by_paths(paths).await {
+                                                Ok((emb, thumbs)) => log::info!("Deleted {} embeddings and {} thumbnails.", emb, thumbs),
+                                                Err(e) => log::error!("Delete visible failed: {e:?}"),
+                                            }
+                                        });
+                                        // Remove from the current table immediately for UX
+                                        self.table.retain(|r| r.file_type == "<DIR>");
+                                    }
+                                }
+                            }
                         });
 
                         ui.add_space(4.0);
