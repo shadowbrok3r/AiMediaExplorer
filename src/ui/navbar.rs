@@ -251,81 +251,7 @@ impl crate::app::SmartMediaApp {
                     ui.add_space(5.);
                 }
 
-                // AI status & progress
-                // Determine AI readiness via index worker activity (vision model removed)
-                let ai_ready = {
-                    use std::sync::atomic::Ordering;
-                    let queued = crate::ai::GLOBAL_AI_ENGINE
-                        .index_queue_len
-                        .load(Ordering::Relaxed);
-                    let active = crate::ai::GLOBAL_AI_ENGINE
-                        .index_active
-                        .load(Ordering::Relaxed);
-                    let completed = crate::ai::GLOBAL_AI_ENGINE
-                        .index_completed
-                        .load(Ordering::Relaxed);
-                    // If we've performed any indexing or have worker activity, treat as 'ready'
-                    (active + completed) > 0 || queued > 0
-                };
-                use std::sync::atomic::Ordering;
-                let q = crate::ai::GLOBAL_AI_ENGINE
-                    .index_queue_len
-                    .load(Ordering::Relaxed);
-                let active = crate::ai::GLOBAL_AI_ENGINE
-                    .index_active
-                    .load(Ordering::Relaxed);
-                let completed = crate::ai::GLOBAL_AI_ENGINE
-                    .index_completed
-                    .load(Ordering::Relaxed);
-                let total_for_ratio = q + active + completed;
-                // Vision generation state
-                let vision_active = !self.context.file_explorer.streaming_interim.is_empty();
-                let vision_pending = self.context.file_explorer.vision_pending;
-                let vision_started = self.context.file_explorer.vision_started;
-                let vision_completed = self.context.file_explorer.vision_completed;
-                // Build status strings
-                if total_for_ratio > 0 {
-                    let ratio = (completed as f32) / (total_for_ratio as f32);
-                    ProgressBar::new(ratio.clamp(0.0, 1.0))
-                        .desired_width(140.)
-                        .show_percentage()
-                        .text(format!(
-                            "Index {} ({} / {})",
-                            if ai_ready { "ing" } else { "load" },
-                            completed,
-                            total_for_ratio
-                        ))
-                        .ui(ui);
-
-                    ui.add_space(5.);
-                    ui.separator();
-                    ui.add_space(5.);
-                }
-                if vision_started > 0 {
-                    let done_ratio = if vision_started == 0 {
-                        0.0
-                    } else {
-                        (vision_completed as f32) / (vision_started as f32)
-                    };
-                    let bar = ProgressBar::new(done_ratio.clamp(0.0, 1.0))
-                        .desired_width(140.)
-                        .show_percentage()
-                        .text(format!(
-                            "Vision {} act:{} pend:{}",
-                            vision_completed,
-                            self.context.file_explorer.streaming_interim.len(),
-                            vision_pending.saturating_sub(self.context.file_explorer.streaming_interim.len())
-                        ));
-                    bar.ui(ui);
-                } else if vision_active || vision_pending > 0 {
-                    ui.label("Vision: starting...");
-                } else {
-                    ui.label("AI: Idle");
-                }
-
-                ui.add_space(5.);
-                ui.separator();
-                ui.add_space(5.);
+                // AI status/progress moved to global indicators (JOY/CLIP); no local bars here
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(300));
                 let vram01 = smoothed_vram01();
                 let (v_used, v_total) = gpu_mem_mb().unwrap_or_default();
@@ -365,6 +291,8 @@ impl crate::app::SmartMediaApp {
 
                 ui.add_space(10.);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    // Selection count from current table
+                    let selected_cnt = self.context.file_explorer.selection_count();
                     let mut img_cnt = 0usize;
                     let mut vid_cnt = 0usize;
                     let mut dir_cnt = 0usize;
@@ -388,6 +316,8 @@ impl crate::app::SmartMediaApp {
                         }
                         total_size += r.size;
                     }
+                    ui.label(format!("Selected: {}", selected_cnt));
+                    ui.separator();
                     ui.label(format!("Dirs: {dir_cnt}"));
                     ui.separator();
                     ui.label(format!("Images: {img_cnt}"));

@@ -85,35 +85,42 @@ impl crate::ui::file_table::FileExplorer {
                             .map(|s| s.to_ascii_lowercase())
                             .unwrap_or_else(|| String::new());
                         // Build metadata from DB row if present to preserve id and prior fields
-                        let meta = if let Some(db_row) = self.db_lookup.get(&path_clone) {
+                            let meta = if let Some(db_row) = self.db_lookup.get(&path_clone) {
                             let mut m = db_row.clone();
                             // Prefer fresh size/thumbnail if provided by scan
                             if let Some(sz) = item.size { m.size = sz; }
                             if item.thumb_data.is_some() { m.thumbnail_b64 = item.thumb_data.clone(); }
                             m
                         } else {
-                            crate::database::Thumbnail {
-                                id: None,
-                                db_created: None,
-                                path: path_clone.clone(),
-                                filename: item
-                                    .path
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or("")
-                                    .to_string(),
-                                file_type: ftype,
-                                size: item.size.unwrap_or(0),
-                                modified: None,
-                                thumbnail_b64: item.thumb_data.clone(),
-                                hash: None,
-                                description: None,
-                                caption: None,
-                                tags: Vec::new(),
-                                category: None,
-                                parent_dir: parent_dir,
-                                logical_group: None,
-                            }
+                                crate::database::Thumbnail {
+                                    id: crate::Thumbnail::new(
+                                        &item
+                                            .path
+                                            .file_name()
+                                            .and_then(|n| n.to_str())
+                                            .unwrap_or("")
+                                            .to_string(),
+                                    ).id,
+                                    db_created: None,
+                                    path: path_clone.clone(),
+                                    filename: item
+                                        .path
+                                        .file_name()
+                                        .and_then(|n| n.to_str())
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    file_type: ftype,
+                                    size: item.size.unwrap_or(0),
+                                    modified: None,
+                                    thumbnail_b64: item.thumb_data.clone(),
+                                    hash: None,
+                                    description: None,
+                                    caption: None,
+                                    tags: Vec::new(),
+                                    category: None,
+                                    parent_dir: parent_dir,
+                                    logical_group: crate::LogicalGroup::default().id,
+                                }
                         };
 
                         let auto_save = self.viewer.ui_settings.auto_save_to_database;
@@ -127,9 +134,7 @@ impl crate::ui::file_table::FileExplorer {
                                     // Optionally add to group if one is active
                                     if let Some(group_name) = group_name {
                                         if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&group_name).await {
-                                            if let Some(gid) = g.id.as_ref() {
-                                                let _ = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await;
-                                            }
+                                            let _ = crate::database::LogicalGroup::add_thumbnails(&g.id, &ids).await;
                                         }
                                     }
                                 }
@@ -236,7 +241,14 @@ impl crate::ui::file_table::FileExplorer {
                                 to_index.push(m);
                             } else {
                                 to_index.push(crate::database::Thumbnail {
-                                    id: None,
+                                    id: crate::Thumbnail::new(
+                                        &item
+                                            .path
+                                            .file_name()
+                                            .and_then(|n| n.to_str())
+                                            .unwrap_or("")
+                                            .to_string(),
+                                    ).id,
                                     db_created: None,
                                     path: p_str,
                                     filename: item
@@ -255,7 +267,7 @@ impl crate::ui::file_table::FileExplorer {
                                     tags: Vec::new(),
                                     category: None,
                                     parent_dir,
-                                    logical_group: None,
+                                    logical_group: crate::LogicalGroup::default().id,
                                 });
                             }
                             // If auto CLIP is enabled but auto indexing is off, schedule CLIP embedding for images here
@@ -287,9 +299,7 @@ impl crate::ui::file_table::FileExplorer {
                                         Ok(ids) => {
                                             if let Some(gname) = group_name {
                                                 if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&gname).await {
-                                                    if let Some(gid) = g.id.as_ref() {
-                                                        let _ = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await;
-                                                    }
+                                                    let _ = crate::database::LogicalGroup::add_thumbnails(&g.id, &ids).await;
                                                 }
                                             }
                                         }
@@ -313,9 +323,7 @@ impl crate::ui::file_table::FileExplorer {
                                 if let Ok(ids) = crate::database::upsert_rows_and_get_ids(to_index.clone()).await {
                                     if let Some(group_name) = group_name {
                                         if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&group_name).await {
-                                            if let Some(gid) = g.id.as_ref() {
-                                                let _ = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await;
-                                            }
+                                            let _ = crate::database::LogicalGroup::add_thumbnails(&g.id, &ids).await;
                                         }
                                     }
                                 }
@@ -394,9 +402,7 @@ impl crate::ui::file_table::FileExplorer {
                                     Ok(ids) => {
                                         if let Some(gname) = group_name {
                                             if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&gname).await {
-                                                if let Some(gid) = g.id.as_ref() {
-                                                    let _ = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await;
-                                                }
+                                                let _ = crate::database::LogicalGroup::add_thumbnails(&g.id, &ids).await;
                                             }
                                         }
                                     }
@@ -448,9 +454,7 @@ impl crate::ui::file_table::FileExplorer {
                                     Ok(ids) => {
                                         if let Some(gname) = group_name {
                                             if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&gname).await {
-                                                if let Some(gid) = g.id.as_ref() {
-                                                    let _ = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await;
-                                                }
+                                                let _ = crate::database::LogicalGroup::add_thumbnails(&g.id, &ids).await;
                                             }
                                         }
                                     }

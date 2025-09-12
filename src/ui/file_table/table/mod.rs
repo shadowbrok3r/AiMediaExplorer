@@ -918,9 +918,7 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                     tokio::spawn(async move {
                         if let Ok(ids) = crate::database::upsert_rows_and_get_ids(rows).await {
                             if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&group_name).await {
-                                if let Some(gid) = g.id.as_ref() {
-                                    let _ = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await;
-                                }
+                                let _ = crate::database::LogicalGroup::add_thumbnails(&g.id, &ids).await;
                             }
                         }
                     });
@@ -939,18 +937,16 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                         .collect();
                     tokio::spawn(async move {
                         if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&group_name).await {
-                            if let Some(gid) = g.id.as_ref() {
-                                // Load ids for given paths
-                                let mut ids: Vec<surrealdb::RecordId> = Vec::new();
-                                for p in paths.into_iter() {
-                                    if let Ok(Some(id)) = crate::Thumbnail::get_thumbnail_id_by_path(&p).await {
-                                        ids.push(id);
-                                    }
+                            // Load ids for given paths
+                            let mut ids: Vec<surrealdb::RecordId> = Vec::new();
+                            for p in paths.into_iter() {
+                                if let Ok(Some(id)) = crate::Thumbnail::get_thumbnail_id_by_path(&p).await {
+                                    ids.push(id);
                                 }
-                                // Remove each id
-                                for id in ids.iter() {
-                                    let _ = crate::database::LogicalGroup::remove_thumbnail(gid, id).await;
-                                }
+                            }
+                            // Remove each id
+                            for id in ids.iter() {
+                                let _ = crate::database::LogicalGroup::remove_thumbnail(&g.id, id).await;
                             }
                         }
                     });

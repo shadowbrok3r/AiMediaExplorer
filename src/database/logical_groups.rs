@@ -4,10 +4,19 @@ use surrealdb::RecordId;
 use crate::DB;
 use crate::database::{db_activity, db_set_detail, db_set_error};
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogicalGroup {
-    pub id: Option<RecordId>,
+    pub id: RecordId,
     pub name: String,
+}
+
+impl Default for LogicalGroup {
+    fn default() -> Self {
+        Self { 
+            id: RecordId::from_table_key("logical_groups", "Default"), 
+            name: "Default".to_string()
+        }
+    }
 }
 
 impl LogicalGroup {

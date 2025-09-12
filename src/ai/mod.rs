@@ -25,6 +25,7 @@ pub async fn init_global_ai_engine_async() {
     CLIP_STATUS.set_state(StatusState::Initializing, "CLIP engine pending");
     let loaded = GLOBAL_AI_ENGINE.load_cached().await;
     log::info!("[AI] global engine initialized (cached {loaded} rows)");
-    JOY_STATUS.set_state(StatusState::Running, format!("Cached {loaded}"));
+    JOY_STATUS.set_state(StatusState::Running, format!("Loading Cache"));
     CLIP_STATUS.set_state(StatusState::Idle, "Idle");
+    JOY_STATUS.set_state(StatusState::Idle, format!("Cached {loaded}"));
 }

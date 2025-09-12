@@ -1,3 +1,5 @@
+use crate::LogicalGroup;
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, Default)]
 pub struct VisionDescription {
     pub description: String,
@@ -151,7 +153,12 @@ impl crate::ai::AISearchEngine {
         let parent_dir = out_path.parent().map(|p| p.to_string_lossy().to_string().clone()).unwrap_or_default();
         // Index generated image metadata
         let meta = crate::Thumbnail {
-            id: None,
+            id: crate::Thumbnail::new(&out_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string()
+            ).id,
             db_created: None,
             path: out_path.to_string_lossy().to_string(),
             filename: out_path
@@ -174,7 +181,7 @@ impl crate::ai::AISearchEngine {
             tags: vec!["generated".into()],
             category: Some("generated".into()),
             parent_dir,
-            logical_group: None,
+            logical_group: LogicalGroup::default().id,
         };
         // Ignore errors silently for now
         let _ = self.index_file(meta).await;

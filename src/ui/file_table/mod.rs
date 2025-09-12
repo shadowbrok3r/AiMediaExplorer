@@ -252,7 +252,7 @@ impl FileExplorer {
             scan_done: false,
             excluded_term_input: String::new(),
             excluded_terms: Vec::new(),
-            current_thumb: Thumbnail::default(),
+            current_thumb: Thumbnail::new("") ,
             thumbnail_tx,
             thumbnail_rx,
             scan_tx,
@@ -472,10 +472,13 @@ impl FileExplorer {
                 }
                 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let style = StyleModifier::default();
+                    style.apply(ui.style_mut());
                     MenuButton::new("🔻")
-                    .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside))
+                    .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside).style(style))
                     .ui(ui, |ui| {
-                        ui.heading("Excluded Terms (substring, case-insensitive)");
+                        ui.set_width(250.);
+                        ui.heading("Excluded Terms");
                         ui.horizontal(|ui| {
                             let resp = TextEdit::singleline(&mut self.excluded_term_input)
                                 .hint_text("term")
@@ -521,61 +524,6 @@ impl FileExplorer {
                                         !terms.iter().any(|t| lp.contains(t))
                                     });
                                 }
-                            }
-                        });
-                        ui.horizontal(|ui| {
-                            // Parse current settings or default to today (without forcing persistence until user changes)
-                            let today: NaiveDate = Local::now().date_naive();
-                            let mut after_date: NaiveDate = self.viewer.ui_settings
-                                .filter_modified_after
-                                .as_deref()
-                                .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
-                                .unwrap_or(today);
-    
-                            let mut before_date: NaiveDate = self.viewer.ui_settings
-                                .filter_modified_before
-                                .as_deref()
-                                .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
-                                .unwrap_or(today);
-    
-                            ui.label("From:");
-    
-                            let id_start_salt = format!("{after_date} Start date");
-                            let resp_after = egui_extras::DatePickerButton::new(&mut after_date)
-                            .id_salt(&id_start_salt)
-                            .ui(ui);
-    
-                            if resp_after.changed() {
-                                self.viewer.ui_settings.filter_modified_after = Some(after_date.format("%Y-%m-%d").to_string());
-                                crate::database::settings::save_settings(&self.viewer.ui_settings);
-                                self.active_filter_group = None;
-                                self.apply_filters_to_current_table();
-                            }
-                            if ui.button("✖").on_hover_text("Clear start date").clicked() {
-                                self.viewer.ui_settings.filter_modified_after = None;
-                                crate::database::settings::save_settings(&self.viewer.ui_settings);
-                                self.active_filter_group = None;
-                                self.apply_filters_to_current_table();
-                            }
-    
-                            ui.label("  to  ");
-    
-                            let id_end_salt = format!("{before_date} End date");
-                            let resp_before = egui_extras::DatePickerButton::new(&mut before_date)
-                            .id_salt(&id_end_salt)
-                            .ui(ui);
-    
-                            if resp_before.changed() {
-                                self.viewer.ui_settings.filter_modified_before = Some(before_date.format("%Y-%m-%d").to_string());
-                                crate::database::settings::save_settings(&self.viewer.ui_settings);
-                                self.active_filter_group = None;
-                                self.apply_filters_to_current_table();
-                            }
-                            if ui.button("✖").on_hover_text("Clear end date").clicked() {
-                                self.viewer.ui_settings.filter_modified_before = None;
-                                crate::database::settings::save_settings(&self.viewer.ui_settings);
-                                self.active_filter_group = None;
-                                self.apply_filters_to_current_table();
                             }
                         });
 
@@ -806,7 +754,9 @@ impl FileExplorer {
                             }
                         });
                     });
+
                     ui.menu_button("👁", |ui| {
+                        ui.set_width(250.);
                         ui.checkbox(&mut self.open_preview_pane, "Show Preview Pane");
                         ui.checkbox(&mut self.open_quick_access, "Show Quick Access");
                         ui.separator();
@@ -826,18 +776,6 @@ impl FileExplorer {
                         }
 
                     });
-                    // Always-visible date range summary next to the menu & search
-                    {
-                        let after = self.viewer.ui_settings.filter_modified_after.as_deref();
-                        let before = self.viewer.ui_settings.filter_modified_before.as_deref();
-                        let date_str = match (after, before) {
-                            (None, None) => "Date: any".to_string(),
-                            (Some(a), None) => format!("Date: ≥{}", a),
-                            (None, Some(b)) => format!("Date: ≤{}", b),
-                            (Some(a), Some(b)) => format!("Date: {}..{}", a, b),
-                        };
-                        ui.label(RichText::new(date_str).monospace());
-                    }
 
                     ui.separator();
 
@@ -855,7 +793,7 @@ impl FileExplorer {
                     .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside).style(style.clone()))
                     .ui(ui, |ui| {
                         ui.vertical_centered_justified(|ui| { 
-                            ui.set_width(400.);
+                            ui.set_width(250.);
                             ui.heading("Recursive Scanning");
                             if Button::new("Recursive Scan").right_text("💡").ui(ui).clicked() {
                                 let title = format!("Scan: {}", self.current_path);
@@ -897,7 +835,7 @@ impl FileExplorer {
                             ui.separator();
                             ui.heading("Database Save");
                             
-                            if ui.button("Save Current View to DB").on_hover_text("Upsert all currently visible rows into the database and add them to the active logical group").clicked() {
+                            if Button::new("Save Current View to DB").right_text(RichText::new("💾")).ui(ui).on_hover_text("Upsert all currently visible rows into the database and add them to the active logical group").clicked() {
                                 if let Some(group_name) = self.active_logical_group_name.clone() {
                                     let rows: Vec<crate::database::Thumbnail> = self
                                         .table
@@ -913,12 +851,10 @@ impl FileExplorer {
                                                     // Find the group and add ids
                                                     match crate::database::LogicalGroup::get_by_name(&group_name).await {
                                                         Ok(Some(g)) => {
-                                                            if let Some(gid) = g.id.as_ref() {
-                                                                if let Err(e) = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await {
-                                                                    log::error!("Add thumbs to group failed: {e:?}");
-                                                                } else {
-                                                                    log::info!("Saved {} rows to DB and associated with group '{}'", ids.len(), group_name);
-                                                                }
+                                                            if let Err(e) = crate::database::LogicalGroup::add_thumbnails(&g.id, &ids).await {
+                                                                log::error!("Add thumbs to group failed: {e:?}");
+                                                            } else {
+                                                                log::info!("Saved {} rows to DB and associated with group '{}'", ids.len(), group_name);
                                                             }
                                                         }
                                                         Ok(None) => log::warn!("Active group '{}' not found during save", group_name),
@@ -1034,11 +970,11 @@ impl FileExplorer {
                     });
 
                     // Basic backup actions: copy/move all visible files to a selected directory
-                    MenuButton::new("Backup")
+                    MenuButton::new("Files")
                     .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside).style(style.clone()))
                     .ui(ui, |ui| {
+                        ui.set_width(250.);
                         ui.vertical_centered_justified(|ui| {
-                            ui.set_width(400.);
                             ui.heading("Backup Files");
                             if ui.button("Copy Visible Files to Folder…").clicked() {
                                 if let Some(dir) = rfd::FileDialog::new().set_title("Choose backup destination").pick_folder() {
@@ -1158,13 +1094,11 @@ impl FileExplorer {
                                                     match crate::database::upsert_rows_and_get_ids(rows).await {
                                                         Ok(ids) => {
                                                             if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&target).await {
-                                                                if let Some(gid) = g.id.as_ref() {
-                                                                    let _ = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await;
-                                                                }
+                                                                let _ = crate::database::LogicalGroup::add_thumbnails(&g.id, &ids).await;
                                                             } else {
                                                                 if let Ok(_) = crate::database::LogicalGroup::create(&target).await {
                                                                     if let Ok(Some(g2)) = crate::database::LogicalGroup::get_by_name(&target).await {
-                                                                        if let Some(gid) = g2.id.as_ref() { let _ = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await; }
+                                                                        let _ = crate::database::LogicalGroup::add_thumbnails(&g2.id, &ids).await;
                                                                     }
                                                                 }
                                                             }
@@ -1199,13 +1133,11 @@ impl FileExplorer {
                                                     match crate::database::upsert_rows_and_get_ids(rows).await {
                                                         Ok(ids) => {
                                                             if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&target).await {
-                                                                if let Some(gid) = g.id.as_ref() {
-                                                                    let _ = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await;
-                                                                }
+                                                                let _ = crate::database::LogicalGroup::add_thumbnails(&g.id, &ids).await;
                                                             } else {
                                                                 if let Ok(_) = crate::database::LogicalGroup::create(&target).await {
                                                                     if let Ok(Some(g2)) = crate::database::LogicalGroup::get_by_name(&target).await {
-                                                                        if let Some(gid) = g2.id.as_ref() { let _ = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await; }
+                                                                        let _ = crate::database::LogicalGroup::add_thumbnails(&g2.id, &ids).await;
                                                                     }
                                                                 }
                                                             }
@@ -1234,18 +1166,18 @@ impl FileExplorer {
                                         if !src.is_empty() && !dst.is_empty() && src != dst {
                                             tokio::spawn(async move {
                                                 if let Ok(Some(src_g)) = crate::database::LogicalGroup::get_by_name(&src).await {
-                                                    let ids = crate::Thumbnail::fetch_ids_by_logical_group_id(src_g.id.as_ref().unwrap()).await.unwrap_or_default();
+                                                    let ids = crate::Thumbnail::fetch_ids_by_logical_group_id(&src_g.id).await.unwrap_or_default();
                                                     if !ids.is_empty() {
-                                                        // Ensure destination exists
-                                                        let dst_gid = match crate::database::LogicalGroup::get_by_name(&dst).await {
-                                                            Ok(Some(g)) => g.id,
+                                                        // Ensure destination exists and get its id
+                                                        let dst_gid: Option<surrealdb::RecordId> = match crate::database::LogicalGroup::get_by_name(&dst).await {
+                                                            Ok(Some(g)) => Some(g.id),
                                                             _ => {
                                                                 let _ = crate::database::LogicalGroup::create(&dst).await;
-                                                                crate::database::LogicalGroup::get_by_name(&dst).await.ok().flatten().and_then(|g| g.id)
+                                                                match crate::database::LogicalGroup::get_by_name(&dst).await { Ok(Some(g)) => Some(g.id), _ => None }
                                                             }
                                                         };
-                                                        if let Some(gid) = dst_gid.as_ref() {
-                                                            let _ = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await;
+                                                        if let Some(gid) = dst_gid {
+                                                            let _ = crate::database::LogicalGroup::add_thumbnails(&gid, &ids).await;
                                                         }
                                                     }
                                                 }
@@ -1270,15 +1202,15 @@ impl FileExplorer {
                                                         log::info!("Thumbnails without a group: {}", ids.len());
                                                         if !ids.is_empty() {
                                                             // ensure destination group exists
-                                                            let gid_opt = match crate::database::LogicalGroup::get_by_name(&target).await {
-                                                                Ok(Some(g)) => g.id,
+                                                            let gid_opt: Option<surrealdb::RecordId> = match crate::database::LogicalGroup::get_by_name(&target).await {
+                                                                Ok(Some(g)) => Some(g.id),
                                                                 _ => {
                                                                     let _ = crate::database::LogicalGroup::create(&target).await;
-                                                                    crate::database::LogicalGroup::get_by_name(&target).await.ok().flatten().and_then(|g| g.id)
+                                                                    match crate::database::LogicalGroup::get_by_name(&target).await { Ok(Some(g)) => Some(g.id), _ => None }
                                                                 }
                                                             };
-                                                            if let Some(gid) = gid_opt.as_ref() {
-                                                                let _ = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await;
+                                                            if let Some(gid) = gid_opt {
+                                                                let _ = crate::database::LogicalGroup::add_thumbnails(&gid, &ids).await;
                                                             }
                                                         }
                                                     }
@@ -1295,15 +1227,15 @@ impl FileExplorer {
                                                     Ok(ids) => {
                                                         if ids.is_empty() { return; }
                                                         // Ensure group exists then add
-                                                        let gid_opt = match crate::database::LogicalGroup::get_by_name(&target).await {
-                                                            Ok(Some(g)) => g.id,
+                                                        let gid_opt: Option<surrealdb::RecordId> = match crate::database::LogicalGroup::get_by_name(&target).await {
+                                                            Ok(Some(g)) => Some(g.id),
                                                             _ => {
                                                                 let _ = crate::database::LogicalGroup::create(&target).await;
-                                                                crate::database::LogicalGroup::get_by_name(&target).await.ok().flatten().and_then(|g| g.id)
+                                                                match crate::database::LogicalGroup::get_by_name(&target).await { Ok(Some(g)) => Some(g.id), _ => None }
                                                             }
                                                         };
-                                                        if let Some(gid) = gid_opt.as_ref() {
-                                                            if let Err(e) = crate::database::LogicalGroup::add_thumbnails(gid, &ids).await {
+                                                        if let Some(gid) = gid_opt {
+                                                            if let Err(e) = crate::database::LogicalGroup::add_thumbnails(&gid, &ids).await {
                                                                 log::error!("Add unassigned to current group failed: {e:?}");
                                                             }
                                                         }
@@ -1355,22 +1287,19 @@ impl FileExplorer {
                                                 if ui.button("Save").on_hover_text("Rename group").clicked() {
                                                     let new_name = self.group_rename_input.trim().to_string();
                                                     if !new_name.is_empty() {
-                                                        if let Some(gid) = g.id.clone() {
-                                                            let tx = self.logical_groups_tx.clone();
-                                                            tokio::spawn(async move {
-                                                                match crate::database::LogicalGroup::rename(&gid, &new_name).await {
-                                                                    Ok(_) => {
-                                                                        match crate::database::LogicalGroup::list_all().await {
-                                                                            Ok(groups) => { let _ = tx.try_send(groups); },
-                                                                            Err(e) => log::error!("list groups after rename failed: {e:?}"),
-                                                                        }
+                                                        let gid = g.id.clone();
+                                                        let tx = self.logical_groups_tx.clone();
+                                                        tokio::spawn(async move {
+                                                            match crate::database::LogicalGroup::rename(&gid, &new_name).await {
+                                                                Ok(_) => {
+                                                                    match crate::database::LogicalGroup::list_all().await {
+                                                                        Ok(groups) => { let _ = tx.try_send(groups); },
+                                                                        Err(e) => log::error!("list groups after rename failed: {e:?}"),
                                                                     }
-                                                                    Err(e) => log::error!("rename group failed: {e:?}"),
                                                                 }
-                                                            });
-                                                        } else {
-                                                            log::warn!("rename requested for group without id: {}", g.name);
-                                                        }
+                                                                Err(e) => log::error!("rename group failed: {e:?}"),
+                                                            }
+                                                        });
                                                     }
                                                     self.group_rename_target = None;
                                                     self.group_rename_input.clear();
@@ -1402,24 +1331,23 @@ impl FileExplorer {
                                                 }
                                             }
                                             if ui.button("Delete").on_hover_text("Delete this group").clicked() {
-                                                if let Some(gid) = g.id.clone() {
-                                                    let tx = self.logical_groups_tx.clone();
-                                                    let active = self.active_logical_group_name.clone();
-                                                    let name = g.name.clone();
-                                                    tokio::spawn(async move {
-                                                        match crate::database::LogicalGroup::delete(&gid).await {
-                                                            Ok(_) => {
-                                                                match crate::database::LogicalGroup::list_all().await {
-                                                                    Ok(groups) => { let _ = tx.try_send(groups); },
-                                                                    Err(e) => log::error!("list groups after delete failed: {e:?}"),
-                                                                }
+                                                let gid = g.id.clone();
+                                                let tx = self.logical_groups_tx.clone();
+                                                let active = self.active_logical_group_name.clone();
+                                                let name = g.name.clone();
+                                                tokio::spawn(async move {
+                                                    match crate::database::LogicalGroup::delete(&gid).await {
+                                                        Ok(_) => {
+                                                            match crate::database::LogicalGroup::list_all().await {
+                                                                Ok(groups) => { let _ = tx.try_send(groups); },
+                                                                Err(e) => log::error!("list groups after delete failed: {e:?}"),
                                                             }
-                                                            Err(e) => log::error!("delete group failed: {e:?}"),
                                                         }
-                                                    });
-                                                    if active.as_deref() == Some(name.as_str()) {
-                                                        self.active_logical_group_name = None;
+                                                        Err(e) => log::error!("delete group failed: {e:?}"),
                                                     }
+                                                });
+                                                if active.as_deref() == Some(name.as_str()) {
+                                                    self.active_logical_group_name = None;
                                                 }
                                             }
                                         });
@@ -1428,6 +1356,62 @@ impl FileExplorer {
                             }
                         });
                     });
+
+                    ui.separator();
+
+                    if ui.button("✖").on_hover_text("Clear end date").clicked() {
+                        self.viewer.ui_settings.filter_modified_before = None;
+                        crate::database::settings::save_settings(&self.viewer.ui_settings);
+                        self.active_filter_group = None;
+                        self.apply_filters_to_current_table();
+                    }
+
+                    // Parse current settings or default to today (without forcing persistence until user changes)
+                    let today: NaiveDate = Local::now().date_naive();
+                    let mut after_date: NaiveDate = self.viewer.ui_settings
+                        .filter_modified_after
+                        .as_deref()
+                        .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+                        .unwrap_or(today);
+
+                    let mut before_date: NaiveDate = self.viewer.ui_settings
+                        .filter_modified_before
+                        .as_deref()
+                        .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+                        .unwrap_or(today);
+
+                    let before_id = format!("{before_date} End date");
+                    let resp_before = egui_extras::DatePickerButton::new(&mut before_date)
+                    .id_salt(&before_id)
+                    .ui(ui);
+
+                    ui.label("  ->  ");
+
+                    if ui.button("✖").on_hover_text("Clear start date").clicked() {
+                        self.viewer.ui_settings.filter_modified_after = None;
+                        crate::database::settings::save_settings(&self.viewer.ui_settings);
+                        self.active_filter_group = None;
+                        self.apply_filters_to_current_table();
+                    }
+
+                    let after_id =  format!("{after_date} Start date");
+                    let resp_after = egui_extras::DatePickerButton::new(&mut after_date)
+                    .id_salt(&after_id)
+                    .ui(ui);
+
+                    if resp_after.changed() {
+                        self.viewer.ui_settings.filter_modified_after = Some(after_date.format("%Y-%m-%d").to_string());
+                        crate::database::settings::save_settings(&self.viewer.ui_settings);
+                        self.active_filter_group = None;
+                        self.apply_filters_to_current_table();
+                    }
+                    if resp_before.changed() {
+                        self.viewer.ui_settings.filter_modified_before = Some(before_date.format("%Y-%m-%d").to_string());
+                        crate::database::settings::save_settings(&self.viewer.ui_settings);
+                        self.active_filter_group = None;
+                        self.apply_filters_to_current_table();
+                    }
+
                 });
             });
         });
@@ -1455,16 +1439,6 @@ impl FileExplorer {
                         (Some(mn), Some(mx)) => format!("Size: {}..{}", humansize::format_size(mn, DECIMAL), humansize::format_size(mx, DECIMAL)),
                     };
                     ui.label(size_str);
-                    ui.separator();
-                    let after = self.viewer.ui_settings.filter_modified_after.as_deref();
-                    let before = self.viewer.ui_settings.filter_modified_before.as_deref();
-                    let date_str = match (after, before) {
-                        (None, None) => "Date: any".to_string(),
-                        (Some(a), None) => format!("Date: ≥{}", a),
-                        (None, Some(b)) => format!("Date: ≤{}", b),
-                        (Some(a), Some(b)) => format!("Date: {}..{}", a, b),
-                    };
-                    ui.label(date_str);
                     ui.separator();
                     ui.label(format!("Skip icons: {}", if self.viewer.ui_settings.filter_skip_icons { "on" } else { "off" }));
                     if !self.excluded_terms.is_empty() {
@@ -1646,7 +1620,7 @@ impl FileExplorer {
         tokio::spawn(async move {
             match crate::database::LogicalGroup::get_by_name(&name).await {
                 Ok(Some(group)) => {
-                    match crate::Thumbnail::fetch_by_logical_group_id(group.id.as_ref().unwrap()).await {
+                    match crate::Thumbnail::fetch_by_logical_group_id(&group.id).await {
                         Ok(rows) => {
                             let count = rows.len();
                             for r in rows.into_iter() { let _ = tx.try_send(r); }
@@ -1793,6 +1767,13 @@ impl FileExplorer {
     }
 
 
+}
+
+impl FileExplorer {
+    /// Number of selected file rows in the current table.
+    pub fn selection_count(&self) -> usize {
+        self.selected.len()
+    }
 }
 
 pub fn get_img_ui(

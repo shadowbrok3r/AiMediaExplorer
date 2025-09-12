@@ -1,4 +1,4 @@
-use crate::database::Thumbnail;
+use crate::{database::Thumbnail, LogicalGroup};
 use std::path::Path;
 
 // Unified representation of an item inside an archive listing
@@ -202,7 +202,7 @@ pub fn entry_to_thumbnail(scheme: &str, archive_fs_path: &str, internal_path: &s
         } else {
             format!("{}://{}!/{}/{}", scheme, archive_fs_path, internal_path.trim_matches('/'), e.name)
         };
-        let mut t = Thumbnail::default();
+        let mut t = Thumbnail::new(&e.name);
         t.path = child_vpath.clone();
         t.filename = e.name;
         t.file_type = "<DIR>".into();
@@ -218,7 +218,7 @@ pub fn entry_to_thumbnail(scheme: &str, archive_fs_path: &str, internal_path: &s
         // Thumbnails for media files will be generated asynchronously in the explorer
         
         Thumbnail {
-            id: None,
+            id: crate::Thumbnail::new(&e.name).id,
             db_created: None,
             path: vpath,
             filename: e.name.clone(),
@@ -232,7 +232,7 @@ pub fn entry_to_thumbnail(scheme: &str, archive_fs_path: &str, internal_path: &s
             modified: None,
             hash: None,
             parent_dir: format!("{}://{}!/{}", scheme, archive_fs_path, normalize_prefix(internal_path).trim_end_matches('/')),
-            logical_group: None,
+            logical_group: LogicalGroup::default().id,
         }
     }
 }

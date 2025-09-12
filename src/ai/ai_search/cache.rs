@@ -1,4 +1,4 @@
-use crate::get_thumbnail_paths;
+use crate::{get_thumbnail_paths, LogicalGroup, Thumbnail};
 use chrono::Utc;
 
 impl crate::ai::AISearchEngine {
@@ -17,7 +17,7 @@ impl crate::ai::AISearchEngine {
         crate::Thumbnail::get_thumbnail_by_path(&metadata.path)
             .await?
             .unwrap_or_else(|| crate::Thumbnail {
-                id: None, // FIX THIS. // !TODO!!
+                id: Thumbnail::new(&metadata.filename).id,
                 db_created: Some(Utc::now().into()),
                 path: metadata.path.clone(),
                 filename: metadata.filename.clone(),
@@ -31,7 +31,7 @@ impl crate::ai::AISearchEngine {
                 modified: metadata.modified.clone(),
                 hash: metadata.hash.clone(),
                 parent_dir: metadata.parent_dir.clone(),
-                logical_group: None,
+                logical_group: LogicalGroup::default().id,
             })
             .update_or_create_thumbnail(metadata, thumb_b64)
             .await?;

@@ -3,6 +3,8 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use image::DynamicImage;
 use std::path::Path;
 
+use crate::LogicalGroup;
+
 pub fn generate_image_thumb_data(path: &Path) -> Result<String, String> {
     log::debug!("[thumb] generating image thumb: {}", path.display());
     let img = match image::open(path) {
@@ -180,7 +182,7 @@ pub fn file_to_thumbnail(f: &crate::utilities::types::FoundFile) -> Option<crate
     let modified = md.as_ref().and_then(|m| m.modified().ok()).map(|st| chrono::DateTime::<chrono::Utc>::from(st));
     let parent_dir = f.path.parent().map(|p| p.to_string_lossy().to_string().clone()).unwrap_or_default();
     Some(crate::Thumbnail {
-        id: None,
+        id: crate::Thumbnail::new(&f.path.file_name().unwrap_or_default().display().to_string()).id,
         db_created: Some(Utc::now().into()),
         path: f.path.display().to_string(),
         filename: f.path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string(),
@@ -194,7 +196,7 @@ pub fn file_to_thumbnail(f: &crate::utilities::types::FoundFile) -> Option<crate
         modified: if let Some(date) = modified { Some(date.into()) } else { Some(Utc::now().into()) },
         hash: None,
         parent_dir,
-        logical_group: None,
+        logical_group: LogicalGroup::default().id,
     })
 }
 

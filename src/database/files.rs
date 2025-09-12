@@ -1,8 +1,8 @@
 use surrealdb::RecordId;
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 pub struct Thumbnail {
-    pub id: Option<RecordId>,
+    pub id: RecordId,
     pub db_created: Option<surrealdb::sql::Datetime>,
     pub path: String,
     pub filename: String,
@@ -16,7 +16,7 @@ pub struct Thumbnail {
     pub modified: Option<surrealdb::sql::Datetime>,
     pub hash: Option<String>,
     pub parent_dir: String,
-    pub logical_group: Option<RecordId>
+    pub logical_group: RecordId
 }
 
 // This avoids bloating the core thumbnails row and lets us regenerate embeddings independently.

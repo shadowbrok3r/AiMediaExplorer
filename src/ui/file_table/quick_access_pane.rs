@@ -77,14 +77,13 @@ impl super::FileExplorer {
                                     let resp = Button::new(&access.label)
                                         .right_text(RichText::new(&access.icon).color(ui.style().visuals.error_fg_color))
                                         .ui(ui)
-                                        .on_hover_text("Click: open recursive in new tab (hold Shift for shallow)");
+                                        .on_hover_text("Click: open recursive in new tab (hold Shift for recursive)");
                                     let ctrl = ui.input(|i| i.modifiers.command || i.modifiers.ctrl);
                                     let middle = resp.middle_clicked();
                                     if resp.clicked() || middle {
                                         let title = format!("{}", access.label);
                                         let path = access.path.to_string_lossy().to_string();
-                                        let shift = ui.input(|i| i.modifiers.shift);
-                                        let recursive = !shift; // default recursive, Shift = shallow
+                                        let recursive = ui.input(|i| i.modifiers.shift);
                                         let background = ctrl || middle; // ctrl/middle -> background
                                         crate::app::OPEN_TAB_REQUESTS
                                             .lock()
@@ -248,14 +247,13 @@ impl super::FileExplorer {
                                         let resp = Button::new(p)
                                             .right_text(RichText::new("🗀").color(ui.style().visuals.error_fg_color))
                                             .ui(ui)
-                                            .on_hover_text("Click: open recursive in new tab (Shift: shallow)");
+                                            .on_hover_text("Click: open recursive in new tab (Shift: recursive)");
                                         let ctrl = ui.input(|i| i.modifiers.command || i.modifiers.ctrl);
                                         let middle = resp.middle_clicked();
                                         if resp.clicked() || middle {
                                             let title = format!("Recent: {}", p);
                                             let path = p.clone();
-                                            let shift = ui.input(|i| i.modifiers.shift);
-                                            let recursive = !shift; // default recursive
+                                            let recursive = ui.input(|i| i.modifiers.shift);
                                             let background = ctrl || middle;
                                             crate::app::OPEN_TAB_REQUESTS
                                                 .lock()

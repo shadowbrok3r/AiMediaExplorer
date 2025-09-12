@@ -1,12 +1,53 @@
 use std::time::Instant;
 
-use crate::DB;
+use crate::{LogicalGroup, DB};
 use crate::database::{db_activity, db_set_progress, db_set_detail, db_set_error};
 use surrealdb::RecordId;
 use chrono::Utc;
 
+impl Default for crate::Thumbnail {
+    fn default() -> Self {
+        Self { 
+            id: RecordId::from_table_key("thumbnails", surrealdb::sql::Uuid::new_v4().0.to_string()), 
+            db_created: Default::default(), 
+            path: Default::default(), 
+            filename: Default::default(), 
+            file_type: Default::default(), 
+            size: Default::default(), 
+            description: Default::default(), 
+            caption: Default::default(), 
+            tags: Default::default(), 
+            category: Default::default(), 
+            thumbnail_b64: Default::default(), 
+            modified: Default::default(), 
+            hash: Default::default(), 
+            parent_dir: Default::default(), 
+            logical_group: LogicalGroup::default().id
+        }
+    }
+}
 
 impl crate::Thumbnail {
+    pub fn new(filename: &str) -> Self {
+        Self { 
+            id: RecordId::from_table_key("thumbnails", filename), 
+            db_created: Default::default(), 
+            path: Default::default(), 
+            filename: filename.to_string(), 
+            file_type: Default::default(), 
+            size: Default::default(), 
+            description: Default::default(), 
+            caption: Default::default(), 
+            tags: Default::default(), 
+            category: Default::default(), 
+            thumbnail_b64: Default::default(), 
+            modified: Default::default(), 
+            hash: Default::default(), 
+            parent_dir: Default::default(), 
+            logical_group: crate::LogicalGroup::default().id
+        }
+    }
+
     /// Fetch all thumbnail rows across the entire database.
     pub async fn get_all_thumbnails() -> anyhow::Result<Vec<Self>, anyhow::Error> {
         let _ga = db_activity("Load all thumbnails");
@@ -231,7 +272,7 @@ pub async fn upsert_rows_and_get_ids(rows: Vec<super::Thumbnail>) -> anyhow::Res
                 e
             })?
             .unwrap_or_else(|| crate::Thumbnail {
-                id: None,
+                id: crate::Thumbnail::new(&meta.filename).id,
                 db_created: Some(Utc::now().into()),
                 path: meta.path.clone(),
                 filename: meta.filename.clone(),
@@ -245,7 +286,7 @@ pub async fn upsert_rows_and_get_ids(rows: Vec<super::Thumbnail>) -> anyhow::Res
                 modified: meta.modified.clone(),
                 hash: meta.hash.clone(),
                 parent_dir: meta.parent_dir.clone(),
-                logical_group: None,
+                logical_group: crate::LogicalGroup::default().id,
             });
         // Prefer any provided thumbnail data in meta
         base.update_or_create_thumbnail(&meta, meta.thumbnail_b64.clone()).await

@@ -175,7 +175,13 @@ impl AISearchEngine {
                     let parent_dir = std::path::Path::new(path).parent().map(|p| p.to_string_lossy().to_string().clone()).unwrap_or_default();
 
                     let stub = crate::Thumbnail {
-                        id: None,
+                        id: crate::Thumbnail::new(
+                            &std::path::Path::new(path)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("")
+                                .to_string()
+                        ).id,
                         db_created: None,
                         path: path.to_string(),
                         filename: std::path::Path::new(path)
@@ -197,7 +203,7 @@ impl AISearchEngine {
                         } else {
                             Some(vd.category.clone())
                         },
-                        logical_group: None,
+                        logical_group: crate::LogicalGroup::default().id,
                     };
                     let mut files3 = self.files.lock().await;
                     files3.push(stub);
@@ -308,7 +314,7 @@ impl AISearchEngine {
         let size = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
         let parent_dir = p.parent().map(|p| p.to_string_lossy().to_string().clone()).unwrap_or_default();
         let stub = crate::Thumbnail {
-            id: None,
+            id: crate::Thumbnail::new(&filename).id,
             db_created: None,
             path: path.to_string(),
             filename,
@@ -322,7 +328,7 @@ impl AISearchEngine {
             tags: Vec::new(),
             category: None,
             parent_dir,
-            logical_group: None,
+            logical_group: crate::LogicalGroup::default().id,
         };
         let mut files = self.files.lock().await;
         files.push(stub);
@@ -456,7 +462,13 @@ impl AISearchEngine {
             } else {
                 let parent_dir = std::path::Path::new(path).parent().map(|p| p.to_string_lossy().to_string().clone()).unwrap_or_default();
                 files.push(crate::Thumbnail {
-                    id: None,
+                    id: crate::Thumbnail::new(
+                        &std::path::Path::new(path)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    ).id,
                     db_created: None,
                     path: path.to_string(),
                     filename: std::path::Path::new(path)
@@ -474,7 +486,7 @@ impl AISearchEngine {
                     tags: Vec::new(),
                     category: None,
                     parent_dir,
-                    logical_group: None,
+                    logical_group: crate::LogicalGroup::default().id,
                 });
             }
         }
@@ -756,7 +768,14 @@ pub fn found_file_to_metadata(
     found_file: &crate::utilities::types::FoundFile,
 ) -> crate::Thumbnail {
     crate::Thumbnail {
-        id: None,
+        id: crate::Thumbnail::new(
+            &found_file
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string(),
+        ).id,
         db_created: None,
         path: found_file.path.display().to_string(),
         filename: found_file
@@ -781,7 +800,7 @@ pub fn found_file_to_metadata(
         tags: Vec::new(),
         category: None,
         parent_dir: std::path::Path::new(&found_file.path).parent().map(|p| p.to_string_lossy().to_string().clone()).unwrap_or_default(),
-        logical_group: None,
+        logical_group: crate::LogicalGroup::default().id,
     }
 }
 
