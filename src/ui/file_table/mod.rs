@@ -836,19 +836,18 @@ impl FileExplorer {
                             ui.heading("Database Save");
                             
                             if Button::new("Save Current View to DB").right_text(RichText::new("💾")).ui(ui).on_hover_text("Upsert all currently visible rows into the database and add them to the active logical group").clicked() {
-                                if let Some(group_name) = self.active_logical_group_name.clone() {
-                                    let rows: Vec<crate::database::Thumbnail> = self
-                                        .table
-                                        .iter()
-                                        .filter(|r| r.file_type != "<DIR>")
-                                        .cloned()
-                                        .collect();
-                                    if !rows.is_empty() {
-                                        tokio::spawn(async move {
-                                            // Upsert rows and collect ids
-                                            match crate::database::upsert_rows_and_get_ids(rows).await {
-                                                Ok(ids) => {
-                                                    // Find the group and add ids
+                                let group_opt = self.active_logical_group_name.clone();
+                                let rows: Vec<crate::database::Thumbnail> = self
+                                    .table
+                                    .iter()
+                                    .filter(|r| r.file_type != "<DIR>")
+                                    .cloned()
+                                    .collect();
+                                if !rows.is_empty() {
+                                    tokio::spawn(async move {
+                                        match crate::database::upsert_rows_and_get_ids(rows).await {
+                                            Ok(ids) => {
+                                                if let Some(group_name) = group_opt {
                                                     match crate::database::LogicalGroup::get_by_name(&group_name).await {
                                                         Ok(Some(g)) => {
                                                             if let Err(e) = crate::database::LogicalGroup::add_thumbnails(&g.id, &ids).await {
@@ -860,13 +859,13 @@ impl FileExplorer {
                                                         Ok(None) => log::warn!("Active group '{}' not found during save", group_name),
                                                         Err(e) => log::error!("get_by_name failed: {e:?}"),
                                                     }
+                                                } else {
+                                                    log::info!("Saved {} rows to DB (no group association)", ids.len());
                                                 }
-                                                Err(e) => log::error!("Upsert rows failed: {e:?}"),
                                             }
-                                        });
-                                    }
-                                } else {
-                                    log::warn!("Save skipped: no active logical group selected");
+                                            Err(e) => log::error!("Upsert rows failed: {e:?}"),
+                                        }
+                                    });
                                 }
                             }
                             
@@ -1049,7 +1048,7 @@ impl FileExplorer {
                     let style = StyleModifier::default();
                     style.apply(ui.style_mut());
                     MenuButton::new("Logical Groups")
-                    .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside).style(style))
+                    .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside).style(style.clone()))
                     .ui(ui, |ui| {
                         ui.vertical_centered(|ui| {
                             ui.set_width(470.);
@@ -1355,6 +1354,42 @@ impl FileExplorer {
                                 });
                             }
                         });
+                    });
+
+                    // Selection operations menu
+                    MenuButton::new("Selection")
+                    .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside).style(style.clone()))
+                    .ui(ui, |ui| {
+                        ui.set_width(350.);
+                        ui.heading("Selection");
+                        let selected_dirs: Vec<String> = self
+                            .table
+                            .iter()
+                            .filter(|r| r.file_type == "<DIR>" && self.selected.contains(&r.path))
+                            .map(|r| r.path.clone())
+                            .collect();
+                        let count = selected_dirs.len();
+                        if count == 0 {
+                            ui.label(RichText::new("No directories selected").weak());
+                        } else {
+                            ui.label(format!("Selected directories: {}", count));
+                        }
+                        ui.separator();
+                        let disabled = count == 0;
+                        let btn = ui.add_enabled(!disabled, Button::new("Exclude selected directories from recursive scans").small());
+                        if btn.clicked() {
+                            if self.viewer.ui_settings.excluded_dirs.is_none() {
+                                self.viewer.ui_settings.excluded_dirs = Some(Vec::new());
+                            }
+                            if let Some(ref mut dirs) = self.viewer.ui_settings.excluded_dirs {
+                                for p in selected_dirs.into_iter() {
+                                    if !dirs.contains(&p) { dirs.push(p); }
+                                }
+                            }
+                            crate::database::settings::save_settings(&self.viewer.ui_settings);
+                            self.apply_filters_to_current_table();
+                            ui.close();
+                        }
                     });
 
                     ui.separator();

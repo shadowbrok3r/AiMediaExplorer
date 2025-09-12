@@ -294,14 +294,14 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                 });
             }
             1 => {
-                // Name (clickable)
-                let _ = ui.selectable_label(false, format!(" {}", &row.filename));
+                // Name (passive label; cell click is handled in on_cell_view_response)
+                ui.label(format!(" {}", &row.filename));
             }
             2 => {
-                // Path or DB key depending on mode
+                // Path or DB key depending on mode (non-interactive to allow cell-level clicks)
                 match self.mode {
                     ExplorerMode::FileSystem => ui.label(&row.path),
-                    ExplorerMode::Database => ui.label(&row.path), 
+                    ExplorerMode::Database => ui.label(&row.path),
                 };
             }
             3 => {
@@ -771,17 +771,17 @@ impl RowViewer<Thumbnail> for FileTableViewer {
     fn column_render_config(&mut self, column: usize, _is_editing: bool) -> TableColumnConfig {
         let base = TableColumnConfig::auto();
         match column {
-            0 => base.at_least(75.).at_most(100.).resizable(true), // thumbnail
-            1 => base.at_least(160.).clip(true).resizable(true),  // name
-            2 => base.at_least(220.).clip(true).resizable(true),  // path
-            3 => base.at_least(70.).at_most(90.),                 // size
-            4 => base.at_least(50.).at_most(60.),                 // type
-            5 => base.at_least(50.).at_most(60.),                 // CLIP
-            6 => base.at_least(100.).at_most(120.),               // modified
-            7 => base.at_least(100.).at_most(120.),               // db created
-            8 => base.at_least(110.).at_most(140.).resizable(true), // category
-            9 => base.at_least(140.).clip(true).resizable(true),  // tags
-            10 => base.at_least(140.).at_most(200.).clip(true),   // hash (DB)
+            0 => base.at_least(75.).at_most(100.).resizable(true),  // thumbnail
+            1 => base.at_least(160.).clip(true).resizable(true),            // name
+            2 => base.at_least(220.).clip(true).resizable(true),            // path
+            3 => base.at_least(70.).at_most(90.),                  // size
+            4 => base.at_least(50.).at_most(60.),                  // type
+            5 => base.at_least(50.).at_most(60.),                  // CLIP
+            6 => base.at_least(100.).at_most(120.),                // modified
+            7 => base.at_least(100.).at_most(120.),                // db created
+            8 => base.at_least(110.).at_most(140.).resizable(true),// category
+            9 => base.at_least(140.).clip(true).resizable(true),           // tags
+            10 => base.at_least(140.).at_most(200.).clip(true),    // hash (DB)
             _ => base,
         }
     }
@@ -790,8 +790,12 @@ impl RowViewer<Thumbnail> for FileTableViewer {
     fn custom_context_menu_items(
         &mut self,
         _context: &UiActionContext,
-        _selection: &SelectionSnapshot<'_, Thumbnail>,
+        selection: &SelectionSnapshot<'_, Thumbnail>,
     ) -> Vec<CustomMenuItem> {
+        let has_dirs = selection
+            .selected_rows
+            .iter()
+            .any(|(_, r)| r.file_type == "<DIR>" && !r.path.is_empty());
         vec![
             CustomMenuItem::new(
                 "generate_description", 
@@ -823,6 +827,12 @@ impl RowViewer<Thumbnail> for FileTableViewer {
             )
             .icon("🗂")
             .enabled(true),
+            CustomMenuItem::new(
+                "exclude_dirs_from_scan",
+                "Exclude selected directories from recursive scans"
+            )
+            .icon("🚫")
+            .enabled(has_dirs),
         ]
     }
 
@@ -953,6 +963,30 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                 } else {
                     log::warn!("No active logical group; cannot remove selection");
                 }
+            }
+            "exclude_dirs_from_scan" => {
+                // Collect selected directory paths
+                let mut add: Vec<String> = ctx
+                    .selection
+                    .selected_rows
+                    .iter()
+                    .filter_map(|(_, r)| if r.file_type == "<DIR>" { Some(r.path.clone()) } else { None })
+                    .filter(|p| !p.trim().is_empty())
+                    .collect();
+                if add.is_empty() { return; }
+                // Ensure settings vector exists and extend with unique values
+                if self.ui_settings.excluded_dirs.is_none() {
+                    self.ui_settings.excluded_dirs = Some(Vec::new());
+                }
+                if let Some(ref mut dirs) = self.ui_settings.excluded_dirs {
+                    for p in add.drain(..) {
+                        if !dirs.contains(&p) {
+                            dirs.push(p);
+                        }
+                    }
+                }
+                crate::database::settings::save_settings(&self.ui_settings);
+                log::info!("Added selected directories to excluded_dirs for recursive scans");
             }
             _ => {},
         }

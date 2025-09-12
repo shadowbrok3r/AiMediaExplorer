@@ -44,11 +44,16 @@ impl crate::ui::file_table::FileExplorer {
             filters.include_videos = self.viewer.types_show_videos;
             filters.skip_icons = self.viewer.ui_settings.filter_skip_icons;
             filters.excluded_terms = self.excluded_terms.clone();
-            // Add excluded directories from UI settings
+            // Add excluded directories from UI settings (normalize + absolute for robust matching)
             if let Some(ref excluded_dirs) = self.viewer.ui_settings.excluded_dirs {
-                filters.recursive_excluded_dirs = excluded_dirs.iter()
-                    .map(|s| std::path::PathBuf::from(s))
-                    .collect();
+                let mut set: std::collections::BTreeSet<std::path::PathBuf> = std::collections::BTreeSet::new();
+                for s in excluded_dirs.iter() {
+                    let norm = crate::utilities::windows::normalize_wsl_unc(s);
+                    let pb = std::path::PathBuf::from(norm);
+                    let abs = std::path::absolute(&pb).unwrap_or(pb);
+                    let _ = set.insert(abs);
+                }
+                filters.recursive_excluded_dirs = set;
             }
             // Add excluded extensions (lowercase, without dot) from UI settings
             if let Some(ref exts) = self.viewer.ui_settings.db_excluded_exts {

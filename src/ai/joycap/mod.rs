@@ -2,7 +2,6 @@ use crate::ai::candle_llava::{
     clip_image_processor::CLIPImageProcessor, config::LLaVAConfig, conversation::Conversation,
     llama::Cache, model::LLaVA,
 };
-use crate::app::DEFAULT_JOYCAPTION_PATH;
 use crate::ui::status::GlobalStatusIndicator;
 use candle_core::Device;
 use once_cell::sync::OnceCell;
@@ -66,12 +65,13 @@ pub async fn ensure_worker_started() -> anyhow::Result<&'static WorkerHandle> {
         return Ok(h);
     }
     WORKER.get_or_try_init(|| {
-        let dir_env = std::env::var("JOYCAPTION_MODEL_DIR").ok();
-        log::info!("JOYCAPTION_MODEL_DIR: {dir_env:?}");
-        let candidate = dir_env.as_deref().unwrap_or(DEFAULT_JOYCAPTION_PATH);
-        log::info!("candidate: {candidate}");
+        // Prefer user setting if available; fall back to default constant
+        let candidate = crate::database::settings::load_settings()
+            .and_then(|s| s.joycaption_model_dir)
+            .unwrap_or_else(|| crate::app::DEFAULT_JOYCAPTION_PATH.to_string());
+        log::info!("[joycap] model dir: {candidate}");
         // Surface the selected model path in the status hover UI
-        crate::ui::status::JOY_STATUS.set_model(candidate);
+    crate::ui::status::JOY_STATUS.set_model(&candidate);
         let model_dir = PathBuf::from(candidate);
         let (tx, mut rx) = mpsc::unbounded_channel::<WorkMsg>();
         std::thread::spawn(move || {

@@ -120,7 +120,9 @@ impl crate::app::SmartMediaContext {
                         ui.label("Database folder:");
                         ui.monospace(current_path.clone());
                         if ui.button("Change…").clicked() {
-                            if let Some(dir) = rfd::FileDialog::new().set_title("Choose database folder").pick_folder() {
+                            if let Some(dir) = rfd::FileDialog::new()
+                            .set_title("Choose database folder")
+                            .pick_folder() {
                                 let p = dir.display().to_string();
                                 if let Err(e) = crate::database::set_db_path(&p) {
                                     log::error!("set_db_path failed: {e}");
@@ -139,6 +141,46 @@ impl crate::app::SmartMediaContext {
                     ui.label("Tip: Export/Import .surql from File > Database menu.");
                 });
                 ui.collapsing("AI", |ui| {
+                    ui.separator();
+                    ui.label("Vision (LLaVA/JoyCaption) Model Folder:");
+                    // Bind text field to a local copy, but always write back to settings when changed or after Browse/Use This.
+                    ui.horizontal(|ui| {
+                        let mut jc_dir_text = d.joycaption_model_dir.clone().unwrap_or_default();
+                        let resp = ui.text_edit_singleline(&mut jc_dir_text);
+
+                        let mut browse_selected = false;
+                        if ui.button("Browse…").clicked() {
+                            if let Some(dir) = rfd::FileDialog::new()
+                                .set_title("Choose JoyCaption/LLaVA model folder")
+                                .pick_folder()
+                            {
+                                jc_dir_text = dir.display().to_string();
+                                browse_selected = true;
+                            }
+                        }
+                        let use_this_clicked = ui
+                            .button("Use This")
+                            .on_hover_text("Set the directory and reload on next use")
+                            .clicked();
+
+                        if resp.changed() || browse_selected || use_this_clicked {
+                            let normalized = jc_dir_text.trim();
+                            d.joycaption_model_dir = if normalized.is_empty() {
+                                None
+                            } else {
+                                Some(normalized.to_string())
+                            };
+                            let model_path = d
+                                .joycaption_model_dir
+                                .as_deref()
+                                .unwrap_or(crate::app::DEFAULT_JOYCAPTION_PATH);
+                            crate::ui::status::JOY_STATUS.set_model(model_path);
+                            crate::ui::status::JOY_STATUS.set_state(
+                                crate::ui::status::StatusState::Idle,
+                                "Model path set (reload on next use)",
+                            );
+                        }
+                    });
                     ui.horizontal(|ui| {
                         ui.label("Auto Indexing");
                         ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {  

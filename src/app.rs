@@ -41,6 +41,7 @@ pub struct SmartMediaContext {
     pub open_tabs: HashSet<String>,
     // Map of dynamic tab title -> a dedicated FileExplorer instance with filters applied
     pub filtered_tabs: std::collections::HashMap<String, crate::ui::file_table::FileExplorer>,
+    pub assistant: crate::ui::assistant::AssistantPanel,
     pub open_ui_settings: bool,
     // UI state for adding excluded directories
     pub new_excluded_dir: String,
@@ -65,7 +66,8 @@ impl SmartMediaApp {
         
         let mut tree = DockState::new(vec![
             "File Explorer".to_owned(),
-            "Logs".to_owned()
+            "Logs".to_owned(),
+            "AI Assistant".to_owned(),
         ]);
 
         "Undock".clone_into(&mut tree.translations.tab_context_menu.eject_button);
@@ -102,6 +104,7 @@ impl SmartMediaApp {
             file_explorer: FileExplorer::new(false),
             open_tabs,
             filtered_tabs: std::collections::HashMap::new(),
+        assistant: Default::default(),
             open_ui_settings: false,
             new_excluded_dir: String::new(),
             toasts: Toasts::new().anchor(eframe::egui::Align2::RIGHT_TOP, (-10.0, 10.0)),

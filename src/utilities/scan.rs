@@ -245,40 +245,37 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
         .process_read_dir(move |_depth, dir_path, _state, entries| {
             // Helper function to check if a path matches any excluded directory
             let path_matches_excluded = |path: &std::path::Path| -> bool {
+                // Create lowercase component vectors for case-insensitive comparison on Windows
+                let path_comps: Vec<String> = path
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy().to_string().to_ascii_lowercase())
+                    .collect();
                 excluded_dirs.iter().any(|excluded| {
-                    // Check if the path components match, ignoring drive letters
-                    let excluded_path = std::path::Path::new(excluded);
-                    let path_components: Vec<_> = path.components().collect();
-                    let excluded_components: Vec<_> = excluded_path.components().collect();
-                    
-                    // If excluded path is absolute, try both exact match and drive-agnostic match
-                    if excluded_path.is_absolute() {
-                        // First try exact match
-                        if path.starts_with(excluded) {
-                            return true;
+                    let ex_path = std::path::Path::new(excluded);
+                    let ex_comps: Vec<String> = ex_path
+                        .components()
+                        .map(|c| c.as_os_str().to_string_lossy().to_string().to_ascii_lowercase())
+                        .collect();
+                    if ex_comps.is_empty() { return false; }
+                    if ex_path.is_absolute() {
+                        if ex_comps.len() > path_comps.len() { return false; }
+                        // Component-wise prefix compare (case-insensitive)
+                        for i in 0..ex_comps.len() {
+                            if path_comps[i] != ex_comps[i] { return false; }
                         }
-                        // Then try drive-agnostic match - skip the first component if it's a drive
-                        if let (Some(std::path::Component::Prefix(_)), Some(std::path::Component::Prefix(_))) 
-                            = (path_components.first(), excluded_components.first()) {
-                            // Both have drive prefixes, compare without them
-                            if path_components.len() >= excluded_components.len() {
-                                let path_no_drive = &path_components[1..];
-                                let excluded_no_drive = &excluded_components[1..];
-                                return path_no_drive.starts_with(excluded_no_drive);
-                            }
-                        }
+                        true
                     } else {
-                        // Relative path - check if any suffix of the path matches
-                        if path_components.len() >= excluded_components.len() {
-                            for start_idx in 0..=(path_components.len() - excluded_components.len()) {
-                                let path_slice = &path_components[start_idx..start_idx + excluded_components.len()];
-                                if path_slice == excluded_components.as_slice() {
-                                    return true;
-                                }
+                        // Relative pattern: match anywhere in the path (component-wise)
+                        if ex_comps.len() > path_comps.len() { return false; }
+                        for start in 0..=(path_comps.len() - ex_comps.len()) {
+                            let mut all_eq = true;
+                            for j in 0..ex_comps.len() {
+                                if path_comps[start + j] != ex_comps[j] { all_eq = false; break; }
                             }
+                            if all_eq { return true; }
                         }
+                        false
                     }
-                    false
                 })
             };
 

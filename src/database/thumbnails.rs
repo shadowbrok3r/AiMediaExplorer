@@ -225,6 +225,19 @@ impl crate::Thumbnail {
             })?
             .take(0)?;
 
+        // If no existing row matched (nothing updated), INSERT a new record
+        if updated.is_none() {
+            let _: Option<Self> = DB
+                .create("thumbnails")
+                .content::<Self>(self.clone())
+                .await
+                .map_err(|e| {
+                    db_set_error(format!("Thumbnail insert after update miss failed: {e}"));
+                    e
+                })?
+                .take();
+        }
+
         log::info!("Cached data Is Some: {:?}", updated.is_some());
         Ok(())
     }

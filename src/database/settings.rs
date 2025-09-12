@@ -36,6 +36,8 @@ pub struct UiSettings {
     pub recent_paths: Vec<String>,
     // When true, new scan results and thumbnail updates are saved into the DB automatically (if a logical group is active)
     pub auto_save_to_database: bool,
+    // Optional: user-specified folder containing the vision (LLaVA/JoyCaption) model
+    pub joycaption_model_dir: Option<String>,
     pub egui_preferences: Options
 }
 
@@ -62,6 +64,7 @@ impl Default for UiSettings {
             clip_model: Some("siglip2-large-patch16-512".into()),
             recent_paths: Vec::new(),
             auto_save_to_database: false,
+            joycaption_model_dir: None,
             egui_preferences: Options::default()
 
         }
