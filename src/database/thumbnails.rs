@@ -329,7 +329,7 @@ pub async fn delete_thumbnails_and_embeddings_by_paths(
         .query(
             r#"
                 LET $ids = (
-                SELECT VALUE id FROM thumbnails WHERE array::find($paths, path) != NONE
+                    SELECT VALUE id FROM thumbnails WHERE array::find($paths, path) != NONE
                 );
                 DELETE clip_embeddings WHERE array::find($paths, path) != NONE OR array::find($ids, thumb_ref) != NONE;
                 DELETE thumbnails WHERE array::find($paths, path) != NONE;
@@ -341,10 +341,10 @@ pub async fn delete_thumbnails_and_embeddings_by_paths(
 
     // Statement order: 0 LET, 1 LET, 2 DELETE embeddings, 3 DELETE thumbnails
     let deleted_embeddings: Vec<super::ClipEmbeddingRow> = resp
-        .take(2)
+        .take(1)
         .map_err(|e| { db_set_error(format!("Read deleted embeddings failed: {e}")); e })?;
     let deleted_thumbs: Vec<super::Thumbnail> = resp
-        .take(3)
+        .take(2)
         .map_err(|e| { db_set_error(format!("Read deleted thumbnails failed: {e}")); e })?;
     Ok((deleted_embeddings.len(), deleted_thumbs.len()))
 }
