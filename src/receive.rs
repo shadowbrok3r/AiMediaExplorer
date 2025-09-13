@@ -375,7 +375,7 @@ impl crate::app::SmartMediaContext {
                         .ui_settings
                         .clip_model
                         .clone()
-                        .unwrap_or_else(|| "unicom-vit-b32".to_string());
+                        .unwrap_or_else(|| "siglip2-large-patch16-512".to_string());
                     CLIP_STATUS.set_model(&model_key);
                     CLIP_STATUS.set_state(StatusState::Idle, format!("Model set: {} (reload on next use)", model_key));
                     let enable_clip = self.ui_settings.auto_clip_embeddings;
@@ -409,7 +409,7 @@ impl crate::app::SmartMediaContext {
                         let to_save = self.ui_settings.clone();
                         let to_save_for_save = to_save.clone();
                         tokio::spawn(async move { crate::database::save_settings(&to_save_for_save); });
-                        let model_key = to_save.clip_model.clone().unwrap_or_else(|| "unicom-vit-b32".to_string());
+                        let model_key = to_save.clip_model.clone().unwrap_or_else(|| "siglip2-large-patch16-512".to_string());
                         CLIP_STATUS.set_model(&model_key);
                         CLIP_STATUS.set_state(StatusState::Initializing, format!("Reloading: {}", model_key));
                     }

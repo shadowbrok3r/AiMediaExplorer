@@ -62,8 +62,8 @@ impl crate::Thumbnail {
     pub async fn get_thumbnail_by_path(
         path: &str,
     ) -> anyhow::Result<Option<Self>, anyhow::Error> {
-    let _ga = db_activity(format!("Load thumbnail by path"));
-    db_set_detail(format!("Loading thumbnail by path"));
+        let _ga = db_activity(format!("Load thumbnail by path"));
+        db_set_detail(format!("Loading thumbnail by path"));
         let resp: Option<Self> = DB
             .query("SELECT * FROM thumbnails WHERE path = $path")
             .bind(("path", path.to_string()))
@@ -320,21 +320,19 @@ pub async fn upsert_rows_and_get_ids(rows: Vec<super::Thumbnail>) -> anyhow::Res
 /// This operation only affects the database (does not delete files on disk).
 /// Returns (deleted_embeddings_count, deleted_thumbnails_count).
 pub async fn delete_thumbnails_and_embeddings_by_paths(
-    paths: Vec<String>,
+    paths: Vec<RecordId>,
 ) -> anyhow::Result<(usize, usize), anyhow::Error> {
     if paths.is_empty() { return Ok((0, 0)); }
     let _ga = db_activity(format!("Delete {} rows from DB", paths.len()));
     db_set_detail("Deleting thumbnails and embeddings".to_string());
-    // Use a single multi-statement query: collect thumbnail ids, delete embeddings by thumb_ref or path, then delete thumbnails by path.
     let mut resp = DB
         .query(
             r#"
-            LET paths = $paths;
-            LET ids = (
-                SELECT VALUE id FROM thumbnails WHERE array::find(paths, path) != NONE
-            );
-            DELETE clip_embeddings WHERE array::find(paths, path) != NONE OR array::find(ids, thumb_ref) != NONE;
-            DELETE thumbnails WHERE array::find(paths, path) != NONE;
+                LET $ids = (
+                SELECT VALUE id FROM thumbnails WHERE array::find($paths, path) != NONE
+                );
+                DELETE clip_embeddings WHERE array::find($paths, path) != NONE OR array::find($ids, thumb_ref) != NONE;
+                DELETE thumbnails WHERE array::find($paths, path) != NONE;
             "#,
         )
         .bind(("paths", paths))

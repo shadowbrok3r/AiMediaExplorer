@@ -1,16 +1,11 @@
 use eframe::egui::*;
 
+#[derive(Default)]
 pub struct AssistantPanel {
     pub prompt: String,
     pub progress: Option<String>,
     pub last_reply: String,
     pub attach_current_image: bool,
-}
-
-impl Default for AssistantPanel {
-    fn default() -> Self {
-        Self { prompt: String::new(), progress: None, last_reply: String::new(), attach_current_image: true }
-    }
 }
 
 impl AssistantPanel {
@@ -22,7 +17,6 @@ impl AssistantPanel {
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.attach_current_image, "Use selected image");
             if ui.button("Open Vision Model").clicked() {
-                // Ensure background vision worker started (best-effort)
                 tokio::spawn(async {
                     let _ = crate::ai::joycap::ensure_worker_started().await;
                 });

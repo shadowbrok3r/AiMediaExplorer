@@ -59,10 +59,10 @@ pub(crate) async fn ensure_clip_engine(engine_slot: &std::sync::Arc<tokio::sync:
             m
         } else {
             match crate::database::get_settings().await {
-                Ok(s) => s.clip_model.unwrap_or_else(|| "unicom-vit-b32".to_string()),
+                Ok(s) => s.clip_model.unwrap_or_else(|| "siglip2-large-patch16-512".to_string()),
                 Err(e) => {
                     log::warn!("[CLIP] get_settings() failed: {e}. Falling back to default.");
-                    "unicom-vit-b32".to_string()
+                    "siglip2-large-patch16-512".to_string()
                 }
             }
         };
