@@ -83,6 +83,7 @@ pub struct FileExplorer {
     #[serde(skip)]
     pub table: egui_data_table::DataTable<Thumbnail>,
     pub viewer: FileTableViewer,
+    batch_size: usize,
     files: Vec<Thumbnail>,
     pub current_path: String,
     open_preview_pane: bool,
@@ -107,8 +108,6 @@ pub struct FileExplorer {
     forward_stack: Vec<String>,
     #[serde(skip)]
     pending_thumb_rows: Vec<Thumbnail>,
-    #[serde(skip)]
-    selected: std::collections::HashSet<String>,
     #[serde(skip)]
     ai_update_rx: Receiver<AIUpdate>,
     #[serde(skip)]
@@ -222,6 +221,17 @@ pub struct FileExplorer {
     cached_wsl_distros: Option<Vec<String>>,
     #[serde(skip)]
     cached_physical_drives: Option<Vec<crate::utilities::explorer::PhysicalDrive>>,
+    // Scan performance timings
+    #[serde(skip)]
+    perf_scan_started: Option<std::time::Instant>,
+    #[serde(skip)]
+    perf_last_batch_at: Option<std::time::Instant>,
+        #[serde(skip)]
+        perf_batches: Vec<(usize, std::time::Duration, std::time::Duration)>, // (batch_len, recv_gap, ui_processing)
+    #[serde(skip)]
+    perf_last_total: Option<std::time::Duration>,
+        #[serde(skip)]
+        perf_show_per_1k: bool,
 }
 
 impl FileExplorer {
@@ -261,7 +271,6 @@ impl FileExplorer {
             back_stack: Vec::new(),
             forward_stack: Vec::new(),
             pending_thumb_rows: Vec::new(),
-            selected: std::collections::HashSet::new(),
             ai_update_rx,
             streaming_interim: std::collections::HashMap::new(),
             thumb_scheduled: std::collections::HashSet::new(),
@@ -311,6 +320,12 @@ impl FileExplorer {
             owning_scan_id: None,
             cached_wsl_distros: Some(crate::utilities::explorer::list_wsl_distros()),
             cached_physical_drives: Some(crate::utilities::explorer::list_physical_drives()),
+            batch_size: 128,
+            perf_scan_started: None,
+            perf_last_batch_at: None,
+            perf_batches: Vec::new(),
+            perf_last_total: None,
+            perf_show_per_1k: false,
         };
         // Preload saved filter groups
         {
@@ -398,6 +413,8 @@ impl FileExplorer {
                 s.auto_shrink = [false, false].into();
             })
             .ui(ui);
+
+
 
             // Modal password prompt (appears at end of scans or when browsing encrypted archives)
             if self.show_zip_modal {
@@ -518,9 +535,9 @@ impl FileExplorer {
             }
             
             // Summary inline (counts) if selection active
-            if !self.selected.is_empty() {
+            if !self.viewer.selected.is_empty() {
                 ui.separator();
-                ui.label(format!("Selected: {}", self.selected.len()));
+                ui.label(format!("Selected: {}", self.viewer.selected.len()));
             }
             
             if self.viewer.mode == table::ExplorerMode::Database && !self.viewer.showing_similarity {
@@ -547,7 +564,7 @@ impl FileExplorer {
 
     /// Number of selected file rows in the current table.
     pub fn selection_count(&self) -> usize {
-        self.selected.len()
+        self.viewer.selected.len()
     }
 
     fn apply_filters_to_current_table(&mut self) {
@@ -624,9 +641,8 @@ pub fn get_img_ui(
             bytes: eframe::egui::load::Bytes::Shared(bytes_arc.clone()),
         };
         Image::new(img_src)
-            .fit_to_original_size(1.0)
-            .max_size(vec2(ui.available_width(), 600.))
-            .ui(ui) // .paint_at(ui, rect);
+            .max_size(ui.available_size()/1.3)
+            .ui(ui)
     } else {
         ui.label("No Image")
     }

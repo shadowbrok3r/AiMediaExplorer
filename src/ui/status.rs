@@ -239,25 +239,60 @@ fn indicator_small(ui: &mut Ui, meta: &StatusMeta) {
     }
 
     atom_layout.response.on_hover_ui(|ui| {
-        ui.vertical(|ui| {
+        ui.set_max_width(300.);
+        ui.vertical_centered(|ui| {
             ui.heading(meta.name);
-            if let Some(model) = meta.model {
-                ui.label(format!("Model: {model}"));
-            }
-            ui.label(format!("State: {:?}", meta.state));
-            if !meta.detail.is_empty() {
-                ui.label(format!("Detail: {}", meta.detail));
-            }
-            if has_prog {
-                ui.add(ProgressBar::new(pct).show_percentage());
-            }
-            for (k, v) in &meta.extra {
-                ui.label(format!("{k}: {v}"));
-            }
-            if let Some(err) = &meta.error {
-                ui.colored_label(Color32::LIGHT_RED, err);
-            }
+            ui.separator();
         });
+
+        if let Some(model) = meta.model {
+            ui.horizontal(|ui| {
+                ui.colored_label(ui.style().visuals.warn_fg_color, RichText::new("Model").underline());
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(RichText::new(model).underline());
+                });
+            });
+        }
+
+        ui.horizontal(|ui| {
+            ui.colored_label(ui.style().visuals.warn_fg_color, RichText::new("State").underline());
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(format!("{:?}", meta.state));
+            });
+        });
+
+        if !meta.detail.is_empty() {
+            ui.horizontal(|ui| {
+                ui.colored_label(ui.style().visuals.warn_fg_color, RichText::new("Detail").underline());
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(&meta.detail);
+                });
+            });
+        }
+
+        for (k, v) in &meta.extra {
+            ui.horizontal(|ui| {
+                ui.colored_label(ui.style().visuals.warn_fg_color, RichText::new(k).underline());
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(v);
+                });
+            });
+        }
+
+        if let Some(err) = &meta.error {
+            ui.horizontal(|ui| {
+                ui.colored_label(ui.style().visuals.error_fg_color, RichText::new("Error").underline());
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.colored_label(ui.style().visuals.error_fg_color, err);
+                });
+            });
+        }
+
+        if has_prog {
+            ui.vertical_centered(|ui| {
+                ProgressBar::new(pct).show_percentage().ui(ui);
+            });
+        }
     });
     ui.add_space(5.);
 }

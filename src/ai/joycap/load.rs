@@ -238,7 +238,7 @@ impl super::JoyCaptionModel {
         let mut top_p: f32 = 0.9;
         let mut top_k: Option<usize> = None;
         let mut repetition_penalty: Option<f32> = None;
-        let device = candle_examples::device(false)?;
+        let device = candle_examples::device(is_cpu)?;
 
         let cache = Cache::new(true, dtype, &llama_config, &device)?;
         if let Some(obj) = gen_norm_val.as_object() {

@@ -8,6 +8,7 @@ impl super::FileExplorer {
     pub fn preview_pane(&mut self, ui: &mut Ui) {
         SidePanel::right("MainPageRightPanel")
             .default_width(400.)
+            .max_width(800.)
             .show_animated_inside(ui, self.open_preview_pane, |ui| {
                 // Removed background polling of active vision path to avoid selection thrashing.
                 ui.vertical_centered(|ui| {
@@ -25,7 +26,9 @@ impl super::FileExplorer {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ui.button("Show in Folder").clicked() {
                                 let pb = std::path::PathBuf::from(self.current_thumb.path.clone());
-                                if let Some(parent) = pb.parent() { let _ = open::that(parent); }
+                                if let Some(parent) = pb.parent() { 
+                                    let _ = open::that(parent); 
+                                }
                             }
                         });        
                     });

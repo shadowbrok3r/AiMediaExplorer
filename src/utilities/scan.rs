@@ -7,7 +7,7 @@ use chrono::{DateTime, Local};
 use once_cell::sync::Lazy;
 use std::time::SystemTime;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use rayon::ThreadPool;
 use std::sync::OnceLock;
 
@@ -182,6 +182,10 @@ pub async fn spawn_scan(filters: Filters, tx: Sender<ScanEnvelope>, recursive: b
 }
 
 fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: bool, scan_id: u64) {
+    // Optional timing instrumentation: enabled in tests or with env var SMART_MEDIA_SCAN_TIMING=1
+    let timing_enabled = cfg!(test) || std::env::var("SMART_MEDIA_SCAN_TIMING").ok().as_deref() == Some("1");
+    let mut t_all = Instant::now();
+    let t_last_phase = &mut t_all;
     if is_cancelled(scan_id) {
         let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::Done });
         clear_cancel(scan_id);
@@ -209,6 +213,10 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
         let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::Done });
         return;
     }
+    if timing_enabled { 
+        eprintln!("scan[{scan_id}]: setup done in {:?}", t_last_phase.elapsed()); 
+        *t_last_phase = Instant::now(); 
+    }
 
     // For recursive scans allow override date range
     let after = if recursive { filters.recursive_modified_after.as_ref().or(filters.modified_after.as_ref()) } else { filters.modified_after.as_ref() }
@@ -230,6 +238,14 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
     let filters_for_walker = filters.clone();
     let logical = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(16);
     let mut batch: Vec<FoundFile> = vec![];
+    let found_batch_max: usize = crate::database::settings::SETTINGS_CACHE
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .and_then(|s| s.scan_found_batch_max)
+        .unwrap_or(128)
+        .clamp(16, 4096);
+    log::info!("Found batch size: {found_batch_max}");
     let mut scanned_paths: usize = 0;
     let parallelism = Parallelism::RayonNewPool(std::cmp::max(8, std::cmp::min(logical, 16)));
 
@@ -320,6 +336,10 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
                 entries.sort_by(|a,b| match (a,b) { (Ok(ae), Ok(be)) => ae.file_name.cmp(&be.file_name), _ => std::cmp::Ordering::Equal });
             }
         });
+    if timing_enabled { 
+        eprintln!("scan[{scan_id}]: walker constructed in {:?}", t_last_phase.elapsed()); 
+        *t_last_phase = Instant::now(); 
+    }
 
     // For shallow scans we also collect the immediate subdirectories to send in a single batch at the end.
     let mut dir_batch: Vec<DirItem> = if recursive { Vec::new() } else { Vec::with_capacity(128) };
@@ -327,8 +347,9 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
     let mut idx: usize = 0;
     // Collect videos for deferred thumbnailing
     let mut videos_for_later: Vec<std::path::PathBuf> = Vec::new();
-    // Encrypted archives found during this scan
-    let mut encrypted_archives: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    // (Removed) encrypted archive probing: now done lazily when navigating into an archive
+    // Track per-progress timing in recursive scans to spot slowdowns
+    let mut last_progress_tick: Option<Instant> = if recursive { Some(Instant::now()) } else { None };
     for dir_entry_result in walker {
         if is_cancelled(scan_id) {
             let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::Done });
@@ -347,30 +368,14 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
                 if entry.file_type.is_file() {
                     let path_buf = entry.path();
                     let path = path_buf.as_path();
-                    // Detect if this is an encrypted ZIP so we can prompt later
-                    if let Some(ext) = path.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()) {
-                        if ext == "zip" {
-                            if let Ok(file) = std::fs::File::open(path) {
-                                if let Ok(mut z) = zip::ZipArchive::new(file) {
-                                    let mut found = false;
-                                    let to_check = z.len().min(8);
-                                    for i in 0..to_check {
-                                        if let Ok(entry) = z.by_index(i) {
-                                            let enc = entry.encrypted();
-                                            if enc { found = true; break; }
-                                        }
-                                    }
-                                    if found { encrypted_archives.insert(path.to_string_lossy().to_string()); }
-                                }
-                            }
-                        }
-                    }
                     if let Some(found) = process_path_collect(path, &filters, after, before) {
                         batch.push(found);
-                        let _ = tx.send(ScanEnvelope { 
-                            scan_id, 
-                            msg: ScanMsg::FoundBatch(std::mem::take(&mut batch)) 
-                        });
+                        if batch.len() >= found_batch_max {
+                            let _ = tx.send(ScanEnvelope { 
+                                scan_id, 
+                                msg: ScanMsg::FoundBatch(std::mem::take(&mut batch)) 
+                            });
+                        }
                         // Schedule image thumbnails immediately; defer videos
                         match is_media_kind(path) {
                             MediaKind::Image => enqueue_thumb_job(path, MediaKind::Image, scan_id),
@@ -381,6 +386,19 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
                     if recursive {
                         scanned_paths += 1;
                         if scanned_paths % PROGRESS_EVERY == 0 {
+                            if timing_enabled {
+                                if let Some(start) = last_progress_tick.take() {
+                                    let dt = start.elapsed();
+                                    eprintln!(
+                                        "scan[{scan_id}]: progress {} files — last {} took {:?} (avg {:?}/1k)",
+                                        scanned_paths,
+                                        PROGRESS_EVERY,
+                                        dt,
+                                        dt / (PROGRESS_EVERY as u32 / 1000)
+                                    );
+                                }
+                                last_progress_tick = Some(Instant::now());
+                            }
                             let _ = tx.send(ScanEnvelope { 
                                 scan_id, 
                                 msg: ScanMsg::Progress { scanned: scanned_paths, total: 0 } 
@@ -405,6 +423,10 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
     }
 
     // Flush remaining batches and final progress per mode
+    if timing_enabled { 
+        eprintln!("scan[{scan_id}]: walking loop finished in {:?}", t_last_phase.elapsed()); 
+        *t_last_phase = Instant::now(); 
+    }
     if !recursive {
         if !dir_batch.is_empty() { let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::FoundDirBatch(dir_batch) }); }
         if !batch.is_empty() { let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::FoundBatch(batch) }); }
@@ -413,6 +435,10 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
     } else {
         if !batch.is_empty() { let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::FoundBatch(batch) }); }
         let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::Progress { scanned: scanned_paths, total: 0 } });
+    }
+    if timing_enabled { 
+        eprintln!("scan[{scan_id}]: flush + final progress in {:?}", t_last_phase.elapsed()); 
+        *t_last_phase = Instant::now(); 
     }
 
     // Defer video thumbnails until image thumbnails are complete
@@ -424,15 +450,20 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
         spins += 1;
         if spins > 2_000 { break; } // ~30s safety cap
     }
+    if timing_enabled { 
+        eprintln!("scan[{scan_id}]: wait for image thumbnails drained in {:?}", t_last_phase.elapsed()); 
+        *t_last_phase = Instant::now(); 
+    }
     for vpath in videos_for_later.into_iter() {
         enqueue_thumb_job(&vpath, MediaKind::Video, scan_id);
     }
-
-    // If we found encrypted archives, notify UI before Done
-    if !encrypted_archives.is_empty() {
-        let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::EncryptedArchives(encrypted_archives.into_iter().collect()) });
+    if timing_enabled { 
+        eprintln!("scan[{scan_id}]: enqueue video thumbnails in {:?}", t_last_phase.elapsed()); 
+        *t_last_phase = Instant::now(); 
     }
+
     finish(&tx, scan_id);
+    if timing_enabled { eprintln!("scan[{scan_id}]: total elapsed {:?}", t_all.elapsed()); }
 }
 
 fn estimate_total_shallow(root: &Path, filters: &Filters) -> usize {
@@ -497,4 +528,77 @@ fn _is_image_ext(path: &Path) -> bool {
         .and_then(|e| e.to_str())
         .map(|s| crate::is_image(s.to_ascii_lowercase().as_str()))
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossbeam::channel::unbounded;
+
+    #[cfg(windows)]
+    #[test]
+    fn timing_recursive_progress() {
+        // Use C:\ as the scan root by default; allow override via env
+        let root_path: std::path::PathBuf = std::env::var("SMART_MEDIA_SCAN_TEST_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::path::PathBuf::from("C:\\"));
+
+        let mut filters = Filters::default();
+        filters.root = root_path.clone();
+        // Include common media and archives to keep a representative subset of files
+        filters.include_images = true;
+        filters.include_videos = true;
+        filters.include_archives = true;
+
+        let (tx, rx) = unbounded::<ScanEnvelope>();
+        let scan_id = next_scan_id();
+
+        // Spawn receiver to timestamp messages as they arrive
+        let recv_handle = std::thread::spawn(move || {
+            let mut last_progress: Option<Instant> = None;
+            let t0 = Instant::now();
+            let mut found_batches = 0usize;
+            let mut progress_events = 0usize;
+            let mut cancelled = false;
+            while let Ok(env) = rx.recv() {
+                match env.msg {
+                    ScanMsg::Progress { scanned, total } => {
+                        progress_events += 1;
+                        let now = Instant::now();
+                        if let Some(lp) = last_progress.replace(now) {
+                            let dt = now.duration_since(lp);
+                            eprintln!("test-scan[{scan_id}]: progress scanned={scanned} total={total} dt={:?}", dt);
+                        } else {
+                            eprintln!("test-scan[{scan_id}]: first progress at {:?}", now.duration_since(t0));
+                        }
+                        // After a few ticks, cancel to bound test runtime
+                        if progress_events >= 3 && !cancelled {
+                            cancelled = true;
+                            super::cancel_scan(scan_id);
+                            eprintln!("test-scan[{scan_id}]: cancelling after {progress_events} progress events");
+                        }
+                        // Time budget safety: cancel after ~20s
+                        if !cancelled && t0.elapsed() > Duration::from_secs(20) {
+                            cancelled = true;
+                            super::cancel_scan(scan_id);
+                            eprintln!("test-scan[{scan_id}]: cancelling due to time budget");
+                        }
+                    }
+                    ScanMsg::FoundBatch(_) => { found_batches += 1; }
+                    ScanMsg::Done => {
+                        let total = t0.elapsed();
+                        eprintln!("test-scan[{scan_id}]: done; found_batches={} progress_events={} total={:?}", found_batches, progress_events, total);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        // Run the blocking scanner on this thread
+        perform_scan_blocking(filters, tx, true, scan_id);
+
+        // Ensure receiver completes
+        recv_handle.join().unwrap();
+    }
 }

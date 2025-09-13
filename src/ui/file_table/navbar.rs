@@ -465,6 +465,72 @@ impl super::FileExplorer {
                                     .unwrap()
                                     .push(crate::ui::file_table::FilterRequest::OpenPath { title, path, recursive: true, background: false });
                             }
+
+                            ui.separator();
+                            ui.heading("Scan by Type (Recursive)");
+                            if Button::new("Scan Images").ui(ui).on_hover_text("Recursive scan including only images").clicked() {
+                                self.recursive_scan = true;
+                                self.scan_done = false;
+                                self.table.clear();
+                                self.last_scan_rows.clear();
+                                self.last_scan_paths.clear();
+                                self.last_scan_root = Some(self.current_path.clone());
+                                self.file_scan_progress = 0.0;
+                                let scan_id = crate::next_scan_id();
+                                let tx = self.scan_tx.clone();
+                                let recurse = true;
+                                let mut filters = crate::Filters::default();
+                                filters.root = std::path::PathBuf::from(self.current_path.clone());
+                                filters.include_images = true;
+                                filters.include_videos = false;
+                                filters.include_archives = false;
+                                filters.excluded_terms = self.excluded_terms.clone();
+                                self.owning_scan_id = Some(scan_id);
+                                self.current_scan_id = Some(scan_id);
+                                tokio::spawn(async move { crate::spawn_scan(filters, tx, recurse, scan_id).await; });
+                            }
+                            if Button::new("Scan Videos").ui(ui).on_hover_text("Recursive scan including only videos").clicked() {
+                                self.recursive_scan = true;
+                                self.scan_done = false;
+                                self.table.clear();
+                                self.last_scan_rows.clear();
+                                self.last_scan_paths.clear();
+                                self.last_scan_root = Some(self.current_path.clone());
+                                self.file_scan_progress = 0.0;
+                                let scan_id = crate::next_scan_id();
+                                let tx = self.scan_tx.clone();
+                                let recurse = true;
+                                let mut filters = crate::Filters::default();
+                                filters.root = std::path::PathBuf::from(self.current_path.clone());
+                                filters.include_images = false;
+                                filters.include_videos = true;
+                                filters.include_archives = false;
+                                filters.excluded_terms = self.excluded_terms.clone();
+                                self.owning_scan_id = Some(scan_id);
+                                self.current_scan_id = Some(scan_id);
+                                tokio::spawn(async move { crate::spawn_scan(filters, tx, recurse, scan_id).await; });
+                            }
+                            if Button::new("Scan Archives (.zip/.7z/.rar/.tar)").ui(ui).on_hover_text("Recursive scan including only archive containers").clicked() {
+                                self.recursive_scan = true;
+                                self.scan_done = false;
+                                self.table.clear();
+                                self.last_scan_rows.clear();
+                                self.last_scan_paths.clear();
+                                self.last_scan_root = Some(self.current_path.clone());
+                                self.file_scan_progress = 0.0;
+                                let scan_id = crate::next_scan_id();
+                                let tx = self.scan_tx.clone();
+                                let recurse = true;
+                                let mut filters = crate::Filters::default();
+                                filters.root = std::path::PathBuf::from(self.current_path.clone());
+                                filters.include_images = false;
+                                filters.include_videos = false;
+                                filters.include_archives = true;
+                                filters.excluded_terms = self.excluded_terms.clone();
+                                self.owning_scan_id = Some(scan_id);
+                                self.current_scan_id = Some(scan_id);
+                                tokio::spawn(async move { crate::spawn_scan(filters, tx, recurse, scan_id).await; });
+                            }
                             
                             if Button::new("Re-scan Current Folder").right_text("🔄").ui(ui).on_hover_text("Shallow scan with current filters (applies 'Skip likely icons')").clicked() {
                                 self.recursive_scan = false;
@@ -494,6 +560,7 @@ impl super::FileExplorer {
                             if Button::new("Cancel Scan").right_text(RichText::new("■").color(ui.style().visuals.error_fg_color)).ui(ui).on_hover_text("Cancel active recursive scan").clicked() {
                                 if let Some(id) = self.current_scan_id.take() { crate::utilities::scan::cancel_scan(id); }
                             }
+                            // (Performance Tweaks moved to Quick Access pane)
                             ui.separator();
                             ui.heading("Database Save");
                             
@@ -741,12 +808,12 @@ impl super::FileExplorer {
                                     let response = TextEdit::singleline(&mut self.group_add_target).hint_text("Group name").desired_width(150.).ui(ui);
                                     if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                                         let target = self.group_add_target.trim().to_string();
-                                        if !target.is_empty() && !self.selected.is_empty() {
+                                        if !target.is_empty() && !self.viewer.selected.is_empty() {
                                             // Gather selected rows and upsert to get ids
                                             let rows: Vec<crate::database::Thumbnail> = self
                                                 .table
                                                 .iter()
-                                                .filter(|r| r.file_type != "<DIR>" && self.selected.contains(&r.path))
+                                                .filter(|r| r.file_type != "<DIR>" && self.viewer.selected.contains(&r.path))
                                                 .cloned()
                                                 .collect();
                                             if !rows.is_empty() {
@@ -1019,7 +1086,7 @@ impl super::FileExplorer {
                     });
 
                     // Selection operations menu
-                    MenuButton::new("Selection")
+                    MenuButton::new(format!("Selection {}", self.selection_count()))
                     .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside).style(style.clone()))
                     .ui(ui, |ui| {
                         ui.set_width(350.);
@@ -1027,7 +1094,7 @@ impl super::FileExplorer {
                         let selected_dirs: Vec<String> = self
                             .table
                             .iter()
-                            .filter(|r| r.file_type == "<DIR>" && self.selected.contains(&r.path))
+                            .filter(|r| r.file_type == "<DIR>" && self.viewer.selected.contains(&r.path))
                             .map(|r| r.path.clone())
                             .collect();
                         let count = selected_dirs.len();

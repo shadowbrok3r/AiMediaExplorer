@@ -44,6 +44,8 @@ impl crate::ui::file_table::FileExplorer {
                     }
                 }
                 crate::utilities::scan::ScanMsg::FoundDirBatch(dirs) => {
+                    // Start timing on first batch arrival if not already started
+                    if self.perf_scan_started.is_none() { self.perf_scan_started = Some(std::time::Instant::now()); self.perf_last_batch_at = self.perf_scan_started; }
                     for d in dirs.iter() {
                         if let Some(row) = crate::ui::file_table::FileExplorer::directory_to_thumbnail(&d.path) {
                             self.table.push(row);
@@ -168,9 +170,16 @@ impl crate::ui::file_table::FileExplorer {
                     }
                 }
                 crate::utilities::scan::ScanMsg::FoundBatch(batch) => {
-                    log::info!("FoundBatch");
+                    // Batch timing measurement: gap since last batch arrival (recv) and UI processing time (ui)
+                    let now = std::time::Instant::now();
+                    if self.perf_scan_started.is_none() { self.perf_scan_started = Some(now); self.perf_last_batch_at = Some(now); }
+                    let recv_gap = self.perf_last_batch_at.map(|prev| now.duration_since(prev)).unwrap_or_default();
+                    self.perf_last_batch_at = Some(now);
+
+                    let ui_start = std::time::Instant::now();
                     let mut newly_enqueued: Vec<String> = Vec::new();
                     let mut to_index: Vec<crate::database::Thumbnail> = Vec::new();
+                    let mut need_repaint = false;
                     let excluded = if self.excluded_terms.is_empty() {
                         None
                     } else {
@@ -215,7 +224,7 @@ impl crate::ui::file_table::FileExplorer {
                                 self.last_scan_rows.push(row_snapshot.clone());
                                 self.last_scan_paths.insert(row_snapshot.path.clone());
                             }
-                            ctx.request_repaint();
+                            need_repaint = true;
                             // Schedule thumbnail generation if none yet
                             if item.thumb_data.is_none() {
                                 let p_str = item.path.to_string_lossy().to_string();
@@ -292,35 +301,52 @@ impl crate::ui::file_table::FileExplorer {
                         if self.pending_thumb_rows.len() >= 32 {
                             let batch = std::mem::take(&mut self.pending_thumb_rows);
                             let group_name = self.active_logical_group_name.clone();
-                            let auto_save = self.viewer.ui_settings.auto_save_to_database;
-                            tokio::spawn(async move {
-                                if auto_save {
-                                    match crate::database::upsert_rows_and_get_ids(batch).await {
-                                        Ok(ids) => {
-                                            if let Some(gname) = group_name {
-                                                if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&gname).await {
-                                                    let _ = crate::database::LogicalGroup::add_thumbnails(&g.id, &ids).await;
-                                                }
+                            if self.viewer.ui_settings.auto_save_to_database {
+                                tokio::spawn(async move {
+                                    let mut ids: Vec<surrealdb::RecordId> = Vec::new();
+                                    for meta in batch.into_iter() {
+                                        match crate::database::upsert_row_and_get_id(meta).await {
+                                            Ok(Some(id)) => ids.push(id),
+                                            Ok(None) => {},
+                                            Err(e) => log::warn!("per-item upsert failed: {e}"),
+                                        }
+                                    }
+                                    if !ids.is_empty() {
+                                        if let Some(gname) = group_name {
+                                            if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&gname).await {
+                                                let _ = crate::database::LogicalGroup::add_thumbnails(&g.id, &ids).await;
                                             }
                                         }
-                                        Err(e) => log::error!("scan batch upsert failed: {e}"),
                                     }
-                                } else {
-                                    log::debug!("Skipping batch DB save: auto_save_to_database disabled");
-                                }
-                            });
+                                });
+                            } else {
+                                log::debug!("Skipping batch DB save: auto_save_to_database disabled");
+                            }
                         }
                     }
                     // After processing the incoming batch, re-apply active filters to prune newly added rows
                     // that don't match current constraints (size bounds, type toggles, excluded terms, skip icons).
                     self.apply_filters_to_current_table();
+                    let ui_time = ui_start.elapsed();
+                    // Record performance sample
+                    self.perf_batches.push((self.table.len(), recv_gap, ui_time));
+                    if self.perf_batches.len() > 2000 { self.perf_batches.drain(0..self.perf_batches.len()-2000); }
+                    if need_repaint { ctx.request_repaint(); }
                     if !to_index.is_empty() {
                         let do_index = self.viewer.ui_settings.auto_indexing;
                         let auto_save = self.viewer.ui_settings.auto_save_to_database;
                         let group_name = self.active_logical_group_name.clone();
                         tokio::spawn(async move {
+                            let mut ids: Vec<surrealdb::RecordId> = Vec::new();
                             if auto_save {
-                                if let Ok(ids) = crate::database::upsert_rows_and_get_ids(to_index.clone()).await {
+                                for meta in to_index.iter().cloned() {
+                                    match crate::database::upsert_row_and_get_id(meta.clone()).await {
+                                        Ok(Some(id)) => ids.push(id),
+                                        Ok(None) => {},
+                                        Err(e) => log::warn!("per-item upsert failed: {e}"),
+                                    }
+                                }
+                                if !ids.is_empty() {
                                     if let Some(group_name) = group_name {
                                         if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&group_name).await {
                                             let _ = crate::database::LogicalGroup::add_thumbnails(&g.id, &ids).await;
@@ -435,6 +461,12 @@ impl crate::ui::file_table::FileExplorer {
                     self.file_scan_progress = 1.0;
                     self.scan_done = true;
                     self.current_scan_id = None;
+                    // Record total elapsed for this scan
+                    if let Some(start) = self.perf_scan_started.take() {
+                        let total = start.elapsed();
+                        self.perf_last_total = Some(total);
+                        self.perf_last_batch_at = None;
+                    }
                     
                     // If we have pending encrypted archives, open the modal now
                     if !self.pending_zip_passwords.is_empty() {

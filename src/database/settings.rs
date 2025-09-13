@@ -38,6 +38,8 @@ pub struct UiSettings {
     pub auto_save_to_database: bool,
     // Optional: user-specified folder containing the vision (LLaVA/JoyCaption) model
     pub joycaption_model_dir: Option<String>,
+    // Batch size for sending FoundBatch messages during scans
+    pub scan_found_batch_max: Option<usize>,
     pub egui_preferences: Options
 }
 
@@ -65,6 +67,7 @@ impl Default for UiSettings {
             recent_paths: Vec::new(),
             auto_save_to_database: false,
             joycaption_model_dir: None,
+            scan_found_batch_max: Some(128),
             egui_preferences: Options::default()
 
         }

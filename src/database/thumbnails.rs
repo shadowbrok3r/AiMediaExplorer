@@ -155,8 +155,8 @@ impl crate::Thumbnail {
         thumb_b64: Option<String>,
     ) -> anyhow::Result<(), anyhow::Error> {
         // Only update fields if new content present
-    let _ga = db_activity("Upsert thumbnail by path");
-    db_set_detail("Saving thumbnail".to_string());
+        let _ga = db_activity("Upsert thumbnail by path");
+        db_set_detail("Saving thumbnail".to_string());
         if let Some(desc) = &metadata.description {
             if desc.trim().len() > 0 {
                 self.description = Some(desc.clone());
@@ -175,7 +175,7 @@ impl crate::Thumbnail {
                 self.category = Some(cat.clone());
             }
         }
-    // embedding field on thumbnails removed; embeddings live in clip_embeddings table
+        // embedding field on thumbnails removed; embeddings live in clip_embeddings table
         if thumb_b64.is_some() {
             self.thumbnail_b64 = thumb_b64;
         }
@@ -267,6 +267,42 @@ pub async fn get_thumbnail_paths() -> anyhow::Result<Vec<String>, anyhow::Error>
     let _ga = db_activity("SELECT VALUE path FROM thumbnails");
     let paths: Vec<String> = DB.query("SELECT VALUE path FROM thumbnails").await?.take(0)?;
     Ok(paths)
+}
+
+// Upsert a single thumbnail row (by path) and return its RecordId if present
+pub async fn upsert_row_and_get_id(meta: super::Thumbnail) -> anyhow::Result<Option<RecordId>, anyhow::Error> {
+    let _ga = db_activity("Upsert 1 thumbnail");
+    db_set_detail("Saving thumbnail (1/1)".to_string());
+    db_set_progress(0, 1);
+    let base = crate::Thumbnail::get_thumbnail_by_path(&meta.path)
+        .await
+        .map_err(|e| {
+            db_set_error(format!("Load existing thumb failed: {e}"));
+            e
+        })?
+        .unwrap_or_else(|| crate::Thumbnail {
+            id: crate::Thumbnail::new(&meta.filename).id,
+            db_created: Some(Utc::now().into()),
+            path: meta.path.clone(),
+            filename: meta.filename.clone(),
+            file_type: meta.file_type.clone(),
+            size: meta.size,
+            description: None,
+            caption: None,
+            tags: Vec::new(),
+            category: None,
+            thumbnail_b64: None,
+            modified: meta.modified.clone(),
+            hash: meta.hash.clone(),
+            parent_dir: meta.parent_dir.clone(),
+            logical_group: crate::LogicalGroup::default().id,
+        });
+    base.update_or_create_thumbnail(&meta, meta.thumbnail_b64.clone()).await
+        .map_err(|e| { db_set_error(format!("Update/create thumb failed: {e}")); e })?;
+    let id = crate::Thumbnail::get_thumbnail_id_by_path(&meta.path).await
+        .map_err(|e| { db_set_error(format!("Fetch id after upsert failed: {e}")); e })?;
+    db_set_progress(1, 1);
+    Ok(id)
 }
 
 // Upsert a list of thumbnail rows (by path) and return their RecordIds

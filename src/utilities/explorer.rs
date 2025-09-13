@@ -187,7 +187,11 @@ pub fn list_wsl_distros() -> Vec<String> {
         for dent in rd.flatten() {
             if let Ok(ft) = dent.file_type() {
                 if ft.is_dir() {
-                    if let Some(name) = dent.file_name().to_str() { out.push(name.to_string()); }
+                    if let Some(name) = dent.file_name().to_str() {
+                        if !name.contains("docker") && !name.contains("podman") {
+                            out.push(name.to_string()); 
+                        }
+                    }
                 }
             }
         }
@@ -229,7 +233,8 @@ pub fn wsl_dynamic_mounts(distro: &str) -> Vec<QuickAccess> {
             if dent.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 if let Some(name) = dent.file_name().to_str() {
                     let label = format!("WSL:{distro} /mnt/wsl/{}", name);
-                    push(&mut items, label, &format!("mnt\\wsl\\{}", name), "�");
+                    // Show each mounted physical partition as a drive
+                    push(&mut items, label, &format!("mnt\\wsl\\{}", name), "🖴");
                 }
             }
         }

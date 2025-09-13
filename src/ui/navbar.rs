@@ -3,13 +3,10 @@ use eframe::egui::*;
 use egui_dock::SurfaceIndex;
 use humansize::DECIMAL;
 
-// We assume SmartMediaApp has (or will get) a boolean `ai_initializing` and `ai_ready` flags plus `open_settings_modal`.
-// If they don't exist yet, they need to be added to `SmartMediaApp` (app.rs). For now we optimistically reference via super::MainPage's parent.
-
 impl crate::app::SmartMediaApp {
     pub fn navbar(&mut self, ctx: &Context) {
         TopBottomPanel::top("MainPageTopPanel")
-        .exact_height(25.0)
+        .exact_height(24.)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.menu_button(" File ", |ui| {

@@ -72,6 +72,8 @@ pub struct FileTableViewer {
     // Requests to open tabs based on user clicks in cells
     #[serde(skip)]
     pub requested_tabs: Vec<TabAction>,
+    #[serde(skip)]
+    pub selected: std::collections::HashSet<String>,
 }
 
 // Actions requested from table cells
@@ -101,6 +103,7 @@ impl FileTableViewer {
             types_show_dirs: true,
             requested_tabs: Vec::new(),
             archive_passwords: std::collections::HashMap::new(),
+            selected: std::collections::HashSet::new(),
         }
     }
 }
@@ -766,6 +769,15 @@ impl RowViewer<Thumbnail> for FileTableViewer {
 
     fn new_empty_row(&mut self) -> Thumbnail {
         Thumbnail::default()
+    }
+
+    fn on_highlight_change(&mut self, highlighted: &[&Thumbnail], unhighlighted: &[&Thumbnail]) {
+        for row in unhighlighted.iter().filter(|r| r.file_type != "<DIR>") {
+            self.selected.remove(&row.path);
+        }
+        for row in highlighted.iter().filter(|r| r.file_type != "<DIR>") {
+            self.selected.insert(row.path.to_string());
+        }
     }
 
     fn column_render_config(&mut self, column: usize, _is_editing: bool) -> TableColumnConfig {
