@@ -88,9 +88,13 @@ impl JinaM0Engine {
                 let bytes = std::fs::read(w)?; let st = SafeTensors::deserialize(&bytes)?; Ok(scan_st(&st))
             }
             Some(Weights::Sharded(files)) => {
-                if let Some(first) = files.first() {
-                    let bytes = std::fs::read(first)?; let st = SafeTensors::deserialize(&bytes)?; Ok(scan_st(&st))
-                } else { Ok(None) }
+                // Scan all shards to accumulate bases across files
+                let mut best: Option<String> = None;
+                for f in files {
+                    let bytes = std::fs::read(f)?; let st = SafeTensors::deserialize(&bytes)?;
+                    if let Some(b) = scan_st(&st) { best.get_or_insert(b); }
+                }
+                Ok(best)
             }
             None => Ok(None)
         }
@@ -302,37 +306,77 @@ impl JinaM0Engine {
         let text_prefix = self.discover_text_prefix_from_weights()?.unwrap_or_default();
         log::info!("[Rerank/Jina] Using text prefix: '{}'", if text_prefix.is_empty() { "<root>" } else { &text_prefix });
 
-        let text_hidden = match &self.weights {
-            Some(Weights::Single(w)) => unsafe {
-                let mut model = crate::ai::hf::with_mmap_varbuilder_single(w, self.dtype, &self.device, |vb| {
-                    let vb = if text_prefix.is_empty() { vb } else { vb.pp(&text_prefix) };
-                    crate::ai::qwen2_5_vl::TextModel::new(&tconf, vb).map_err(anyhow::Error::from)
-                })?;
-                self.forward_text_hidden(&mut model, &input_ids)?
-            },
-            Some(Weights::Sharded(files)) => unsafe {
-                let mut model = crate::ai::hf::with_mmap_varbuilder_multi(files, self.dtype, &self.device, |vb| {
-                    let vb = if text_prefix.is_empty() { vb } else { vb.pp(&text_prefix) };
-                    crate::ai::qwen2_5_vl::TextModel::new(&tconf, vb).map_err(anyhow::Error::from)
-                })?;
-                self.forward_text_hidden(&mut model, &input_ids)?
-            },
+        // 2b) Try to build and run the text backbone; if it fails, fall back to embed-only pooling
+        let pooled = match &self.weights {
+            Some(Weights::Single(w)) => {
+                let full = unsafe {
+                    crate::ai::hf::with_mmap_varbuilder_single(w, self.dtype, &self.device, |vb| {
+                        let vb = if text_prefix.is_empty() { vb } else { vb.pp(&text_prefix) };
+                        crate::ai::qwen2_5_vl::TextModel::new(&tconf, vb).map_err(anyhow::Error::from)
+                    })
+                };
+                match full {
+                    Ok(mut model) => {
+                        match self.forward_text_hidden(&mut model, &input_ids) {
+                            Ok(text_hidden) => {
+                                let mask_f = attn_mask_ids.to_dtype(candle_core::DType::F32)?; // [B, L]
+                                let mask_e = mask_f.unsqueeze(2)?; // [B, L, 1]
+                                let masked = text_hidden.broadcast_mul(&mask_e)?; // [B, L, H]
+                                let sum_h = masked.sum(candle_core::D::Minus2)?; // [B, H]
+                                let lens = mask_f.sum(candle_core::D::Minus1)?; // [B]
+                                let lens = (lens + Tensor::new(1e-6f32, &self.device)?)?; // avoid div by zero
+                                sum_h.broadcast_div(&lens.unsqueeze(1)?)? // [B,H]
+                            }
+                            Err(e) => {
+                                log::warn!("[Rerank/Jina] Text forward failed: {e:?}. Falling back to embed-only pooling.");
+                                self.embed_only_pooled(&input_ids, &attn_mask_ids, &tconf, &text_prefix)?
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("[Rerank/Jina] TextModel build failed: {e:?}. Falling back to embed-only pooling.");
+                        self.embed_only_pooled(&input_ids, &attn_mask_ids, &tconf, &text_prefix)?
+                    }
+                }
+            }
+            Some(Weights::Sharded(files)) => {
+                let full = unsafe {
+                    crate::ai::hf::with_mmap_varbuilder_multi(files, self.dtype, &self.device, |vb| {
+                        let vb = if text_prefix.is_empty() { vb } else { vb.pp(&text_prefix) };
+                        crate::ai::qwen2_5_vl::TextModel::new(&tconf, vb).map_err(anyhow::Error::from)
+                    })
+                };
+                match full {
+                    Ok(mut model) => {
+                        match self.forward_text_hidden(&mut model, &input_ids) {
+                            Ok(text_hidden) => {
+                                let mask_f = attn_mask_ids.to_dtype(candle_core::DType::F32)?; // [B, L]
+                                let mask_e = mask_f.unsqueeze(2)?; // [B, L, 1]
+                                let masked = text_hidden.broadcast_mul(&mask_e)?; // [B, L, H]
+                                let sum_h = masked.sum(candle_core::D::Minus2)?; // [B, H]
+                                let lens = mask_f.sum(candle_core::D::Minus1)?; // [B]
+                                let lens = (lens + Tensor::new(1e-6f32, &self.device)?)?; // avoid div by zero
+                                sum_h.broadcast_div(&lens.unsqueeze(1)?)? // [B,H]
+                            }
+                            Err(e) => {
+                                log::warn!("[Rerank/Jina] Text forward failed: {e:?}. Falling back to embed-only pooling.");
+                                self.embed_only_pooled(&input_ids, &attn_mask_ids, &tconf, &text_prefix)?
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("[Rerank/Jina] TextModel build failed: {e:?}. Falling back to embed-only pooling.");
+                        self.embed_only_pooled(&input_ids, &attn_mask_ids, &tconf, &text_prefix)?
+                    }
+                }
+            }
             None => unreachable!(),
         };
-
-        // 3) Masked-mean pool over valid tokens [B, H] using attn_mask_ids
-        let mask_f = attn_mask_ids.to_dtype(candle_core::DType::F32)?; // [B, L]
-        let mask_e = mask_f.unsqueeze(2)?; // [B, L, 1]
-        let masked = text_hidden.broadcast_mul(&mask_e)?; // [B, L, H]
-        let sum_h = masked.sum(candle_core::D::Minus2)?; // sum over L -> [B, H]
-        let lens = mask_f.sum(candle_core::D::Minus1)?; // [B]
-        let lens = (lens + Tensor::new(1e-6f32, &self.device)?)?; // avoid div by zero
-        let pooled = sum_h.broadcast_div(&lens.unsqueeze(1)?)?; // [B,H]
+        log::info!("[Rerank/Jina] Pooled hidden dim: {}", pooled.dim(1).unwrap_or(0));
 
         // 4) Apply Jina's score head. Prefer the two-layer MLP head (score.0 -> GELU -> score.2),
         // fall back to a single linear head discovery if needed.
-        let hidden_size = pooled.dim(1)?;
-        log::info!("[Rerank/Jina] Pooled hidden dim: {}", hidden_size);
+    let hidden_size = pooled.dim(1)?;
         let logits = {
             // Prefer an automatically discovered two-layer MLP head base
             if let Some(base) = self.discover_head_mlp_base_from_weights()? {
@@ -363,13 +407,21 @@ impl JinaM0Engine {
                         if let Some(head) = self.load_scoring_head_linear_single(match &self.weights { Some(Weights::Single(w)) => w, _ => unreachable!() }, hidden_size)? {
                             log::info!("[Rerank/Jina] Using linear head (single)");
                             head.forward(&pooled)?
-                        } else { return Err(anyhow!("Ranking head weights not found (linear, single).")); }
+                        } else {
+                            log::warn!("[Rerank/Jina] Ranking head weights not found (linear, single). Dumping head-like keys…");
+                            self.debug_log_head_candidates(12);
+                            return Err(anyhow!("Ranking head weights not found (linear, single)."));
+                        }
                     }
                     Some(Weights::Sharded(files)) => {
                         if let Some(head) = self.load_scoring_head_linear_sharded(files, hidden_size)? {
                             log::info!("[Rerank/Jina] Using linear head (sharded)");
                             head.forward(&pooled)?
-                        } else { return Err(anyhow!("Ranking head weights not found (linear, sharded).")); }
+                        } else {
+                            log::warn!("[Rerank/Jina] Ranking head weights not found (linear, sharded). Dumping head-like keys…");
+                            self.debug_log_head_candidates(12);
+                            return Err(anyhow!("Ranking head weights not found (linear, sharded)."));
+                        }
                     }
                     None => unreachable!(),
                 }
@@ -378,6 +430,7 @@ impl JinaM0Engine {
 
         // 5) Sigmoid to [0,1]
         let mut scores = logits.flatten_all()?.to_vec1::<f32>()?;
+        log::info!("[Rerank/Jina] Raw logits len: {} (batch {})", scores.len(), bsz);
         for s in &mut scores { *s = 1.0 / (1.0 + (-*s).exp()); }
         if scores.len() != bsz {
             log::error!("[Rerank/Jina] Score length mismatch: got {} expected {}", scores.len(), bsz);
@@ -424,7 +477,7 @@ impl JinaM0Engine {
     fn load_scoring_head_linear_sharded(&self, _files: &[PathBuf], hidden_size: usize) -> Result<Option<Linear>> { self.load_scoring_head_linear_inner(hidden_size, true) }
 
     fn load_scoring_head_linear_inner(&self, hidden_size: usize, sharded: bool) -> Result<Option<Linear>> {
-        static PREFIXES: &[&str] = &[
+        static BASE_PREFIXES: &[&str] = &[
             "score_head",
             "ranking_head",
             "rank_head",
@@ -432,18 +485,30 @@ impl JinaM0Engine {
             "classification_head",
             "cls_head",
             "head",
-            // Jina's last layer often lives under score.2
             "score.2",
         ];
 
-        let try_build = |vb: candle_nn::VarBuilder| -> Result<Option<Linear>> {
-            for p in PREFIXES {
+        // Build candidate prefixes including discovered text prefix and its root
+        let mut candidates: Vec<String> = Vec::new();
+        for p in BASE_PREFIXES { candidates.push((*p).to_string()); }
+        if let Ok(Some(tp)) = self.discover_text_prefix_from_weights() {
+            if !tp.is_empty() {
+                for p in BASE_PREFIXES { candidates.push(format!("{tp}.{p}")); }
+                // Also try the root segment (e.g., "model" from "model.text_model")
+                if let Some(root) = tp.split('.').next() {
+                    for p in BASE_PREFIXES { candidates.push(format!("{root}.{p}")); }
+                }
+            }
+        }
+
+        let try_build = |vb: candle_nn::VarBuilder, cands: &[String]| -> Result<Option<Linear>> {
+            for p in cands {
                 // Try no-bias first
-                if let Ok(l) = linear_no_bias(hidden_size, 1, vb.pp(*p)) {
+                if let Ok(l) = linear_no_bias(hidden_size, 1, vb.pp(p)) {
                     return Ok(Some(l));
                 }
                 // Then with bias
-                if let Ok(l) = linear(hidden_size, 1, vb.pp(*p)) {
+                if let Ok(l) = linear(hidden_size, 1, vb.pp(p)) {
                     return Ok(Some(l));
                 }
             }
@@ -459,7 +524,7 @@ impl JinaM0Engine {
 
         match (&self.weights, sharded) {
             (Some(Weights::Single(w)), false) => unsafe {
-                if let Some(lin) = crate::ai::hf::with_mmap_varbuilder_single(w, self.dtype, &self.device, |vb| try_build(vb))? {
+                if let Some(lin) = crate::ai::hf::with_mmap_varbuilder_single(w, self.dtype, &self.device, |vb| try_build(vb, &candidates))? {
                     return Ok(Some(lin));
                 }
                 if let Some(prefix) = Self::discover_head_prefix_from_file(w)? {
@@ -468,7 +533,7 @@ impl JinaM0Engine {
                 Ok(None)
             },
             (Some(Weights::Sharded(files)), true) => unsafe {
-                crate::ai::hf::with_mmap_varbuilder_multi(files, self.dtype, &self.device, |vb| try_build(vb))
+                crate::ai::hf::with_mmap_varbuilder_multi(files, self.dtype, &self.device, |vb| try_build(vb, &candidates))
             },
             _ => Ok(None),
         }
@@ -480,90 +545,7 @@ impl JinaM0Engine {
         Ok(out.forward(&x)?)
     }
 
-    #[allow(dead_code)]
-    fn try_build_qwen_with_prefixes_single(
-        &self,
-        w: &PathBuf,
-        conf: &crate::ai::qwen2_5_vl::Config,
-    ) -> Result<Option<crate::ai::qwen2_5_vl::Qwen2_5VLForConditionalGeneration>> {
-        // Try no prefix (direct), then common roots
-        let prefixes = [None, Some("model"), Some("qwen2_vl"), Some("qwen2_vl.model"), Some("language_model"), Some("transformer")];
-        for p in prefixes {
-            let res = unsafe {
-                crate::ai::hf::with_mmap_varbuilder_single(w, self.dtype, &self.device, |vb| {
-                    if let Some(pref) = p {
-                        crate::ai::qwen2_5_vl::Qwen2_5VLForConditionalGeneration::new(conf, vb.pp(pref))
-                            .map_err(anyhow::Error::from)
-                    } else {
-                        crate::ai::qwen2_5_vl::Qwen2_5VLForConditionalGeneration::new(conf, vb)
-                            .map_err(anyhow::Error::from)
-                    }
-                })
-            };
-            if let Ok(model) = res { return Ok(Some(model)); }
-        }
-        // Try discovered model root from safetensors keys
-        if let Some(model_root) = Self::discover_model_root_prefix_from_file(w)? {
-            let res = unsafe {
-                crate::ai::hf::with_mmap_varbuilder_single(w, self.dtype, &self.device, |vb| {
-                    crate::ai::qwen2_5_vl::Qwen2_5VLForConditionalGeneration::new(conf, vb.pp(&model_root))
-                        .map_err(anyhow::Error::from)
-                })
-            };
-            if let Ok(model) = res { return Ok(Some(model)); }
-        }
-        Ok(None)
-    }
 
-    #[allow(dead_code)]
-    fn try_build_qwen_with_prefixes_sharded(
-        &self,
-        files: &[PathBuf],
-        conf: &crate::ai::qwen2_5_vl::Config,
-    ) -> Result<Option<crate::ai::qwen2_5_vl::Qwen2_5VLForConditionalGeneration>> {
-        let prefixes = [None, Some("model"), Some("qwen2_vl"), Some("qwen2_vl.model"), Some("language_model"), Some("transformer")];
-        for p in prefixes {
-            let res = unsafe {
-                crate::ai::hf::with_mmap_varbuilder_multi(files, self.dtype, &self.device, |vb| {
-                    if let Some(pref) = p {
-                        crate::ai::qwen2_5_vl::Qwen2_5VLForConditionalGeneration::new(conf, vb.pp(pref))
-                            .map_err(anyhow::Error::from)
-                    } else {
-                        crate::ai::qwen2_5_vl::Qwen2_5VLForConditionalGeneration::new(conf, vb)
-                            .map_err(anyhow::Error::from)
-                    }
-                })
-            };
-            if let Ok(model) = res { return Ok(Some(model)); }
-        }
-        // For sharded, we can't easily scan all files quickly here; rely on above prefixes.
-        Ok(None)
-    }
-
-    /// Find a model root prefix such that keys like "<root>.text_model.embed_tokens.weight" exist.
-    #[allow(dead_code)]
-    fn discover_model_root_prefix_from_file(path: &PathBuf) -> Result<Option<String>> {
-        let bytes = std::fs::read(path)?;
-        let st = SafeTensors::deserialize(&bytes)?;
-        let target = "text_model.embed_tokens.weight";
-        for name in st.names() {
-            if let Some(idx) = name.find(target) {
-                if idx == 0 { return Ok(Some(String::new())); }
-                let prefix = &name[..idx - 1]; // strip the dot before target
-                return Ok(Some(prefix.to_string()));
-            }
-        }
-        // Try vision path as a fallback signal
-        let vtarget = "vision_model.patch_embed.proj.weight";
-        for name in st.names() {
-            if let Some(idx) = name.find(vtarget) {
-                if idx == 0 { return Ok(Some(String::new())); }
-                let prefix = &name[..idx - 1];
-                return Ok(Some(prefix.to_string()));
-            }
-        }
-        Ok(None)
-    }
 
     /// Inspect a single-file safetensors to locate a likely ranking head prefix by name.
     fn discover_head_prefix_from_file(path: &PathBuf) -> Result<Option<String>> {
@@ -605,7 +587,46 @@ impl JinaM0Engine {
         }
         Ok(best.map(|(_, p)| p))
     }
+
+    /// Debug helper: log a few head-like candidate keys to help map custom repos.
+    fn debug_log_head_candidates(&self, limit: usize) {
+        let mut logged = 0usize;
+        match &self.weights {
+            Some(Weights::Single(w)) => {
+                if let Ok(bytes) = std::fs::read(w) {
+                    if let Ok(st) = SafeTensors::deserialize(&bytes) {
+                        for name in st.names() {
+                            let ln = name.to_ascii_lowercase();
+                            if ln.ends_with(".weight") && (ln.contains("rank") || ln.contains("score") || ln.contains("head")) {
+                                if logged < limit { log::info!("[Rerank/Jina] head-candidate: {name}"); logged += 1; }
+                                if logged >= limit { break; }
+                            }
+                        }
+                    }
+                }
+            }
+            Some(Weights::Sharded(files)) => {
+                for f in files {
+                    if let Ok(bytes) = std::fs::read(f) {
+                        if let Ok(st) = SafeTensors::deserialize(&bytes) {
+                            for name in st.names() {
+                                let ln = name.to_ascii_lowercase();
+                                if ln.ends_with(".weight") && (ln.contains("rank") || ln.contains("score") || ln.contains("head")) {
+                                    if logged < limit { log::info!("[Rerank/Jina] head-candidate: {name}"); logged += 1; }
+                                    if logged >= limit { break; }
+                                }
+                            }
+                        }
+                    }
+                    if logged >= limit { break; }
+                }
+            }
+            None => {}
+        }
+        if logged == 0 { log::info!("[Rerank/Jina] No head-like keys found in weights (scanned up to {limit} entries per shard)"); }
+    }
 }
+
 
 impl JinaM0Engine {
     fn forward_text_hidden(
@@ -619,20 +640,66 @@ impl JinaM0Engine {
         let hidden = text.forward(input_ids, &position_ids, None)?; // [B,L,H]
         Ok(hidden)
     }
-
-    #[allow(dead_code)]
-    fn forward_hidden_with_qwen(
+    /// Fallback: compute masked-mean directly over token embeddings without decoder layers.
+    /// Useful when rotary/attention issues occur but embeddings and norm are valid.
+    fn embed_only_pooled(
         &self,
-        qwen: &mut crate::ai::qwen2_5_vl::Qwen2_5VLForConditionalGeneration,
         input_ids: &Tensor,
-    _attn_mask_ids: &Tensor,
+        attn_mask_ids: &Tensor,
+        tconf: &crate::ai::qwen2_5_vl::TextConfig,
+        text_prefix: &str,
     ) -> Result<Tensor> {
-        // Forward without additive mask (we pool with masks outside)
-        Ok(qwen.forward_hidden(input_ids, None, None)?)
+        let pooled = match &self.weights {
+            Some(Weights::Single(w)) => unsafe {
+                let (emb, norm_w) = crate::ai::hf::with_mmap_varbuilder_single(w, self.dtype, &self.device, |vb| {
+                    let vb = if text_prefix.is_empty() { vb } else { vb.pp(text_prefix) };
+                    let emb = candle_nn::embedding(tconf.vocab_size, tconf.hidden_size, vb.pp("embed_tokens"))?;
+                    let norm_w = vb.pp("norm").get(tconf.hidden_size, "weight")?;
+                    Ok::<(candle_nn::Embedding, Tensor), anyhow::Error>((emb, norm_w))
+                })?;
+                let x = emb.forward(input_ids)?; // [B,L,H]
+                // RMSNorm inline
+                let x_dtype = x.dtype();
+                let x32 = x.to_dtype(candle_core::DType::F32)?;
+                let variance = x32.sqr()?.mean_keepdim(candle_core::D::Minus1)?;
+                let x32 = x32.broadcast_div(&(variance + tconf.rms_norm_eps)?.sqrt()?)?;
+                let x = x32.to_dtype(x_dtype)?;
+                let x = x.broadcast_mul(&norm_w)?; // [B,L,H]
+                let mask_f = attn_mask_ids.to_dtype(candle_core::DType::F32)?; // [B, L]
+                let mask_e = mask_f.unsqueeze(2)?; // [B, L, 1]
+                let masked = x.broadcast_mul(&mask_e)?; // [B,L,H]
+                let sum_h = masked.sum(candle_core::D::Minus2)?; // [B,H]
+                let lens = mask_f.sum(candle_core::D::Minus1)?; // [B]
+                let lens = (lens + Tensor::new(1e-6f32, &self.device)?)?; // avoid div by zero
+                sum_h.broadcast_div(&lens.unsqueeze(1)?)?
+            },
+            Some(Weights::Sharded(files)) => unsafe {
+                let (emb, norm_w) = crate::ai::hf::with_mmap_varbuilder_multi(files, self.dtype, &self.device, |vb| {
+                    let vb = if text_prefix.is_empty() { vb } else { vb.pp(text_prefix) };
+                    let emb = candle_nn::embedding(tconf.vocab_size, tconf.hidden_size, vb.pp("embed_tokens"))?;
+                    let norm_w = vb.pp("norm").get(tconf.hidden_size, "weight")?;
+                    Ok::<(candle_nn::Embedding, Tensor), anyhow::Error>((emb, norm_w))
+                })?;
+                let x = emb.forward(input_ids)?;
+                // RMSNorm inline
+                let x_dtype = x.dtype();
+                let x32 = x.to_dtype(candle_core::DType::F32)?;
+                let variance = x32.sqr()?.mean_keepdim(candle_core::D::Minus1)?;
+                let x32 = x32.broadcast_div(&(variance + tconf.rms_norm_eps)?.sqrt()?)?;
+                let x = x32.to_dtype(x_dtype)?;
+                let x = x.broadcast_mul(&norm_w)?;
+                let mask_f = attn_mask_ids.to_dtype(candle_core::DType::F32)?; // [B, L]
+                let mask_e = mask_f.unsqueeze(2)?; // [B, L, 1]
+                let masked = x.broadcast_mul(&mask_e)?; // [B,L,H]
+                let sum_h = masked.sum(candle_core::D::Minus2)?; // [B,H]
+                let lens = mask_f.sum(candle_core::D::Minus1)?; // [B]
+                let lens = (lens + Tensor::new(1e-6f32, &self.device)?)?; // avoid div by zero
+                sum_h.broadcast_div(&lens.unsqueeze(1)?)?
+            },
+            None => unreachable!(),
+        };
+        Ok(pooled)
     }
-}
-
-impl JinaM0Engine {
     // Infer text config (vocab_size, hidden_size, intermediate_size, layers, heads) from safetensors shapes
     fn discover_text_config_from_file(path: &PathBuf) -> Result<Option<crate::ai::qwen2_5_vl::TextConfig>> {
         let bytes = std::fs::read(path)?;

@@ -186,7 +186,9 @@ impl MultimodalRotaryEmbedding {
         // positions_f: [B, L]
         let positions_f = position_ids.to_dtype(DType::F32)?;
         // angles: [B, L, D/2]
-        let angles = (positions_f.unsqueeze(2)? * self.inv_freq.unsqueeze(0)?.unsqueeze(0)?)?;
+        let angles = positions_f
+            .unsqueeze(2)?
+            .broadcast_mul(&self.inv_freq.unsqueeze(0)?.unsqueeze(0)?)?;
         let cos = angles.cos()?.to_dtype(dtype)?;
         let sin = angles.sin()?.to_dtype(dtype)?;
         // Expand cos/sin to [B, H, L, D/2] to exactly match q1/q2
