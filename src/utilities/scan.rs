@@ -56,6 +56,41 @@ static VID_INFLIGHT: AtomicUsize = AtomicUsize::new(0);
 // Instrumentation for thumbnail queue back-pressure
 static THUMB_DEFERRED: Lazy<std::sync::Mutex<Vec<ThumbJob>>> = Lazy::new(|| std::sync::Mutex::new(Vec::new()));
 
+fn flush_deferred_some(max_items: usize) {
+    if max_items == 0 { return; }
+    if let Some(tx) = THUMB_TX.get() {
+        if let Ok(mut deferred) = THUMB_DEFERRED.lock() {
+            let mut flushed = 0usize;
+            let i = 0usize;
+            while i < deferred.len() && flushed < max_items {
+                // Remove from vector and attempt send; we don't preserve order (swap_remove)
+                let job = deferred.swap_remove(i);
+                let kind = job.kind.clone();
+                match tx.try_send(job) {
+                    Ok(()) => {
+                        flushed += 1;
+                        match kind {
+                            MediaKind::Image => { IMG_INFLIGHT.fetch_add(1, Ordering::Relaxed); },
+                            MediaKind::Video => { VID_INFLIGHT.fetch_add(1, Ordering::Relaxed); },
+                            _ => {}
+                        }
+                        // Note: swap_remove moved an element at i; no i++ so we process the new element at i next
+                    }
+                    Err(TrySendError::Full(job)) => {
+                        // Put back (append) and stop; queue is full
+                        deferred.push(job);
+                        break;
+                    }
+                    Err(TrySendError::Disconnected(_)) => {
+                        // Workers gone; drop remaining
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
 // Route scan updates to the correct UI (per scan_id)
 static SCAN_ROUTERS: Lazy<std::sync::Mutex<std::collections::HashMap<u64, Sender<ScanEnvelope>>>> =
     Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
@@ -392,6 +427,10 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
                             MediaKind::Video => videos_for_later.push(path.to_path_buf()),
                             _ => {}
                         }
+                        // Periodically try to flush deferred image jobs so thumbnails don't stall mid-scan
+                        if (scanned_paths & 0x7FF) == 0 { // every ~2048 files
+                            flush_deferred_some(32);
+                        }
                     }
                     if recursive {
                         scanned_paths += 1;
@@ -413,6 +452,8 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
                                 scan_id, 
                                 msg: ScanMsg::Progress { scanned: scanned_paths, total: 0 } 
                             });
+                            // Also try flushing a few deferred thumbnails at progress ticks
+                            flush_deferred_some(64);
                         }
                     } else {
                         scanned += 1;
@@ -428,7 +469,7 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
                 let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::Error(format!("walk error: {err}")) });
             }
         }
-        if idx % 1000 == 0 { std::thread::yield_now(); }
+        if idx % 1000 == 0 { std::thread::yield_now(); flush_deferred_some(16); }
         idx += 1;
     }
 
@@ -505,6 +546,8 @@ fn finish(tx: &Sender<ScanEnvelope>, scan_id: u64) {
     let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::Done }); 
     // Unregister router mapping for this scan
     if let Ok(mut map) = SCAN_ROUTERS.lock() { let _ = map.remove(&scan_id); }
+    // Drop any deferred thumbnail jobs for this scan to avoid leaking stale work
+    if let Ok(mut deferred) = THUMB_DEFERRED.lock() { deferred.retain(|j| j.scan_id != scan_id); }
 }
 
 fn process_path_collect(
