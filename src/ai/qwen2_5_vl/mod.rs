@@ -176,8 +176,8 @@ impl MultimodalRotaryEmbedding {
     ) -> Result<(Tensor, Tensor)> {
         // Manual RoPE for text-only: split last dim into halves and apply cos/sin with exact shapes
         // Shapes: q,k [B, H, L, D], position_ids [B, L], inv_freq [D/2]
-        let dtype = q.dtype();
-        let (b, h, l, d) = (q.dim(0)?, q.dim(1)?, q.dim(2)?, q.dim(3)?);
+    let dtype = q.dtype();
+    let (_b, _h, _l, d) = (q.dim(0)?, q.dim(1)?, q.dim(2)?, q.dim(3)?);
         let d_half = d / 2;
         if d % 2 != 0 {
             log::warn!("[Qwen/RoPE] head_dim={} is not even; skipping RoPE.", d);
@@ -191,9 +191,10 @@ impl MultimodalRotaryEmbedding {
             .broadcast_mul(&self.inv_freq.unsqueeze(0)?.unsqueeze(0)?)?;
         let cos = angles.cos()?.to_dtype(dtype)?;
         let sin = angles.sin()?.to_dtype(dtype)?;
-        // Expand cos/sin to [B, H, L, D/2] to exactly match q1/q2
-        let cos = cos.unsqueeze(1)?.expand((b, h, l, d_half))?;
-        let sin = sin.unsqueeze(1)?.expand((b, h, l, d_half))?;
+    // Expand cos/sin to [B, 1, L, D/2] so it can broadcast to both query heads (H)
+    // and KV heads independently (grouped-query attention where H != KV).
+    let cos = cos.unsqueeze(1)?; // [B, 1, L, D/2]
+    let sin = sin.unsqueeze(1)?; // [B, 1, L, D/2]
 
         let split_halves = |x: &Tensor| -> Result<(Tensor, Tensor)> {
             let x1 = x.narrow(candle_core::D::Minus1, 0, d_half)?;
@@ -964,5 +965,35 @@ impl Qwen2_5VLForConditionalGeneration {
 
     pub fn clear_kv_cache(&mut self) {
         self.model.clear_kv_cache();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rope_broadcast_gqa() {
+        let device = Device::Cpu;
+        // q: [B=2, H=12, L=8, D=64], k: [2, KV=2, 8, 64]
+        let b = 2usize; let h = 12usize; let kv = 2usize; let l = 8usize; let d = 64usize;
+        let q = Tensor::zeros((b, h, l, d), DType::F32, &device).unwrap();
+        let k = Tensor::zeros((b, kv, l, d), DType::F32, &device).unwrap();
+
+        // position_ids [B, L]
+        let position_ids = Tensor::arange(0i64, l as i64, &device).unwrap()
+            .unsqueeze(0).unwrap().expand((b, l)).unwrap();
+
+        // head_dim = d, rope base arbitrary, mrope_section default thirds
+        let mrope = MultimodalRotaryEmbedding::new(
+            d,
+            10000.0,
+            vec![d / 3, d / 3, d / 3],
+            &device,
+        ).unwrap();
+
+        let (q_rot, k_rot) = mrope.apply_rotary_pos_emb(&q, &k, &position_ids).unwrap();
+        assert_eq!(q_rot.dims(), [b, h, l, d]);
+        assert_eq!(k_rot.dims(), [b, kv, l, d]);
     }
 }
