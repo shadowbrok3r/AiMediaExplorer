@@ -176,8 +176,8 @@ pub fn all_snapshots() -> Vec<StatusMeta> {
 
 /// Convenience registration for core components.
 pub static DB_STATUS: Lazy<RegisteredStatus> = Lazy::new(|| RegisteredStatus::register("DB", None));
-pub static JOY_STATUS: Lazy<RegisteredStatus> =
-    Lazy::new(|| RegisteredStatus::register("JOYCAP", None));
+pub static VISION_STATUS: Lazy<RegisteredStatus> =
+    Lazy::new(|| RegisteredStatus::register("VISION", None));
 pub static CLIP_STATUS: Lazy<RegisteredStatus> =
     Lazy::new(|| RegisteredStatus::register("CLIP", None));
 pub static RERANK_STATUS: Lazy<RegisteredStatus> =

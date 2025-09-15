@@ -18,37 +18,37 @@ pub use model::*;
 pub use jina_m0::*;
 
 use crate::database::Thumbnail;
-use crate::ui::status::{CLIP_STATUS, GlobalStatusIndicator, JOY_STATUS, StatusState};
+use crate::ui::status::{CLIP_STATUS, GlobalStatusIndicator, VISION_STATUS, StatusState};
 use once_cell::sync::Lazy;
 
 // Global lazy AI engine accessor. Initialized on first use. 
 pub static GLOBAL_AI_ENGINE: Lazy<AISearchEngine> = Lazy::new(|| AISearchEngine::new());
 
 pub async fn init_global_ai_engine_async() {
-    JOY_STATUS.set_state(StatusState::Initializing, "Starting workers");
+    VISION_STATUS.set_state(StatusState::Initializing, "Starting workers");
     GLOBAL_AI_ENGINE.ensure_index_worker().await;
-    JOY_STATUS.set_state(StatusState::Initializing, "Loading vision model");
+    VISION_STATUS.set_state(StatusState::Initializing, "Loading vision model");
     if let Err(e) = crate::ai::joycap::ensure_worker_started().await {
         log::warn!("[AI] vision model init failed: {e}");
-        JOY_STATUS.set_state(StatusState::Error, "Vision model failed");
+        VISION_STATUS.set_state(StatusState::Error, "Vision model failed");
     }
     CLIP_STATUS.set_state(StatusState::Initializing, "CLIP engine pending");
     let loaded = GLOBAL_AI_ENGINE.load_cached().await;
     log::info!("[AI] global engine initialized (cached {loaded} rows)");
-    JOY_STATUS.set_state(StatusState::Running, format!("Loading Cache"));
+    VISION_STATUS.set_state(StatusState::Running, format!("Loading Cache"));
     CLIP_STATUS.set_state(StatusState::Idle, "Idle");
-    JOY_STATUS.set_state(StatusState::Idle, format!("Cached {loaded}"));
+    VISION_STATUS.set_state(StatusState::Idle, format!("Cached {loaded}"));
 }
 
 // Lightweight lifecycle helpers to avoid keeping all heavy models resident simultaneously.
 pub async fn unload_heavy_models_except(keep: &str) {
-    // keep is one of: "CLIP", "JOYCAP", "RERANK", or "" for none
+    // keep is one of: "CLIP", "VISION", "RERANK", or "" for none
     match keep {
         "CLIP" => {
             // Stop JOYCAP worker
             crate::ai::joycap::stop_worker().await;
         }
-        "JOYCAP" => {
+        "VISION" => {
             // Drop CLIP backend
             crate::ai::clip::clear_clip_engine(&GLOBAL_AI_ENGINE.clip_engine).await;
         }

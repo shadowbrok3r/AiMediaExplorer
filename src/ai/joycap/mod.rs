@@ -4,14 +4,257 @@ use crate::ai::candle_llava::{
 };
 use crate::ui::status::GlobalStatusIndicator;
 use candle_core::Device;
-use once_cell::sync::OnceCell;
 use std::path::PathBuf;
 use tokenizers::Tokenizer;
 use tokio::sync::{mpsc, oneshot};
+use once_cell::sync::OnceCell;
 
 pub mod generate;
 pub mod load;
 pub mod stream;
+
+// Optional moondream fallbacks when LLaVA fails (e.g., CUDA OOM)
+struct MoondreamState {
+    model: candle_transformers::models::quantized_moondream::Model,
+    tokenizer: tokenizers::Tokenizer,
+    device: candle_core::Device,
+}
+
+static MOONDREAM_Q_FALLBACK: OnceCell<std::sync::Mutex<MoondreamState>> = OnceCell::new();
+
+fn moondream_quantized_fallback(bytes: &[u8], instruction: &str) -> anyhow::Result<String> {
+    use candle_core::{DType, Tensor};
+    use candle_transformers::{
+        generation::LogitsProcessor,
+        models::{moondream, quantized_moondream},
+    };
+    use tokenizers::Tokenizer;
+    use std::path::PathBuf;
+    // Resolve local files via env or download from HF hub if missing
+    let gguf_path: PathBuf = if let Some(p) = std::env::var("MOONDREAM_GGUF").ok()
+        .or_else(|| std::env::var("MOONDREAM_GGUF_PATH").ok())
+    {
+        PathBuf::from(p)
+    } else {
+        // Fallback to HF: santiagomed/candle-moondream model-q4_0.gguf
+        let repo = crate::ai::hf::hf_model("santiagomed/candle-moondream")?;
+        crate::ai::hf::hf_get_file(&repo, "model-q4_0.gguf")?
+    };
+    let tok_path: PathBuf = if let Some(p) = std::env::var("MOONDREAM_TOKENIZER").ok()
+        .or_else(|| std::env::var("MOONDREAM_TOKENIZER_PATH").ok())
+    {
+        PathBuf::from(p)
+    } else {
+        let repo = crate::ai::hf::hf_model("santiagomed/candle-moondream")?;
+        crate::ai::hf::hf_get_file(&repo, "tokenizer.json")?
+    };
+    if !gguf_path.exists() {
+        anyhow::bail!("Moondream gguf not found at {}", gguf_path.display());
+    }
+    if !tok_path.exists() {
+        anyhow::bail!("Moondream tokenizer.json not found at {}", tok_path.display());
+    }
+    // Acquire or initialize cached model
+    let lock = MOONDREAM_Q_FALLBACK.get_or_try_init(|| {
+        // Initialize
+        let device = candle_examples::device(if cfg!(feature="cpu") { true } else { false })?;
+        let config = moondream::Config::v2();
+        let vb = candle_transformers::quantized_var_builder::VarBuilder::from_gguf(&gguf_path, &device)?;
+        let model = quantized_moondream::Model::new(&config, vb)?;
+        let tokenizer = Tokenizer::from_file(&tok_path).map_err(anyhow::Error::msg)?;
+        Ok::<_, anyhow::Error>(std::sync::Mutex::new(MoondreamState { model, tokenizer, device }))
+    })?;
+    let mut guard = lock.lock().map_err(|_| anyhow::anyhow!("Moondream fallback poisoned"))?;
+    let device = guard.device.clone();
+    // Image preproc (378x378 normalized as in examples)
+    let img = image::load_from_memory(bytes)?
+        .resize_to_fill(378, 378, image::imageops::FilterType::Triangle)
+        .to_rgb8();
+    let data = img.into_raw();
+    let data = Tensor::from_vec(data, (378, 378, 3), &device)?.permute((2, 0, 1))?;
+    let mean = Tensor::new(&[0.5f32, 0.5, 0.5], &device)?.reshape((3, 1, 1))?;
+    let std = Tensor::new(&[0.5f32, 0.5, 0.5], &device)?.reshape((3, 1, 1))?;
+    let image = (data.to_dtype(DType::F32)? / 255.)?
+        .broadcast_sub(&mean)?
+        .broadcast_div(&std)?
+        .to_device(&device)?;
+    let image_embeds = image.unsqueeze(0)?;
+    let image_embeds = image_embeds.apply(guard.model.vision_encoder())?;
+    // Stronger JSON-only prompt for reliability
+    let prompt = format!(
+        concat!(
+            "You are a vision assistant. Return ONLY a valid JSON object with these keys: ",
+            "description (string, multi-sentence), caption (string, short), ",
+            "tags (array of lowercase single-word nouns), category (string).\n",
+            "Do not include any text outside the JSON.\n",
+            "Question: {}\n\nAnswer:"
+        ),
+        instruction
+    );
+    // Generation loop
+    let mut logits_processor = LogitsProcessor::new(299792458, Some(0.5), Some(0.95));
+    let repeat_penalty: f32 = 1.1;
+    let repeat_last_n: usize = 96;
+    // Tokenization
+    let mut tokens = guard
+        .tokenizer
+        .encode(prompt.as_str(), true)
+        .map_err(anyhow::Error::msg)?
+        .get_ids()
+        .to_vec();
+    if tokens.is_empty() { anyhow::bail!("Empty prompt for Moondream fallback"); }
+    let special_token = guard.tokenizer.get_vocab(true).get("<|endoftext|>").copied()
+        .ok_or_else(|| anyhow::anyhow!("Moondream tokenizer missing <|endoftext|>"))?;
+    let (bos_token, eos_token) = (special_token, special_token);
+    let sample_len = 512usize;
+    let mut generated = String::new();
+    let mut started_json = false;
+    let mut brace_depth: i32 = 0;
+    for index in 0..sample_len {
+        let context_size = if index > 0 { 1 } else { tokens.len() };
+    let ctxt: Vec<u32> = tokens[tokens.len().saturating_sub(context_size)..].to_vec();
+    let input = Tensor::new(ctxt.as_slice(), &device)?.unsqueeze(0)?;
+        let logits = if index > 0 {
+            guard.model.text_model.forward(&input)?
+        } else {
+            let bos = Tensor::new(&[bos_token], &device)?.unsqueeze(0)?;
+            guard.model.text_model.forward_with_img(&bos, &input, &image_embeds)?
+        };
+        let logits = logits.squeeze(0)?.to_dtype(DType::F32)?;
+        // Apply repeat penalty on last N tokens
+        let logits = if repeat_penalty == 1.0 {
+            logits
+        } else {
+            let start_at = tokens.len().saturating_sub(repeat_last_n);
+            candle_transformers::utils::apply_repeat_penalty(
+                &logits,
+                repeat_penalty,
+                &tokens[start_at..],
+            )?
+        };
+        let next_token = logits_processor.sample(&logits)?;
+        tokens.push(next_token);
+        if next_token == eos_token || tokens.ends_with(&[27, 10619, 29]) { break; }
+        let tok = guard.tokenizer.decode(&[next_token], true).map_err(anyhow::Error::msg)?;
+        generated.push_str(&tok);
+        // Early stop when a single top-level JSON object is complete
+        for ch in tok.chars() {
+            if ch == '{' { started_json = true; brace_depth += 1; }
+            if ch == '}' { brace_depth -= 1; }
+        }
+        if started_json && brace_depth <= 0 && generated.contains('{') && generated.trim_end().ends_with('}') {
+            break;
+        }
+    }
+    Ok(generated)
+}
+
+// Unquantized fallback (higher quality). Uses moondream1 safetensors.
+struct MoondreamFullState {
+    model: candle_transformers::models::moondream::Model,
+    tokenizer: tokenizers::Tokenizer,
+    device: candle_core::Device,
+    dtype: candle_core::DType,
+}
+
+static MOONDREAM_F32_FALLBACK: OnceCell<std::sync::Mutex<MoondreamFullState>> = OnceCell::new();
+
+fn moondream_unquantized_fallback(bytes: &[u8], instruction: &str) -> anyhow::Result<String> {
+    use candle_core::{DType, Tensor};
+    use candle_nn::VarBuilder;
+    use candle_transformers::{generation::LogitsProcessor, models::moondream};
+    use tokenizers::Tokenizer;
+    use std::path::PathBuf;
+    // Resolve files via HF cache (no env overrides)
+    let (model_path, tok_path): (PathBuf, PathBuf) = {
+        let repo = crate::ai::hf::hf_model("vikhyatk/moondream1")?;
+        (crate::ai::hf::hf_get_file(&repo, "model.safetensors")?, crate::ai::hf::hf_get_file(&repo, "tokenizer.json")?)
+    };
+    if !model_path.exists() { anyhow::bail!("moondream model.safetensors not found at {}", model_path.display()); }
+    if !tok_path.exists() { anyhow::bail!("moondream tokenizer.json not found at {}", tok_path.display()); }
+
+    // Acquire or initialize cached model
+    let lock = MOONDREAM_F32_FALLBACK.get_or_try_init(|| {
+        let device = candle_examples::device(if cfg!(feature="cpu") { true } else { false })?;
+        // dtype: GPU F16 else CPU F32
+        let dtype = if device.is_cuda() { DType::F16 } else { DType::F32 };
+        let config = moondream::Config::v2();
+        let vb = unsafe { VarBuilder::from_mmaped_safetensors(std::slice::from_ref(&model_path), dtype, &device)? };
+        let model = moondream::Model::new(&config, vb)?;
+        let tokenizer = Tokenizer::from_file(&tok_path).map_err(anyhow::Error::msg)?;
+        Ok::<_, anyhow::Error>(std::sync::Mutex::new(MoondreamFullState { model, tokenizer, device, dtype }))
+    })?;
+    let mut guard = lock.lock().map_err(|_| anyhow::anyhow!("Moondream fallback poisoned"))?;
+    // Image preprocessing
+    let img = image::load_from_memory(bytes)?
+        .resize_to_fill(378, 378, image::imageops::FilterType::Triangle)
+        .to_rgb8();
+    let data = img.into_raw();
+    let data = Tensor::from_vec(data, (378, 378, 3), &candle_core::Device::Cpu)?.permute((2, 0, 1))?;
+    let mean = Tensor::new(&[0.5f32, 0.5, 0.5], &candle_core::Device::Cpu)?.reshape((3, 1, 1))?;
+    let std = Tensor::new(&[0.5f32, 0.5, 0.5], &candle_core::Device::Cpu)?.reshape((3, 1, 1))?;
+    let image = (data.to_dtype(DType::F32)? / 255.)?.broadcast_sub(&mean)?.broadcast_div(&std)?.to_device(&guard.device)?.to_dtype(guard.dtype)?;
+    let image_embeds = image.unsqueeze(0)?;
+    let image_embeds = image_embeds.apply(guard.model.vision_encoder())?;
+    // Strong prompt & sampling
+    let prompt = format!(
+        concat!(
+            "You are a vision assistant. Return ONLY a valid JSON object with these keys: ",
+            "description (string, multi-sentence), caption (string, short), ",
+            "tags (array of lowercase single-word nouns), category (string).\n",
+            "Do not include any text outside the JSON.\n",
+            "Question: {}\n\nAnswer:"
+        ),
+        instruction
+    );
+    let mut logits_processor = LogitsProcessor::new(299792458, Some(0.5), Some(0.95));
+    let repeat_penalty: f32 = 1.1;
+    let repeat_last_n: usize = 96;
+    // Tokenization
+    let mut tokens = guard.tokenizer.encode(prompt.as_str(), true).map_err(anyhow::Error::msg)?.get_ids().to_vec();
+    if tokens.is_empty() { anyhow::bail!("Empty prompt for Moondream fallback"); }
+    let special_token = guard.tokenizer.get_vocab(true).get("<|endoftext|>").copied().ok_or_else(|| anyhow::anyhow!("Moondream tokenizer missing <|endoftext|>"))?;
+    let (bos_token, eos_token) = (special_token, special_token);
+    let sample_len = 640usize;
+    let mut generated = String::new();
+    let mut started_json = false;
+    let mut brace_depth: i32 = 0;
+    for index in 0..sample_len {
+        let context_size = if index > 0 { 1 } else { tokens.len() };
+        let ctxt: Vec<u32> = tokens[tokens.len().saturating_sub(context_size)..].to_vec();
+        let input = Tensor::new(ctxt.as_slice(), &guard.device)?.unsqueeze(0)?;
+        let logits = if index > 0 {
+            guard.model.text_model.forward(&input)?
+        } else {
+            let bos = Tensor::new(&[bos_token], &guard.device)?.unsqueeze(0)?;
+            guard.model.text_model.forward_with_img(&bos, &input, &image_embeds)?
+        };
+        let logits = logits.squeeze(0)?.to_dtype(candle_core::DType::F32)?;
+        let logits = if repeat_penalty == 1.0 { logits } else {
+            let start_at = tokens.len().saturating_sub(repeat_last_n);
+            candle_transformers::utils::apply_repeat_penalty(&logits, repeat_penalty, &tokens[start_at..])?
+        };
+        let next_token = logits_processor.sample(&logits)?;
+        tokens.push(next_token);
+        if next_token == eos_token || tokens.ends_with(&[27, 10619, 29]) { break; }
+        let tok = guard.tokenizer.decode(&[next_token], true).map_err(anyhow::Error::msg)?;
+        generated.push_str(&tok);
+        for ch in tok.chars() { if ch == '{' { started_json = true; brace_depth += 1; } if ch == '}' { brace_depth -= 1; } }
+        if started_json && brace_depth <= 0 && generated.contains('{') && generated.trim_end().ends_with('}') { break; }
+    }
+    Ok(generated)
+}
+
+fn moondream_fallback(bytes: &[u8], instruction: &str) -> anyhow::Result<String> {
+    // Prefer higher quality unquantized; fall back to quantized if it fails to load or run.
+    match moondream_unquantized_fallback(bytes, instruction) {
+        Ok(s) => Ok(s),
+        Err(e1) => {
+            log::warn!("Unquantized Moondream failed, falling back to quantized: {e1}");
+            moondream_quantized_fallback(bytes, instruction)
+        }
+    }
+}
 
 pub struct JoyCaptionModel {
     llava: LLaVA,
@@ -72,7 +315,7 @@ pub async fn ensure_worker_started() -> anyhow::Result<&'static WorkerHandle> {
             .unwrap_or_else(|| crate::app::DEFAULT_JOYCAPTION_PATH.to_string());
         log::info!("[joycap] model dir: {candidate}");
         // Surface the selected model path in the status hover UI
-    crate::ui::status::JOY_STATUS.set_model(&candidate);
+        crate::ui::status::VISION_STATUS.set_model(&candidate);
         let model_dir = PathBuf::from(candidate);
         let (tx, mut rx) = mpsc::unbounded_channel::<WorkMsg>();
         std::thread::spawn(move || {
@@ -124,7 +367,7 @@ pub async fn ensure_worker_started() -> anyhow::Result<&'static WorkerHandle> {
 pub async fn stop_worker() {
     if let Some(h) = WORKER.get() {
         let _ = h.tx.send(WorkMsg::Shutdown);
-        crate::ui::status::JOY_STATUS.set_state(crate::ui::status::StatusState::Idle, "Unloaded");
+        crate::ui::status::VISION_STATUS.set_state(crate::ui::status::StatusState::Idle, "Unloaded");
     }
 }
 
@@ -136,10 +379,11 @@ pub async fn stream_describe_bytes(bytes: Vec<u8>, instruction: &str) -> anyhow:
     use tokio::sync::mpsc as tmpsc;
     let (token_tx, mut token_rx) = tmpsc::unbounded_channel::<String>();
     let (done_tx, done_rx) = oneshot::channel();
+    let bytes_for_worker = bytes.clone();
     worker
         .tx
         .send(WorkMsg::StreamDescribeBytes {
-            bytes,
+            bytes: bytes_for_worker,
             instruction: instruction.to_string(),
             token_tx,
             done: done_tx,
@@ -159,10 +403,28 @@ pub async fn stream_describe_bytes(bytes: Vec<u8>, instruction: &str) -> anyhow:
             if !collected.is_empty() {
                 Ok(collected)
             } else {
-                Err(e)
+                // Try fallback Moondream if available
+                crate::ui::status::VISION_STATUS.set_state(crate::ui::status::StatusState::Initializing, "Fallback: Moondream");
+                match moondream_fallback(&bytes, instruction) {
+                    Ok(text) => {
+                        crate::ui::status::VISION_STATUS.set_state(crate::ui::status::StatusState::Idle, "Fallback done");
+                        Ok(text)
+                    },
+                    Err(_fe) => Err(e),
+                }
             }
         }
-        Err(e) => Err(anyhow::anyhow!("worker dropped: {e}")),
+        Err(e) => {
+            // Worker channel closed: attempt fallback
+            crate::ui::status::VISION_STATUS.set_state(crate::ui::status::StatusState::Initializing, "Fallback: Moondream");
+            match moondream_fallback(&bytes, instruction) {
+                Ok(text) => {
+                    crate::ui::status::VISION_STATUS.set_state(crate::ui::status::StatusState::Idle, "Fallback done");
+                    Ok(text)
+                },
+                Err(_fe) => Err(anyhow::anyhow!("worker dropped: {e}")),
+            }
+        }
     }
 }
 
@@ -182,10 +444,11 @@ where
     use tokio::sync::mpsc as tmpsc;
     let (token_tx, mut token_rx) = tmpsc::unbounded_channel::<String>();
     let (done_tx, done_rx) = oneshot::channel();
+    let bytes_for_worker = bytes.clone();
     worker
         .tx
         .send(WorkMsg::StreamDescribeBytes {
-            bytes,
+            bytes: bytes_for_worker,
             instruction: instruction.to_string(),
             token_tx,
             done: done_tx,
@@ -220,7 +483,12 @@ where
         Ok(full) => Ok(full),
         Err(e) => {
             if collected.is_empty() {
-                Err(e)
+                // Attempt fallback and emit as a single chunk
+                crate::ui::status::VISION_STATUS.set_state(crate::ui::status::StatusState::Initializing, "Fallback: Moondream");
+                match moondream_fallback(&bytes, instruction) {
+                    Ok(text) => { crate::ui::status::VISION_STATUS.set_state(crate::ui::status::StatusState::Idle, "Fallback done"); on_token(&text); Ok(text) }
+                    Err(_fe) => Err(e),
+                }
             } else {
                 Ok(collected)
             }

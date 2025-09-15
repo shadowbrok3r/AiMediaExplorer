@@ -16,8 +16,8 @@ use crate::ai::candle_llava::{
 
 impl super::JoyCaptionModel {
     pub fn load_from_dir(dir: &Path) -> Result<Self> {
-        use crate::ui::status::{JOY_STATUS, StatusState, GlobalStatusIndicator};
-        JOY_STATUS.set_state(StatusState::Initializing, "Reading config");
+        use crate::ui::status::{VISION_STATUS, StatusState, GlobalStatusIndicator};
+        VISION_STATUS.set_state(StatusState::Initializing, "Reading config");
         log::info!("[joycaption] loading model from dir: {}", dir.display());
         let config_path = dir.join("config.json");
         let gen_cfg_path = dir.join("generation_config.json");
@@ -249,7 +249,7 @@ impl super::JoyCaptionModel {
         }
         let weight_filenames = candle_examples::hub_load_local_safetensors(dir, "model.safetensors.index.json")?;
         let processor = preprocessor_config.to_clip_image_processor();
-        JOY_STATUS.set_state(StatusState::Initializing, "Mapping weights");
+        VISION_STATUS.set_state(StatusState::Initializing, "Mapping weights");
         let mut vb = unsafe { VarBuilder::from_mmaped_safetensors(&weight_filenames, dtype, &device)? };
         // Global upcast on CPU if original requested bf16/f16 to avoid kernel unsupported ops.
         if matches!(device, candle_core::Device::Cpu) && matches!(dtype, DType::BF16 | DType::F16) {
@@ -257,12 +257,12 @@ impl super::JoyCaptionModel {
             // Re-create VarBuilder with F32 target (re-mapping underlying storage lazily)
             vb = unsafe { VarBuilder::from_mmaped_safetensors(&weight_filenames, DType::F32, &device)? };
         }
-        JOY_STATUS.set_state(StatusState::Initializing, "Building model graph");
+        VISION_STATUS.set_state(StatusState::Initializing, "Building model graph");
         let llava: LLaVA = LLaVA::load(vb, &llava_config, Some(clip_vision_config))?;
         if temperature < 0.0 { temperature = 0.5; }
         log::info!("[joycaption] sampling defaults: temperature={:.3} top_p={:.3} top_k={:?} repetition_penalty={:?}", temperature, top_p, top_k, repetition_penalty);
         let eos_id_usize = llava_config.eos_token_id;
-        JOY_STATUS.set_state(StatusState::Idle, "Ready");
+        VISION_STATUS.set_state(StatusState::Idle, "Ready");
         Ok(Self { llava, tokenizer, processor, llava_config, cache, eos_token_id: eos_id_usize, max_new_tokens: MAX_NEW_TOKENS, temperature, _top_p: top_p, _top_k: top_k, _repetition_penalty: repetition_penalty, device })
     }
 }

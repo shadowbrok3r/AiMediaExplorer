@@ -110,7 +110,7 @@ impl crate::app::SmartMediaContext {
             if completed > 0 || active > 0 {
                 self.ai_ready = true;
                 self.ai_initializing = false;
-                crate::ui::status::JOY_STATUS.set_state(crate::ui::status::StatusState::Idle, "Ready");
+                crate::ui::status::VISION_STATUS.set_state(crate::ui::status::StatusState::Idle, "Ready");
             }
         }
    
@@ -187,8 +187,8 @@ impl crate::app::SmartMediaContext {
                                 .joycaption_model_dir
                                 .as_deref()
                                 .unwrap_or(crate::app::DEFAULT_JOYCAPTION_PATH);
-                            crate::ui::status::JOY_STATUS.set_model(model_path);
-                            crate::ui::status::JOY_STATUS.set_state(
+                            crate::ui::status::VISION_STATUS.set_model(model_path);
+                            crate::ui::status::VISION_STATUS.set_state(
                                 crate::ui::status::StatusState::Idle,
                                 "Model path set (reload on next use)",
                             );

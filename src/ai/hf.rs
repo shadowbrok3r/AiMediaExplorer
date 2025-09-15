@@ -5,7 +5,9 @@ use hf_hub::api::sync::Api;
 use tokenizers::Tokenizer;
 
 pub fn pick_device_cuda0_or_cpu() -> Device {
-    candle_core::Device::new_cuda(0).unwrap_or(candle_core::Device::Cpu)
+    let dev = candle_core::Device::new_cuda(0).unwrap_or(candle_core::Device::Cpu);
+    log::warn!("Using CPU: {}", dev.is_cpu());
+    dev
 }
 
 pub fn hf_model(hf_repo: &str) -> Result<hf_hub::api::sync::ApiRepo> {

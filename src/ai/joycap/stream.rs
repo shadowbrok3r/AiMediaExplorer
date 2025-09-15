@@ -20,7 +20,7 @@ impl super::JoyCaptionModel {
         mut on_token: impl FnMut(&str),
     ) -> anyhow::Result<String, anyhow::Error> {
         use crate::ui::status::{
-            GlobalStatusIndicator, JOY_STATUS, StatusState, VISION_MAX_TOKENS, VISION_TOKENS,
+            GlobalStatusIndicator, VISION_STATUS, StatusState, VISION_MAX_TOKENS, VISION_TOKENS,
         };
         let requested_dtype_str = self.llava_config.torch_dtype.clone();
         let mut effective_dtype = match requested_dtype_str.as_str() {
@@ -57,8 +57,8 @@ impl super::JoyCaptionModel {
             &self.llava_config,
         )?;
         log::info!("[joycaption.gen] temperature={:.3}", self.temperature);
-        JOY_STATUS.set_state(StatusState::Running, format!("Generating ({w}x{h})"));
-        JOY_STATUS.set_progress(0, self.max_new_tokens as u64);
+        VISION_STATUS.set_state(StatusState::Running, format!("Generating ({w}x{h})"));
+        VISION_STATUS.set_progress(0, self.max_new_tokens as u64);
         VISION_TOKENS.store(0, std::sync::atomic::Ordering::Relaxed);
         VISION_MAX_TOKENS.store(self.max_new_tokens, std::sync::atomic::Ordering::Relaxed);
         let input_embeds =
@@ -106,7 +106,7 @@ impl super::JoyCaptionModel {
             // Progress update (token based)
             let produced = token_ids.len() as u64;
             VISION_TOKENS.store(produced as usize, std::sync::atomic::Ordering::Relaxed);
-            JOY_STATUS.set_progress(produced, self.max_new_tokens as u64);
+            VISION_STATUS.set_progress(produced, self.max_new_tokens as u64);
             // Attempt ultra-incremental decode: decode just the last token id alone to guess its text.
             // Some tokenizers may require full context to merge bytes properly; fallback to full decode diff if needed.
             let mut emitted_this_step = false;
@@ -155,7 +155,7 @@ impl super::JoyCaptionModel {
             token_ids.len(),
             text
         );
-        JOY_STATUS.set_state(
+        VISION_STATUS.set_state(
             StatusState::Idle,
             format!("Generated {} tokens", token_ids.len()),
         );

@@ -107,16 +107,16 @@ impl crate::app::SmartMediaApp {
                     ui.menu_button("AI", |ui| {
                         // Enable AI Search: spawn async global init if not already in progress
                         if ui.button("Enable AI Search").clicked() {
-                            status::JOY_STATUS.set_state(status::StatusState::Initializing, "Loading vision model");
+                            status::VISION_STATUS.set_state(status::StatusState::Initializing, "Loading vision model");
                             tokio::spawn(async move {
                                 crate::ai::init_global_ai_engine_async().await;
-                                status::JOY_STATUS.set_state(status::StatusState::Idle, "Ready");
+                                status::VISION_STATUS.set_state(status::StatusState::Idle, "Ready");
                             });
                         }
                         if ui.button("Enable Auto Indexing").clicked() {
                             // Toggle auto indexing flag inside global engine (atomic set true)
                             crate::ai::GLOBAL_AI_ENGINE.auto_descriptions_enabled.store(true, std::sync::atomic::Ordering::Relaxed);
-                            status::JOY_STATUS.set_state(status::StatusState::Running, "Auto descriptions enabled");
+                            status::VISION_STATUS.set_state(status::StatusState::Running, "Auto descriptions enabled");
                         }
                         if ui.button("Enable Auto CLIP").clicked() {
                             crate::ai::GLOBAL_AI_ENGINE.auto_clip_enabled.store(true, std::sync::atomic::Ordering::Relaxed);
