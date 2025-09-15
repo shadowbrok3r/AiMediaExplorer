@@ -408,6 +408,7 @@ impl FileExplorer {
             
             Renderer::new(&mut self.table, &mut self.viewer)
             .with_style_modify(|s| {
+                s.scroll_bar_visibility = scroll_area::ScrollBarVisibility::AlwaysVisible;
                 s.single_click_edit_mode = true;
                 s.table_row_height = Some(75.0);
                 s.auto_shrink = [false, false].into();

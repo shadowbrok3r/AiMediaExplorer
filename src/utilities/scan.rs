@@ -2,7 +2,7 @@ use crate::utilities::types::{Filters, FoundFile, MediaKind, DirItem, is_image, 
 use crate::utilities::filtering::FiltersExt;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use jwalk::{WalkDirGeneric, Parallelism};
-use crossbeam::channel::{Sender, Receiver, bounded};
+use crossbeam::channel::{Sender, Receiver, bounded, TrySendError};
 use chrono::{DateTime, Local}; 
 use once_cell::sync::Lazy;
 use std::time::SystemTime;
@@ -53,6 +53,8 @@ static THUMB_POOL: Lazy<ThreadPool> = Lazy::new(|| {
 static THUMB_TX: OnceLock<Sender<ThumbJob>> = OnceLock::new();
 static IMG_INFLIGHT: AtomicUsize = AtomicUsize::new(0);
 static VID_INFLIGHT: AtomicUsize = AtomicUsize::new(0);
+// Instrumentation for thumbnail queue back-pressure
+static THUMB_DEFERRED: Lazy<std::sync::Mutex<Vec<ThumbJob>>> = Lazy::new(|| std::sync::Mutex::new(Vec::new()));
 
 // Route scan updates to the correct UI (per scan_id)
 static SCAN_ROUTERS: Lazy<std::sync::Mutex<std::collections::HashMap<u64, Sender<ScanEnvelope>>>> =
@@ -103,13 +105,21 @@ fn start_thumbnail_workers(rx: Receiver<ThumbJob>) {
 
 fn enqueue_thumb_job(path: &Path, kind: MediaKind, scan_id: u64) {
     if let Some(tx) = THUMB_TX.get() {
-        // increment inflight on success; bounded send applies back-pressure
         let job = ThumbJob { path: path.to_path_buf(), kind: kind.clone(), scan_id };
-        if tx.send(job).is_ok() {
-            match kind { 
-                MediaKind::Image => { IMG_INFLIGHT.fetch_add(1, Ordering::Relaxed); },
-                MediaKind::Video => { VID_INFLIGHT.fetch_add(1, Ordering::Relaxed); },
-                _ => {}
+        match tx.try_send(job) {
+            Ok(()) => {
+                match kind {
+                    MediaKind::Image => { IMG_INFLIGHT.fetch_add(1, Ordering::Relaxed); },
+                    MediaKind::Video => { VID_INFLIGHT.fetch_add(1, Ordering::Relaxed); },
+                    _ => {}
+                }
+            }
+            Err(TrySendError::Full(job)) => {
+                // Defer instead of blocking the scanner; we'll flush later.
+                if let Ok(mut v) = THUMB_DEFERRED.lock() { v.push(job); }
+            }
+            Err(TrySendError::Disconnected(_job)) => {
+                // Workers gone; silently drop.
             }
         }
     }
@@ -454,6 +464,18 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
         eprintln!("scan[{scan_id}]: wait for image thumbnails drained in {:?}", t_last_phase.elapsed()); 
         *t_last_phase = Instant::now(); 
     }
+    // Flush any deferred image thumbnail jobs now that the queue should have capacity
+    if let Ok(mut deferred) = THUMB_DEFERRED.lock() {
+        if timing_enabled && !deferred.is_empty() { eprintln!("scan[{scan_id}]: flushing {} deferred image thumbnails", deferred.len()); }
+        for job in deferred.drain(..) {
+            if let Some(tx) = THUMB_TX.get() {
+                if tx.try_send(job).is_ok() { IMG_INFLIGHT.fetch_add(1, Ordering::Relaxed); }
+                else { break; }
+            }
+        }
+    }
+    // Optionally wait a short moment for flushed deferred images to enqueue before videos
+    if IMG_INFLIGHT.load(Ordering::Relaxed) > 0 { std::thread::sleep(Duration::from_millis(50)); }
     for vpath in videos_for_later.into_iter() {
         enqueue_thumb_job(&vpath, MediaKind::Video, scan_id);
     }

@@ -72,11 +72,27 @@ fn generate_shell_thumb_data(path: &Path) -> Result<String, String> {
         },
         core::{Interface, PCWSTR},
     };
+    // Initialize COM only once per thread (STA). Repeated CoInitializeEx can produce warnings.
+    thread_local! {
+        static COM_INIT: std::cell::Cell<bool> = std::cell::Cell::new(false);
+    }
+    let mut init_err: Option<String> = None;
+    COM_INIT.with(|cell| {
+        if !cell.get() {
+            unsafe {
+                match CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok() {
+                    Ok(_) => cell.set(true),
+                    Err(e) => {
+                        // Ignore RPC_E_CHANGED_MODE and proceed (already initialized in MTA or different model)
+                        init_err = Some(format!("CoInitializeEx: {e}"));
+                    }
+                }
+            }
+        }
+    });
+    if let Some(e) = init_err.take() { log::trace!("[thumb] COM init issue (continuing): {e}"); }
 
     unsafe {
-        CoInitializeEx(None, COINIT_APARTMENTTHREADED)
-            .ok()
-            .map_err(|e| format!("CoInitializeEx: {e}"))?;
         let wide: Vec<u16> = path
             .as_os_str()
             .encode_wide()
