@@ -11,14 +11,32 @@ impl crate::app::SmartMediaApp {
             ui.horizontal(|ui| {
                 ui.menu_button(" File ", |ui| {
                     ui.menu_button("Database", |ui| {
-                        // When in Database mode, allow viewing the entire DB at once
-                        if self.context.file_explorer.viewer.mode == crate::ui::file_table::table::ExplorerMode::Database {
-                            if ui.button("View Entire Database").on_hover_text("Show all thumbnails from all directories").clicked() {
-                                self.context.file_explorer.load_all_database_rows();
-                                ui.close();
-                            }
-                            ui.separator();
+                        if ui.button("View Entire Database").on_hover_text("Show all thumbnails from all directories").clicked() {
+                            self.context.file_explorer.viewer.mode = super::file_table::table::ExplorerMode::Database;
+                            self.context.file_explorer.load_all_database_rows();
                         }
+                        if ui.button("Refine (AI, DB-only)").on_hover_text("Open AI Refinements panel to generate proposals from the database").clicked() {
+                            // Ensure tab is open/focused
+                            let label = "AI Refinements".to_string();
+                            if let Some((surface, node, _tab)) = self.tree.find_tab(&label) {
+                                self.tree.set_focused_node_and_surface((surface, node));
+                            } else {
+                                self.tree[SurfaceIndex::main()].push_to_focused_leaf(label.clone());
+                                self.context.open_tabs.insert(label);
+                            }
+                            ui.close();
+                        }
+                        if ui.button("Group by Categories").on_hover_text("Show virtual folders for each category").clicked() {
+                            self.context.file_explorer.viewer.mode = super::file_table::table::ExplorerMode::Database;
+                            self.context.file_explorer.load_virtual_categories_view();
+                            ui.close();
+                        }
+                        if ui.button("Group by Tags").on_hover_text("Show virtual folders for each tag").clicked() {
+                            self.context.file_explorer.viewer.mode = super::file_table::table::ExplorerMode::Database;
+                            self.context.file_explorer.load_virtual_tags_view();
+                            ui.close();
+                        }
+                        ui.separator();
                         if ui.button("Choose DB Folder…").clicked() {
                             if let Some(dir) = rfd::FileDialog::new().set_title("Choose database folder").pick_folder() {
                                 let path_str = dir.display().to_string();

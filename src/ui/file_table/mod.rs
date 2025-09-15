@@ -470,29 +470,50 @@ impl FileExplorer {
                     match act {
                         crate::ui::file_table::table::TabAction::OpenCategory(cat) => {
                             let title = format!("Category: {}", cat);
-                            let rows: Vec<crate::database::Thumbnail> = self
+                            // Prefer current-table filter; if none (e.g., from virtual view), fetch from DB
+                            let rows_in_view: Vec<crate::database::Thumbnail> = self
                                 .table
                                 .iter()
                                 .filter(|r| r.category.as_deref() == Some(cat.as_str()))
                                 .cloned()
                                 .collect();
-                            crate::app::OPEN_TAB_REQUESTS
-                                .lock()
-                                .unwrap()
-                                .push(crate::ui::file_table::FilterRequest::NewTab { title, rows, showing_similarity: false, similar_scores: None, background: false });
+                            if rows_in_view.is_empty() || matches!(self.viewer.mode, table::ExplorerMode::Database) {
+                                tokio::spawn(async move {
+                                    let fetched = crate::Thumbnail::fetch_by_category(&cat).await.unwrap_or_default();
+                                    crate::app::OPEN_TAB_REQUESTS
+                                        .lock()
+                                        .unwrap()
+                                        .push(crate::ui::file_table::FilterRequest::NewTab { title, rows: fetched, showing_similarity: false, similar_scores: None, background: false });
+                                });
+                            } else {
+                                crate::app::OPEN_TAB_REQUESTS
+                                    .lock()
+                                    .unwrap()
+                                    .push(crate::ui::file_table::FilterRequest::NewTab { title, rows: rows_in_view, showing_similarity: false, similar_scores: None, background: false });
+                            }
                         }
                         crate::ui::file_table::table::TabAction::OpenTag(tag) => {
                             let title = format!("Tag: {}", tag);
-                            let rows: Vec<crate::database::Thumbnail> = self
+                            let rows_in_view: Vec<crate::database::Thumbnail> = self
                                 .table
                                 .iter()
                                 .filter(|r| r.tags.iter().any(|t| t.eq_ignore_ascii_case(&tag)))
                                 .cloned()
                                 .collect();
-                            crate::app::OPEN_TAB_REQUESTS
-                                .lock()
-                                .unwrap()
-                                .push(crate::ui::file_table::FilterRequest::NewTab { title, rows, showing_similarity: false, similar_scores: None, background: false });
+                            if rows_in_view.is_empty() || matches!(self.viewer.mode, table::ExplorerMode::Database) {
+                                tokio::spawn(async move {
+                                    let fetched = crate::Thumbnail::fetch_by_tag(&tag).await.unwrap_or_default();
+                                    crate::app::OPEN_TAB_REQUESTS
+                                        .lock()
+                                        .unwrap()
+                                        .push(crate::ui::file_table::FilterRequest::NewTab { title, rows: fetched, showing_similarity: false, similar_scores: None, background: false });
+                                });
+                            } else {
+                                crate::app::OPEN_TAB_REQUESTS
+                                    .lock()
+                                    .unwrap()
+                                    .push(crate::ui::file_table::FilterRequest::NewTab { title, rows: rows_in_view, showing_similarity: false, similar_scores: None, background: false });
+                            }
                         }
                         crate::ui::file_table::table::TabAction::OpenArchive(path_clicked) => {
                             // Choose scheme based on extension (zip or tar family)
@@ -565,6 +586,67 @@ impl FileExplorer {
     /// Number of selected file rows in the current table.
     pub fn selection_count(&self) -> usize {
         self.viewer.selected.len()
+    }
+
+    /// Load a virtual "folders" view where each folder is a distinct category
+    pub fn load_virtual_categories_view(&mut self) {
+        if self.db_loading { return; }
+        self.viewer.showing_similarity = false;
+        self.viewer.similar_scores.clear();
+        self.db_loading = true;
+        self.table.clear();
+        self.thumb_scheduled.clear();
+        self.pending_thumb_rows.clear();
+        self.viewer.clip_presence.clear();
+        self.viewer.clip_presence_hashes.clear();
+        let tx = self.thumbnail_tx.clone();
+        tokio::spawn(async move {
+            match crate::Thumbnail::list_distinct_categories().await {
+                Ok(cats) => {
+                    for cat in cats.into_iter() {
+                        let mut row = crate::Thumbnail::default();
+                        row.file_type = "<DIR>".to_string();
+                        row.filename = cat.clone();
+                        row.path = format!("cat://{cat}");
+                        row.parent_dir = "cat://".to_string();
+                        let _ = tx.try_send(row);
+                    }
+                }
+                Err(e) => log::error!("Virtual categories load failed: {e:?}"),
+            }
+        });
+        // Mark as not loading so UI can interact; rows will stream in via channel
+        self.db_loading = false;
+    }
+
+    /// Load a virtual "folders" view where each folder is a distinct tag
+    pub fn load_virtual_tags_view(&mut self) {
+        if self.db_loading { return; }
+        self.viewer.showing_similarity = false;
+        self.viewer.similar_scores.clear();
+        self.db_loading = true;
+        self.table.clear();
+        self.thumb_scheduled.clear();
+        self.pending_thumb_rows.clear();
+        self.viewer.clip_presence.clear();
+        self.viewer.clip_presence_hashes.clear();
+        let tx = self.thumbnail_tx.clone();
+        tokio::spawn(async move {
+            match crate::Thumbnail::list_distinct_tags().await {
+                Ok(tags) => {
+                    for tag in tags.into_iter() {
+                        let mut row = crate::Thumbnail::default();
+                        row.file_type = "<DIR>".to_string();
+                        row.filename = tag.clone();
+                        row.path = format!("tag://{tag}");
+                        row.parent_dir = "tag://".to_string();
+                        let _ = tx.try_send(row);
+                    }
+                }
+                Err(e) => log::error!("Virtual tags load failed: {e:?}"),
+            }
+        });
+        self.db_loading = false;
     }
 
     fn apply_filters_to_current_table(&mut self) {

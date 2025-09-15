@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
-use crate::{ui::file_table::FileExplorer, UiSettings};
+use crate::{ui::{file_table::FileExplorer, refine::RefinementsPanel}, UiSettings};
 use egui_toast::Toasts;
 
 // Global atomic flag to request opening the settings modal from anywhere (e.g., navbar without direct &mut SmartMediaApp access)
@@ -42,6 +42,7 @@ pub struct SmartMediaContext {
     // Map of dynamic tab title -> a dedicated FileExplorer instance with filters applied
     pub filtered_tabs: std::collections::HashMap<String, crate::ui::file_table::FileExplorer>,
     pub assistant: crate::ui::assistant::AssistantPanel,
+    pub refinements: crate::ui::refine::RefinementsPanel,
     pub open_ui_settings: bool,
     // UI state for adding excluded directories
     pub new_excluded_dir: String,
@@ -49,6 +50,9 @@ pub struct SmartMediaContext {
     pub toasts: Toasts,
     pub toast_tx: Sender<(egui_toast::ToastKind, String)>,
     pub toast_rx: Receiver<(egui_toast::ToastKind, String)>,
+    // Channel for AI Refinements proposals
+    pub refine_tx: Sender<Vec<crate::ui::refine::RefinementProposal>>,
+    pub refine_rx: Receiver<Vec<crate::ui::refine::RefinementProposal>>,
 }
 
 #[derive(PartialEq, Debug, Serialize, Deserialize, Default)]
@@ -62,7 +66,8 @@ impl SmartMediaApp {
         setup_custom_fonts(&cc.egui_ctx);
         let (ui_settings_tx, ui_settings_rx) = crossbeam::channel::bounded(1);
         let (db_ready_tx, db_ready_rx) = crossbeam::channel::bounded(1);
-    let (toast_tx, toast_rx) = crossbeam::channel::unbounded();
+        let (toast_tx, toast_rx) = crossbeam::channel::unbounded();
+        let (refine_tx, refine_rx) = crossbeam::channel::unbounded();
         
         let mut tree = DockState::new(vec![
             "File Explorer".to_owned(),
@@ -104,12 +109,15 @@ impl SmartMediaApp {
             file_explorer: FileExplorer::new(false),
             open_tabs,
             filtered_tabs: std::collections::HashMap::new(),
-        assistant: Default::default(),
+            assistant: Default::default(),
+            refinements: RefinementsPanel::new(refine_tx.clone(), toast_tx.clone()),
             open_ui_settings: false,
             new_excluded_dir: String::new(),
             toasts: Toasts::new().anchor(eframe::egui::Align2::RIGHT_TOP, (-10.0, 10.0)),
             toast_tx,
             toast_rx,
+            refine_tx,
+            refine_rx,
         };
 
         Self {

@@ -89,6 +89,19 @@ impl crate::app::SmartMediaContext {
             self.open_settings_modal = true;
         }
 
+        // Drain refinement proposal updates
+        while let Ok(batch) = self.refine_rx.try_recv() {
+            let n = batch.len();
+            self.refinements.proposals = batch;
+            self.refinements.generating = false;
+            if n == 0 {
+                log::warn!("[Refine/UI] Received empty proposals batch");
+                let _ = self.toast_tx.try_send((egui_toast::ToastKind::Warning, "No proposals generated".into()));
+            } else {
+                let _ = self.toast_tx.try_send((egui_toast::ToastKind::Info, format!("Proposals ready ({n})")));
+            }
+        }
+
         // Poll global AI engine readiness (cheap lock attempt)
         if !self.ai_ready && self.ai_initializing {
             use std::sync::atomic::Ordering;
@@ -180,6 +193,60 @@ impl crate::app::SmartMediaContext {
                                 "Model path set (reload on next use)",
                             );
                         }
+                    });
+                    ui.separator();
+                    ui.label("Reranker (HF) Model Repo:").on_hover_text("Hugging Face repo id for reranker model, e.g., jinaai/jina-reranker-m0");
+                    ui.horizontal(|ui| {
+                        let mut rer_text = d
+                            .reranker_model
+                            .clone()
+                            .unwrap_or_else(|| "jinaai/jina-reranker-m0".to_string());
+                        let before = rer_text.clone();
+                        let resp = ui.text_edit_singleline(&mut rer_text);
+                        if ui.button("Reset").on_hover_text("Reset to default: jinaai/jina-reranker-m0").clicked() {
+                            rer_text = "jinaai/jina-reranker-m0".to_string();
+                        }
+                        if resp.changed() || rer_text != before {
+                            let val = rer_text.trim();
+                            d.reranker_model = if val.is_empty() { None } else { Some(val.to_string()) };
+                        }
+                    });
+                    // Jina M0 settings
+                    ui.collapsing("Jina M0 Settings", |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Max tokens (query+doc)");
+                            let mut val = d.jina_max_length.unwrap_or(1024);
+                            if ui.add(eframe::egui::DragValue::new(&mut val).range(128..=8192)).changed() {
+                                d.jina_max_length = Some(val.max(128).min(8192));
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Query type");
+                            let mut qt = d.jina_query_type.clone().unwrap_or_else(|| "text".into());
+                            egui::ComboBox::new("jina-query-type", "Query type")
+                                .selected_text(qt.as_str())
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut qt, "text".into(), "text");
+                                    ui.selectable_value(&mut qt, "image".into(), "image");
+                                });
+                            d.jina_query_type = Some(qt);
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Document type");
+                            let mut dt = d.jina_doc_type.clone().unwrap_or_else(|| "text".into());
+                            egui::ComboBox::new("jina-doc-type", "Document type")
+                                .selected_text(dt.as_str())
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut dt, "text".into(), "text");
+                                    ui.selectable_value(&mut dt, "image".into(), "image");
+                                });
+                            d.jina_doc_type = Some(dt);
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Enable multimodal reranking");
+                            let mut en = d.jina_enable_multimodal.unwrap_or(false);
+                            if ui.checkbox(&mut en, "Enable").changed() { d.jina_enable_multimodal = Some(en); }
+                        });
                     });
                     ui.horizontal(|ui| {
                         ui.label("Auto Indexing");
@@ -397,6 +464,8 @@ impl crate::app::SmartMediaContext {
                         self.ai_initializing = true;
                         tokio::spawn(async move { crate::ai::init_global_ai_engine_async().await; });
                     }
+                    // Clear reranker so it reloads with any updated model next use
+                    tokio::spawn(async move { crate::ai::reranker::clear_global_reranker().await; });
                     self.settings_draft = None;
                     // self.open_settings_modal = false;
                 }
@@ -422,6 +491,23 @@ impl crate::app::SmartMediaContext {
                         match crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await {
                             Ok(_) => log::info!("[CLIP] Engine reloaded successfully"),
                             Err(e) => log::error!("[CLIP] Engine reload failed: {e}"),
+                        }
+                    });
+                }
+                if ui.button("Reload Reranker Now").on_hover_text("Reload the reranker engine with the current HF repo setting").clicked() {
+                    // Stage draft if any
+                    if let Some(d) = &self.settings_draft {
+                        self.ui_settings = d.clone();
+                        self.file_explorer.viewer.ui_settings = self.ui_settings.clone();
+                        let to_save = self.ui_settings.clone();
+                        tokio::spawn(async move { crate::database::save_settings(&to_save); });
+                    }
+                    tokio::spawn(async move {
+                        crate::ai::reranker::clear_global_reranker().await;
+                        if let Err(e) = crate::ai::reranker::ensure_reranker_from_settings().await {
+                            log::error!("[Reranker] Reload failed: {e}");
+                        } else {
+                            log::info!("[Reranker] Engine reloaded successfully");
                         }
                     });
                 }

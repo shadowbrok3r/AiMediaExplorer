@@ -3,9 +3,19 @@ pub mod candle_llava;
 pub mod clip;
 pub mod joycap;
 pub mod siglip;
+pub mod refine;
+pub mod hf;
+pub mod reranker;
+pub mod model;
+pub mod jina_m0;
+pub mod qwen2_5_vl;
 
 pub use ai_search::*;
 pub use joycap as joycaption_adapter;
+pub use refine::*;
+pub use reranker::*;
+pub use model::*;
+pub use jina_m0::*;
 
 use crate::database::Thumbnail;
 use crate::ui::status::{CLIP_STATUS, GlobalStatusIndicator, JOY_STATUS, StatusState};
@@ -28,4 +38,30 @@ pub async fn init_global_ai_engine_async() {
     JOY_STATUS.set_state(StatusState::Running, format!("Loading Cache"));
     CLIP_STATUS.set_state(StatusState::Idle, "Idle");
     JOY_STATUS.set_state(StatusState::Idle, format!("Cached {loaded}"));
+}
+
+// Lightweight lifecycle helpers to avoid keeping all heavy models resident simultaneously.
+pub async fn unload_heavy_models_except(keep: &str) {
+    // keep is one of: "CLIP", "JOYCAP", "RERANK", or "" for none
+    match keep {
+        "CLIP" => {
+            // Stop JOYCAP worker
+            crate::ai::joycap::stop_worker().await;
+        }
+        "JOYCAP" => {
+            // Drop CLIP backend
+            crate::ai::clip::clear_clip_engine(&GLOBAL_AI_ENGINE.clip_engine).await;
+        }
+        "RERANK" => {
+            // Prefer to release JOYCAP and CLIP for memory headroom
+            crate::ai::joycap::stop_worker().await;
+            crate::ai::clip::clear_clip_engine(&GLOBAL_AI_ENGINE.clip_engine).await;
+        }
+        _ => {
+            // Unload all heavy backends
+            crate::ai::joycap::stop_worker().await;
+            crate::ai::clip::clear_clip_engine(&GLOBAL_AI_ENGINE.clip_engine).await;
+            crate::ai::reranker::clear_global_reranker().await;
+        }
+    }
 }

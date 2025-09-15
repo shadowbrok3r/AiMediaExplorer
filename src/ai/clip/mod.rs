@@ -76,6 +76,12 @@ pub(crate) async fn ensure_clip_engine(engine_slot: &std::sync::Arc<tokio::sync:
     Ok(())
 }
 
+pub(crate) async fn clear_clip_engine(engine_slot: &std::sync::Arc<tokio::sync::Mutex<Option<ClipEngine>>>) {
+    let mut guard = engine_slot.lock().await;
+    *guard = None;
+    CLIP_STATUS.set_state(StatusState::Idle, "Unloaded");
+}
+
 fn l2_normalize(mut v: Vec<f32>) -> Vec<f32> {
     let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
     if norm > 0.0 { for x in &mut v { *x /= norm; } }

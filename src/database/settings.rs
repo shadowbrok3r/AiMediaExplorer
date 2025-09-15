@@ -38,6 +38,17 @@ pub struct UiSettings {
     pub auto_save_to_database: bool,
     // Optional: user-specified folder containing the vision (LLaVA/JoyCaption) model
     pub joycaption_model_dir: Option<String>,
+    // Hugging Face repo for the reranker model (e.g., "jinaai/jina-reranker-m0")
+    pub reranker_model: Option<String>,
+    // --- Jina M0 settings ---
+    // Max token length for text reranking (query+document)
+    pub jina_max_length: Option<usize>,
+    // Document type: "text" or "image" (for future multimodal)
+    pub jina_doc_type: Option<String>,
+    // Query type: "text" or "image"
+    pub jina_query_type: Option<String>,
+    // Enable multimodal reranking when available (uses image evidence)
+    pub jina_enable_multimodal: Option<bool>,
     // Batch size for sending FoundBatch messages during scans
     pub scan_found_batch_max: Option<usize>,
     pub egui_preferences: Options
@@ -67,6 +78,11 @@ impl Default for UiSettings {
             recent_paths: Vec::new(),
             auto_save_to_database: false,
             joycaption_model_dir: None,
+            reranker_model: Some("jinaai/jina-reranker-m0".into()),
+            jina_max_length: Some(1024),
+            jina_doc_type: Some("text".into()),
+            jina_query_type: Some("text".into()),
+            jina_enable_multimodal: Some(false),
             scan_found_batch_max: Some(128),
             egui_preferences: Options::default()
 

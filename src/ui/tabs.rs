@@ -1,10 +1,11 @@
 use egui_dock::{NodeIndex, SurfaceIndex, tab_viewer::OnCloseResponse};
 use eframe::egui::*;
 
-pub const TABS: [&str; 3] = [
+pub const TABS: [&str; 4] = [
     "File Explorer",
     "Logs",
     "AI Assistant",
+    "AI Refinements",
 ];
 
 impl egui_dock::TabViewer for crate::app::SmartMediaContext {
@@ -18,6 +19,7 @@ impl egui_dock::TabViewer for crate::app::SmartMediaContext {
         match tab.as_str() {
             "File Explorer" => self.file_explorer.ui(ui),
             "AI Assistant" => self.assistant.ui(ui, &mut self.file_explorer),
+            "AI Refinements" => self.refinements.ui(ui),
             "Logs" => egui_logger::logger_ui()
                 .warn_color(Color32::from_rgb(94, 215, 221)) 
                 .error_color(Color32::from_rgb(255, 55, 102)) 

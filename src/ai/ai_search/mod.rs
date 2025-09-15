@@ -448,6 +448,40 @@ impl AISearchEngine {
         }
     }
 
+    /// Return up to 'limit' thumbnail rows that have non-empty description, caption, category, and at least one tag.
+    pub async fn list_rich_thumbnail_rows(&self, limit: usize) -> Vec<crate::Thumbnail> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        match DB
+            .query(
+                r#"
+                SELECT * FROM thumbnails
+                    WHERE 
+                        description != NONE 
+                        AND caption != NONE 
+                        AND category != NONE 
+                        AND tags != NONE
+                LIMIT $limit
+                "#,
+            )
+            .bind(("limit", limit as i64))
+            .await
+        {
+            Ok(mut resp) => {
+                let rows: Result<Vec<crate::Thumbnail>, _> = resp.take(0);
+                rows.unwrap_or_else(|e| {
+                    log::warn!("list_rich_thumbnail_rows take failed: {e}");
+                    Vec::new()
+                })
+            }
+            Err(e) => {
+                log::warn!("list_rich_thumbnail_rows query failed: {e}");
+                Vec::new()
+            }
+        }
+    }
+
     /// Update (or insert) a description for a file already tracked in self.files.
     /// Also persists (best-effort) to the cached thumbnail/metadata row if full metadata can be retrieved.
     pub async fn set_file_description(

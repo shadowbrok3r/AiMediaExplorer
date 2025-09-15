@@ -6,6 +6,13 @@ pub struct AssistantPanel {
     pub progress: Option<String>,
     pub last_reply: String,
     pub attach_current_image: bool,
+    // Refinement UI state
+    pub ref_old_category: String,
+    pub ref_new_category: String,
+    pub ref_old_tag: String,
+    pub ref_new_tag: String,
+    pub ref_delete_tag: String,
+    pub ref_limit_tags: i32,
 }
 
 impl AssistantPanel {
@@ -99,6 +106,69 @@ impl AssistantPanel {
         });
 
         ui.separator();
+        CollapsingHeader::new("Refine Categories and Tags")
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.label("Rename / merge Category");
+                ui.horizontal(|ui| {
+                    ui.add_sized([220.0, 20.0], TextEdit::singleline(&mut self.ref_old_category).hint_text("Old category"));
+                    ui.add_sized([220.0, 20.0], TextEdit::singleline(&mut self.ref_new_category).hint_text("New category"));
+                    if ui.button("Apply").clicked() {
+                        let old = self.ref_old_category.clone();
+                        let newc = self.ref_new_category.clone();
+                        tokio::spawn(async move {
+                            match crate::Thumbnail::rename_category(&old, &newc).await {
+                                Ok(n) => log::info!("Renamed category '{old}' -> '{newc}' ({n} rows)"),
+                                Err(e) => log::error!("Category rename failed: {e}"),
+                            }
+                        });
+                    }
+                });
+                ui.separator();
+                ui.label("Rename / merge Tag");
+                ui.horizontal(|ui| {
+                    ui.add_sized([220.0, 20.0], TextEdit::singleline(&mut self.ref_old_tag).hint_text("Old tag"));
+                    ui.add_sized([220.0, 20.0], TextEdit::singleline(&mut self.ref_new_tag).hint_text("New tag"));
+                    if ui.button("Apply").clicked() {
+                        let old = self.ref_old_tag.clone();
+                        let newt = self.ref_new_tag.clone();
+                        tokio::spawn(async move {
+                            match crate::Thumbnail::rename_tag(&old, &newt).await {
+                                Ok(n) => log::info!("Renamed tag '{old}' -> '{newt}' ({n} rows)"),
+                                Err(e) => log::error!("Tag rename failed: {e}"),
+                            }
+                        });
+                    }
+                });
+                ui.separator();
+                ui.label("Delete Tag");
+                ui.horizontal(|ui| {
+                    ui.add_sized([220.0, 20.0], TextEdit::singleline(&mut self.ref_delete_tag).hint_text("Tag to delete"));
+                    if ui.button("Delete").clicked() {
+                        let tag = self.ref_delete_tag.clone();
+                        tokio::spawn(async move {
+                            match crate::Thumbnail::delete_tag(&tag).await {
+                                Ok(n) => log::info!("Deleted tag '{tag}' from {n} rows"),
+                                Err(e) => log::error!("Delete tag failed: {e}"),
+                            }
+                        });
+                    }
+                });
+                ui.separator();
+                ui.label("Limit number of tags per item");
+                ui.horizontal(|ui| {
+                    ui.add(DragValue::new(&mut self.ref_limit_tags).range(0..=64));
+                    if ui.button("Prune").clicked() {
+                        let limit = self.ref_limit_tags as i64;
+                        tokio::spawn(async move {
+                            match crate::Thumbnail::prune_tags(limit).await {
+                                Ok(n) => log::info!("Pruned tags to {limit} on {n} rows"),
+                                Err(e) => log::error!("Prune tags failed: {e}"),
+                            }
+                        });
+                    }
+                });
+            });
         if let Some(p) = &self.progress {
             ui.colored_label(Color32::LIGHT_BLUE, "Streaming…");
             ScrollArea::vertical().max_height(200.0).show(ui, |ui| {

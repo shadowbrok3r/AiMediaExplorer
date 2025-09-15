@@ -573,6 +573,19 @@ impl RowViewer<Thumbnail> for FileTableViewer {
             }
             _ => {
                 if resp.clicked() {
+                    // Handle virtual folder rows first (category/tag views)
+                    if row.file_type == "<DIR>" {
+                        if let Some(rest) = row.path.strip_prefix("cat://") {
+                            let cat = rest.trim_end_matches('/').to_string();
+                            self.requested_tabs.push(TabAction::OpenCategory(cat));
+                            return None;
+                        }
+                        if let Some(rest) = row.path.strip_prefix("tag://") {
+                            let tag = rest.trim_end_matches('/').to_string();
+                            self.requested_tabs.push(TabAction::OpenTag(tag));
+                            return None;
+                        }
+                    }
                     if self.mode == ExplorerMode::Database {
                         // In DB mode, disable on-demand generation attempts (no filesystem walk triggers)
                     } else {

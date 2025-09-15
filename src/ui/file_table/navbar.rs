@@ -722,15 +722,15 @@ impl super::FileExplorer {
                     .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside).style(style))
                     .ui(ui, |ui| {
                         ui.vertical_centered_justified(|ui| {
-                            ui.selectable_value(&mut self.viewer.mode, super::table::ExplorerMode::Database, "Database");
-                            ui.selectable_value(&mut self.viewer.mode, super::table::ExplorerMode::FileSystem, "FileSystem");
+                            let db_res = ui.selectable_value(&mut self.viewer.mode, super::table::ExplorerMode::Database, "Database");
+                            let fs_res = ui.selectable_value(&mut self.viewer.mode, super::table::ExplorerMode::FileSystem, "FileSystem");
 
-                            // if response.changed() {
-                            //     match self.viewer.mode {
-                            //         table::ExplorerMode::Database => self.load_database_rows(),
-                            //         table::ExplorerMode::FileSystem => self.populate_current_directory()
-                            //     }
-                            // }
+                            if db_res.changed() || fs_res.changed() {
+                                match self.viewer.mode {
+                                    super::table::ExplorerMode::Database => self.load_database_rows(),
+                                    super::table::ExplorerMode::FileSystem => self.populate_current_directory()
+                                }
+                            }
                             if ui.button("Reload Page").clicked() { self.load_database_rows(); }
                             if ui.button("Clear Table").clicked() { self.table.clear(); }
                             ui.separator();

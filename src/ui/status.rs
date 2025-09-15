@@ -180,6 +180,8 @@ pub static JOY_STATUS: Lazy<RegisteredStatus> =
     Lazy::new(|| RegisteredStatus::register("JOYCAP", None));
 pub static CLIP_STATUS: Lazy<RegisteredStatus> =
     Lazy::new(|| RegisteredStatus::register("CLIP", None));
+pub static RERANK_STATUS: Lazy<RegisteredStatus> =
+    Lazy::new(|| RegisteredStatus::register("RERANK", None));
 
 /// Token-progress tracker for generation (vision description) from anywhere.
 pub static VISION_TOKENS: Lazy<AtomicUsize> = Lazy::new(|| AtomicUsize::new(0));
@@ -239,7 +241,8 @@ fn indicator_small(ui: &mut Ui, meta: &StatusMeta) {
     }
 
     atom_layout.response.on_hover_ui(|ui| {
-        ui.set_max_width(300.);
+        ui.style_mut().interaction.selectable_labels = true;
+        ui.set_max_width(500.);
         ui.vertical_centered(|ui| {
             ui.heading(meta.name);
             ui.separator();
@@ -293,6 +296,7 @@ fn indicator_small(ui: &mut Ui, meta: &StatusMeta) {
                 ProgressBar::new(pct).show_percentage().ui(ui);
             });
         }
+        let _ = ui.button("X");
     });
     ui.add_space(5.);
 }

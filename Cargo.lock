@@ -6643,6 +6643,7 @@ dependencies = [
  "rayon",
  "regex",
  "rfd",
+ "safetensors",
  "serde",
  "serde_json",
  "sevenz-rust2",

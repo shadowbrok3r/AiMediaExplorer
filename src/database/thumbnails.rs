@@ -93,8 +93,8 @@ impl crate::Thumbnail {
         path: &str,
     ) -> anyhow::Result<Option<RecordId>, anyhow::Error> {
         log::info!("Getting thumbnail for path: {path:?}");
-    let _ga = db_activity("Lookup thumbnail id by path");
-    db_set_detail("Looking up thumbnail id".to_string());
+        let _ga = db_activity("Lookup thumbnail id by path");
+        db_set_detail("Looking up thumbnail id".to_string());
         let resp: Option<RecordId> = DB
             .query("SELECT VALUE id FROM thumbnails WHERE path = $path")
             .bind(("path", path.to_string()))
@@ -106,8 +106,8 @@ impl crate::Thumbnail {
 
     pub async fn get_embedding(self) -> anyhow::Result<super::ClipEmbeddingRow, anyhow::Error> {
         log::info!("Checking embedding with thumb_ref == {:?}", self.id.clone());
-    let _ga = db_activity("Load clip embedding by thumb_ref");
-    db_set_detail("Loading clip embedding for thumbnail".to_string());
+        let _ga = db_activity("Load clip embedding by thumb_ref");
+        db_set_detail("Loading clip embedding for thumbnail".to_string());
         let embedding: Option<super::ClipEmbeddingRow> = DB
             .query("SELECT * FROM clip_embeddings WITH INDEX clip_thumb_ref_idx WHERE thumb_ref = $id")
             .bind(("id", self.id.clone()))
@@ -121,8 +121,8 @@ impl crate::Thumbnail {
     pub async fn find_thumbs_from_paths(
         chunk_vec: Vec<String>,
     ) -> anyhow::Result<Vec<Self>, anyhow::Error> {
-    let _ga = db_activity("Load thumbnails by path set");
-    db_set_detail("Loading thumbnails by set".to_string());
+        let _ga = db_activity("Load thumbnails by path set");
+        db_set_detail("Loading thumbnails by set".to_string());
         let thumbs: Vec<Self> = DB
         .query("SELECT id, db_created, path, filename, file_type, size, modified, hash, description, caption, tags, category FROM thumbnails WHERE array::find($paths, path) != NONE")
         .bind(("paths", chunk_vec))
@@ -130,6 +130,160 @@ impl crate::Thumbnail {
         .take(0)?;
 
         Ok(thumbs)
+    }
+
+    /// List distinct non-empty categories present across thumbnails.
+    pub async fn list_distinct_categories() -> anyhow::Result<Vec<String>, anyhow::Error> {
+        let _ga = db_activity("List distinct categories");
+        db_set_detail("Loading unique categories".to_string());
+        let cats: Vec<String> = DB
+            .query("SELECT VALUE category FROM thumbnails WHERE category != NONE GROUP BY category")
+            .await?
+            .take(0)?;
+        Ok(cats)
+    }
+
+    /// List distinct tag strings by flattening tags arrays across all thumbnails.
+    pub async fn list_distinct_tags() -> anyhow::Result<Vec<String>, anyhow::Error> {
+        let _ga = db_activity("List distinct tags");
+        db_set_detail("Loading unique tags".to_string());
+        let rows: Vec<Vec<String>> = DB
+            .query("SELECT VALUE tags FROM thumbnails WHERE tags != NONE")
+            .await?
+            .take(0)?;
+        let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for arr in rows.into_iter() {
+            for t in arr.into_iter() {
+                if !t.trim().is_empty() { set.insert(t); }
+            }
+        }
+        Ok(set.into_iter().collect())
+    }
+
+    /// Fetch thumbnails that have an exact category match.
+    pub async fn fetch_by_category(category: &str) -> anyhow::Result<Vec<Self>, anyhow::Error> {
+        let _ga = db_activity("Select thumbnails by category");
+        db_set_detail(format!("Loading category '{category}'"));
+        let rows: Vec<Self> = DB
+            .query("SELECT * FROM thumbnails WHERE category = $cat")
+            .bind(("cat", category.to_string()))
+            .await?
+            .take(0)?;
+        Ok(rows)
+    }
+
+    /// Fetch thumbnails that contain the given tag in their tags array.
+    pub async fn fetch_by_tag(tag: &str) -> anyhow::Result<Vec<Self>, anyhow::Error> {
+        let _ga = db_activity("Select thumbnails by tag");
+        db_set_detail(format!("Loading tag '{tag}'"));
+        let rows: Vec<Self> = DB
+            .query("SELECT * FROM thumbnails WHERE array::contains(tags, $tag)")
+            .bind(("tag", tag.to_string()))
+            .await?
+            .take(0)?;
+        Ok(rows)
+    }
+
+    /// List categories with their counts.
+    pub async fn list_category_counts() -> anyhow::Result<Vec<(String, i64)>, anyhow::Error> {
+        #[derive(Debug, serde::Deserialize)]
+        struct Row { category: Option<String>, cnt: i64 }
+        let _ga = db_activity("Count categories");
+        db_set_detail("Counting categories".to_string());
+        let rows: Vec<Row> = DB
+            .query("SELECT category, count() AS cnt FROM thumbnails GROUP BY category")
+            .await?
+            .take(0)?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| r.category.map(|c| (c, r.cnt)))
+            .collect())
+    }
+
+    /// List tags with their counts (computed client-side).
+    pub async fn list_tag_counts() -> anyhow::Result<Vec<(String, i64)>, anyhow::Error> {
+        let _ga = db_activity("Count tags");
+        db_set_detail("Counting tags".to_string());
+        let rows: Vec<Vec<String>> = DB
+            .query("SELECT VALUE tags FROM thumbnails WHERE tags != NONE")
+            .await?
+            .take(0)?;
+        let mut map: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
+        for arr in rows.into_iter() {
+            for t in arr.into_iter() {
+                if t.trim().is_empty() { continue; }
+                *map.entry(t).or_default() += 1;
+            }
+        }
+        Ok(map.into_iter().collect())
+    }
+
+    /// Rename/merge a category across all rows, returns number of updated rows.
+    pub async fn rename_category(old: &str, new: &str) -> anyhow::Result<u64, anyhow::Error> {
+        let _ga = db_activity("Rename category");
+        db_set_detail(format!("{old} -> {new}"));
+        let updated: Vec<Self> = DB
+            .query("UPDATE thumbnails SET category = $new WHERE category = $old")
+            .bind(("old", old.to_string()))
+            .bind(("new", new.to_string()))
+            .await?
+            .take(0)?;
+        Ok(updated.len() as u64)
+    }
+
+    /// Rename/merge a tag across all rows, returns number of updated rows.
+    pub async fn rename_tag(old: &str, new: &str) -> anyhow::Result<u64, anyhow::Error> {
+        let _ga = db_activity("Rename tag");
+        db_set_detail(format!("{old} -> {new}"));
+        let updated: Vec<Self> = DB
+            .query(
+                r#"
+                UPDATE thumbnails
+                SET tags = array::distinct(array::union(array::remove(tags, $old), [$new]))
+                WHERE array::contains(tags, $old)
+                "#,
+            )
+            .bind(("old", old.to_string()))
+            .bind(("new", new.to_string()))
+            .await?
+            .take(0)?;
+        Ok(updated.len() as u64)
+    }
+
+    /// Delete a tag across all rows; returns number of updated rows.
+    pub async fn delete_tag(tag: &str) -> anyhow::Result<u64, anyhow::Error> {
+        let _ga = db_activity("Delete tag");
+        db_set_detail(format!("{tag}"));
+        let updated: Vec<Self> = DB
+            .query(
+                r#"
+                UPDATE thumbnails
+                SET tags = array::remove(tags, $tag)
+                WHERE array::contains(tags, $tag)
+                "#,
+            )
+            .bind(("tag", tag.to_string()))
+            .await?
+            .take(0)?;
+        Ok(updated.len() as u64)
+    }
+
+    /// Limit the number of tags per row (truncate beyond limit). Returns number of updated rows.
+    pub async fn prune_tags(limit: i64) -> anyhow::Result<u64, anyhow::Error> {
+        let _ga = db_activity("Prune tags per item");
+        db_set_detail(format!("limit = {limit}"));
+        let updated: Vec<Self> = DB
+            .query(
+                r#"
+                UPDATE thumbnails
+                SET tags = array::slice(tags, 0, $limit)
+                WHERE array::len(tags) > $limit
+                "#,
+            )
+            .bind(("limit", limit))
+            .await?
+            .take(0)?;
+        Ok(updated.len() as u64)
     }
 
     // Save (insert) a single thumbnail row (best-effort). Does not deduplicate existing rows.

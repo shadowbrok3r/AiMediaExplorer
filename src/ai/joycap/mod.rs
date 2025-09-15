@@ -56,6 +56,7 @@ enum WorkMsg {
         token_tx: mpsc::UnboundedSender<String>,
         done: oneshot::Sender<anyhow::Result<String>>,
     },
+    Shutdown,
 }
 
 static WORKER: OnceCell<WorkerHandle> = OnceCell::new();
@@ -106,11 +107,25 @@ pub async fn ensure_worker_started() -> anyhow::Result<&'static WorkerHandle> {
                             }
                         }
                     }
+                    WorkMsg::Shutdown => {
+                        log::info!("[joycaption] worker received Shutdown; exiting thread and dropping model");
+                        break;
+                    }
                 }
             }
         });
         Ok(WorkerHandle { tx })
     })
+}
+
+/// Attempt to unload/stop the JoyCaption worker. This replaces the worker handle with None,
+/// causing ensure_worker_started() to reconstruct it on next use. Existing background thread
+/// will exit when channel drops.
+pub async fn stop_worker() {
+    if let Some(h) = WORKER.get() {
+        let _ = h.tx.send(WorkMsg::Shutdown);
+        crate::ui::status::JOY_STATUS.set_state(crate::ui::status::StatusState::Idle, "Unloaded");
+    }
 }
 
 /// Stream describe raw image bytes with an instruction using the background worker.
