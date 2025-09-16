@@ -19,7 +19,7 @@ impl eframe::App for app::SmartMediaApp {
             let mut q = app::OPEN_TAB_REQUESTS.lock().unwrap();
             for req in q.drain(..) {
                 match req {
-                    crate::ui::file_table::FilterRequest::NewTab { title, rows, showing_similarity, similar_scores, background } => {
+                    crate::ui::file_table::FilterRequest::NewTab { title, rows, showing_similarity, similar_scores, origin_path, background: _ } => {
                         let title = uniquify_title(&self.context.open_tabs, &title);
                         if !self.context.open_tabs.contains(&title) {
                             self.tree[egui_dock::SurfaceIndex::main()].push_to_focused_leaf(title.clone());
@@ -30,11 +30,22 @@ impl eframe::App for app::SmartMediaApp {
                         if showing_similarity {
                             ex.viewer.showing_similarity = true;
                             if let Some(scores) = similar_scores { ex.viewer.similar_scores = scores; }
+                            if let Some(origin) = origin_path { ex.current_path = origin; }
                         }
                         self.context.filtered_tabs.insert(title.clone(), ex);
+                    }
+                    crate::ui::file_table::FilterRequest::OpenDatabaseAll { title, background } => {
+                        let title = uniquify_title(&self.context.open_tabs, &title);
+                        if !self.context.open_tabs.contains(&title) {
+                            self.tree[egui_dock::SurfaceIndex::main()].push_to_focused_leaf(title.clone());
+                            self.context.open_tabs.insert(title.clone());
+                        }
+                        let mut ex = crate::ui::file_table::FileExplorer::new(true);
+                        ex.viewer.mode = crate::ui::file_table::table::ExplorerMode::Database;
+                        ex.load_all_database_rows();
+                        self.context.filtered_tabs.insert(title.clone(), ex);
                         if background {
-                            // Do not change focus (tab was added to the end; egui_dock already focuses on push)
-                            // Best-effort: current egui_dock version focuses newly pushed tabs; no API to change focus here.
+                            // Leave focus as-is
                         }
                     }
                     crate::ui::file_table::FilterRequest::OpenPath { title, path, recursive, background } => {

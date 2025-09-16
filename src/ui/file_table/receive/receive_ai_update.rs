@@ -181,6 +181,7 @@ impl crate::ui::file_table::FileExplorer {
                             rows,
                             showing_similarity: true,
                             similar_scores: Some(scores),
+                            origin_path: Some(origin_path.clone()),
                             background: false,
                         });
                     }

@@ -53,6 +53,8 @@ pub struct SmartMediaContext {
     // Channel for AI Refinements proposals
     pub refine_tx: Sender<Vec<crate::ui::refine::RefinementProposal>>,
     pub refine_rx: Receiver<Vec<crate::ui::refine::RefinementProposal>>,
+    // Currently focused tab title (updated by TabViewer::ui)
+    pub active_tab_title: Option<String>,
 }
 
 #[derive(PartialEq, Debug, Serialize, Deserialize, Default)]
@@ -118,6 +120,7 @@ impl SmartMediaApp {
             toast_rx,
             refine_tx,
             refine_rx,
+            active_tab_title: None,
         };
 
         Self {
@@ -185,4 +188,20 @@ fn setup_custom_fonts(ctx: &Context) {
         .insert(FontFamily::Name("Bold".into()), vec!["Bold".to_owned()]);
     // Tell egui to use these fonts:
     ctx.set_fonts(fonts);
+}
+
+impl SmartMediaContext {
+    /// Returns a mutable reference to the FileExplorer corresponding to the currently active tab.
+    /// Falls back to the main file_explorer if the active tab is unknown.
+    pub fn active_explorer(&mut self) -> &mut crate::ui::file_table::FileExplorer {
+        if let Some(title) = self.active_tab_title.clone() {
+            if title == "File Explorer" {
+                return &mut self.file_explorer;
+            }
+            if let Some(ex) = self.filtered_tabs.get_mut(&title) {
+                return ex;
+            }
+        }
+        &mut self.file_explorer
+    }
 }

@@ -1,4 +1,4 @@
-use egui::{Color32, FontId, Image, ImageSource, KeyboardShortcut, RichText, Stroke, TextureOptions, Vec2, Widget};
+use egui::{Button, Color32, CornerRadius, FontId, Image, ImageSource, KeyboardShortcut, RichText, ScrollArea, TextureOptions, Vec2, Widget};
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use std::{borrow::Cow, collections::HashMap, path::Path, sync::Arc};
 use egui_data_table::{
@@ -360,28 +360,11 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                 if row.tags.is_empty() {
                     ui.label("-");
                 } else {
-                    ui.horizontal(|ui| {
+                    ScrollArea::vertical().show(ui, |ui| {
                         for tag in &row.tags {
                             let color = color_for_tag(tag);
                             let txt = format!("{}", tag);
-                            let pad = egui::vec2(6.0, 2.0);
-                            let galley = ui.painter().layout_no_wrap(
-                                txt.clone(),
-                                FontId::monospace(12.),
-                                Color32::BLACK,
-                            );
-                            let (rect, _) = ui.allocate_exact_size(
-                                galley.rect.size() + pad * 2.0,
-                                egui::Sense::click(),
-                            );
-                            ui.painter().rect_filled(rect, 6.0, color);
-                            ui.painter().galley(rect.min + pad, galley, Color32::BLACK);
-                            let stroke = Stroke {
-                                width: 1.0,
-                                color: color.gamma_multiply(0.6),
-                            };
-                            ui.painter()
-                                .rect_stroke(rect, 6.0, stroke, egui::StrokeKind::Outside);
+                            let _ = Button::new(txt).fill(color).corner_radius(CornerRadius::same(4)).ui(ui);
                         }
                     });
                 }
@@ -459,35 +442,21 @@ impl RowViewer<Thumbnail> for FileTableViewer {
             }
             9 => {
                 let mut response = None;
-                for tag in &row.tags {
-                    let color = color_for_tag(tag);
-                    let txt = format!("{}", tag);
-                    let pad = egui::vec2(6.0, 2.0);
-                    let galley = ui.painter().layout_no_wrap(
-                        txt.clone(),
-                        FontId::monospace(12.),
-                        Color32::BLACK,
-                    );
-                    let (rect, resp) = ui.allocate_exact_size(
-                        galley.rect.size() + pad * 2.0,
-                        egui::Sense::click(),
-                    );
-                    ui.painter().rect_filled(rect, 6.0, color);
-                    ui.painter().galley(rect.min + pad, galley, Color32::BLACK);
-                    let stroke = Stroke {
-                        width: 1.0,
-                        color: color.gamma_multiply(0.6),
-                    };
-                    ui.painter().rect_stroke(rect, 6.0, stroke, egui::StrokeKind::Outside);
-                    if resp.hovered() {
-                        response = Some(resp.clone());
-                        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                ScrollArea::vertical().show(ui, |ui| {
+                    for tag in &row.tags {
+                        let color = color_for_tag(tag);
+                        let txt = format!("{}", tag);
+                        let resp = Button::new(txt).fill(color).corner_radius(CornerRadius::same(4)).ui(ui);
+                        if resp.hovered() {
+                            response = Some(resp.clone());
+                            ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                        }
+                        if resp.clicked() {
+                            self.requested_tabs.push(TabAction::OpenTag(tag.clone()));
+                            response = Some(resp);
+                        }
                     }
-                    if resp.clicked() {
-                        self.requested_tabs.push(TabAction::OpenTag(tag.clone()));
-                        response = Some(resp);
-                    }
-                }
+                });
 
                 response
             }
@@ -887,7 +856,7 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                 crate::app::OPEN_TAB_REQUESTS
                     .lock()
                     .unwrap()
-                    .push(crate::ui::file_table::FilterRequest::NewTab { title, rows, showing_similarity: false, similar_scores: None, background: false });
+                    .push(crate::ui::file_table::FilterRequest::NewTab { title, rows, showing_similarity: false, similar_scores: None, origin_path: None, background: false });
             }
             "generate_description" => {
                 let engine = std::sync::Arc::new(crate::ai::GLOBAL_AI_ENGINE.clone());

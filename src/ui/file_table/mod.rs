@@ -37,8 +37,16 @@ pub enum FilterRequest {
         // Optional: mark this tab as a similarity-results view and attach scores
         showing_similarity: bool,
         similar_scores: Option<std::collections::HashMap<String, f32>>,
+        // For similarity tabs, the origin that generated results (e.g., image path or "query:<text>")
+        origin_path: Option<String>,
     // Open without focusing the new tab
     background: bool,
+    },
+    // Open a new tab that loads the entire database (DB mode, not filtered by current_path)
+    OpenDatabaseAll {
+        title: String,
+        // Open without focusing the new tab
+        background: bool,
     },
     OpenPath {
         title: String,
@@ -484,13 +492,13 @@ impl FileExplorer {
                                     crate::app::OPEN_TAB_REQUESTS
                                         .lock()
                                         .unwrap()
-                                        .push(crate::ui::file_table::FilterRequest::NewTab { title, rows: fetched, showing_similarity: false, similar_scores: None, background: false });
+                                        .push(crate::ui::file_table::FilterRequest::NewTab { title, rows: fetched, showing_similarity: false, similar_scores: None, origin_path: None, background: false });
                                 });
                             } else {
                                 crate::app::OPEN_TAB_REQUESTS
                                     .lock()
                                     .unwrap()
-                                    .push(crate::ui::file_table::FilterRequest::NewTab { title, rows: rows_in_view, showing_similarity: false, similar_scores: None, background: false });
+                                    .push(crate::ui::file_table::FilterRequest::NewTab { title, rows: rows_in_view, showing_similarity: false, similar_scores: None, origin_path: None, background: false });
                             }
                         }
                         crate::ui::file_table::table::TabAction::OpenTag(tag) => {
@@ -507,13 +515,13 @@ impl FileExplorer {
                                     crate::app::OPEN_TAB_REQUESTS
                                         .lock()
                                         .unwrap()
-                                        .push(crate::ui::file_table::FilterRequest::NewTab { title, rows: fetched, showing_similarity: false, similar_scores: None, background: false });
+                                        .push(crate::ui::file_table::FilterRequest::NewTab { title, rows: fetched, showing_similarity: false, similar_scores: None, origin_path: None, background: false });
                                 });
                             } else {
                                 crate::app::OPEN_TAB_REQUESTS
                                     .lock()
                                     .unwrap()
-                                    .push(crate::ui::file_table::FilterRequest::NewTab { title, rows: rows_in_view, showing_similarity: false, similar_scores: None, background: false });
+                                    .push(crate::ui::file_table::FilterRequest::NewTab { title, rows: rows_in_view, showing_similarity: false, similar_scores: None, origin_path: None, background: false });
                             }
                         }
                         crate::ui::file_table::table::TabAction::OpenArchive(path_clicked) => {
@@ -550,7 +558,7 @@ impl FileExplorer {
                             crate::app::OPEN_TAB_REQUESTS
                                 .lock()
                                 .unwrap()
-                                .push(crate::ui::file_table::FilterRequest::NewTab { title, rows, showing_similarity: true, similar_scores: Some(self.viewer.similar_scores.clone()), background: false });
+                                .push(crate::ui::file_table::FilterRequest::NewTab { title, rows, showing_similarity: true, similar_scores: Some(self.viewer.similar_scores.clone()), origin_path: Some(filename), background: false });
                         }
                     }
                 }
@@ -580,6 +588,51 @@ impl FileExplorer {
                     }
                     ui.label(format!("Loaded: {} rows", self.table.len()));
                 });
+            }
+
+            // Pagination for Similar results tabs
+            if self.viewer.showing_similarity {
+                ui.separator();
+                let origin = self.current_path.clone();
+                if !origin.is_empty() {
+                    if ui.button("Load More Similar").on_hover_text("Fetch and append more similar results").clicked() {
+                        let existing: std::collections::HashSet<String> = self.table.iter().map(|r| r.path.clone()).collect();
+                        let mut rows_out: Vec<crate::database::Thumbnail> = Vec::new();
+                        let mut scores_out: std::collections::HashMap<String, f32> = self.viewer.similar_scores.clone();
+                        let current_path = origin.clone();
+                        let tx_updates = self.viewer.ai_update_tx.clone();
+                        tokio::spawn(async move {
+                            // Compute query embedding based on origin (either an image path or query:text)
+                            let q_opt: Option<Vec<f32>> = if let Some(q) = current_path.strip_prefix("query:") {
+                                let _ = crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await;
+                                let mut guard = crate::ai::GLOBAL_AI_ENGINE.clip_engine.lock().await;
+                                if let Some(eng) = guard.as_mut() { eng.embed_text(q).ok() } else { None }
+                            } else {
+                                let _ = crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await;
+                                let mut guard = crate::ai::GLOBAL_AI_ENGINE.clip_engine.lock().await;
+                                if let Some(eng) = guard.as_mut() { eng.embed_image_path(&current_path).ok() } else { None }
+                            };
+                            if let Some(qv) = q_opt {
+                                // Fetch a larger pool then filter out already present paths
+                                if let Ok(hits) = crate::database::ClipEmbeddingRow::find_similar_by_embedding(&qv, 128, 256).await {
+                                    for hit in hits.into_iter() {
+                                        if existing.contains(&hit.path) { continue; }
+                                        let thumb = if let Some(t) = hit.thumb_ref { t } else { crate::Thumbnail::get_thumbnail_by_path(&hit.path).await.unwrap_or(None).unwrap_or_default() };
+                                        scores_out.insert(hit.path.clone(), hit.dist);
+                                        rows_out.push(thumb);
+                                        if rows_out.len() >= 48 { break; }
+                                    }
+                                }
+                            }
+                            // Send as a SimilarResults update to append into the existing tab via the normal path
+                            let mut results: Vec<crate::ui::file_table::SimilarResult> = Vec::with_capacity(rows_out.len());
+                            for t in rows_out.into_iter() {
+                                results.push(crate::ui::file_table::SimilarResult { thumb: t, created: None, updated: None, similarity_score: None, clip_similarity_score: None });
+                            }
+                            let _ = tx_updates.try_send(crate::ui::file_table::AIUpdate::SimilarResults { origin_path: origin.clone(), results });
+                        });
+                    }
+                }
             }
         });
     }

@@ -12,8 +12,10 @@ impl crate::app::SmartMediaApp {
                 ui.menu_button(" File ", |ui| {
                     ui.menu_button("Database", |ui| {
                         if ui.button("View Entire Database").on_hover_text("Show all thumbnails from all directories").clicked() {
-                            self.context.file_explorer.viewer.mode = super::file_table::table::ExplorerMode::Database;
-                            self.context.file_explorer.load_all_database_rows();
+                            crate::app::OPEN_TAB_REQUESTS
+                                .lock()
+                                .unwrap()
+                                .push(crate::ui::file_table::FilterRequest::OpenDatabaseAll { title: "Entire Database".to_string(), background: false });
                         }
                         if ui.button("Refine (AI, DB-only)").on_hover_text("Open AI Refinements panel to generate proposals from the database").clicked() {
                             // Ensure tab is open/focused
@@ -250,14 +252,17 @@ impl crate::app::SmartMediaApp {
         .exact_height(22.)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                if self.context.file_explorer.file_scan_progress > 0.0 {
-                    let mut bar = ProgressBar::new(self.context.file_explorer.file_scan_progress)
+                // Use active explorer (current tab) for progress and stats
+                let ex = self.context.active_explorer();
+
+                if ex.file_scan_progress > 0.0 {
+                    let mut bar = ProgressBar::new(ex.file_scan_progress)
                         .animate(true)
                         .desired_width(100.)
                         .show_percentage();
 
-                    if self.context.file_explorer.scan_done {
-                        self.context.file_explorer.file_scan_progress = 0.;
+                    if ex.scan_done {
+                        ex.file_scan_progress = 0.;
                         bar = bar.text(RichText::new("Scan Complete").color(Color32::LIGHT_GREEN));
                     }
                     bar.ui(ui);
@@ -308,8 +313,8 @@ impl crate::app::SmartMediaApp {
                 let mut thumbs_total = 0usize;
                 let mut thumbs_done = 0usize;
                 {
-                    let viewer = &self.context.file_explorer.viewer;
-                    for r in self.context.file_explorer.table.iter() {
+                    let viewer = &ex.viewer;
+                    for r in ex.table.iter() {
                         if !viewer.row_passes_filter(&r) { continue; }
                         if r.file_type == "<DIR>" { continue; }
                         if let Some(ext) = std::path::Path::new(&r.path)
@@ -336,7 +341,7 @@ impl crate::app::SmartMediaApp {
                 ui.add_space(10.);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     // Selected count (from table selection)
-                    let selected_cnt = self.context.file_explorer.selection_count();
+                    let selected_cnt = ex.selection_count();
 
                     // Visible vs filtered counts using current viewer row filter
                     let mut visible_cnt = 0usize;
@@ -352,8 +357,8 @@ impl crate::app::SmartMediaApp {
                     let mut sel_total_size = 0u64;
 
                     {
-                        let viewer = &self.context.file_explorer.viewer;
-                        for r in self.context.file_explorer.table.iter() {
+                        let viewer = &ex.viewer;
+                        for r in ex.table.iter() {
                             let is_visible = viewer.row_passes_filter(&r);
                             if is_visible {
                                 visible_cnt += 1;
@@ -389,7 +394,7 @@ impl crate::app::SmartMediaApp {
                             }
                         }
                     }
-                    let total_rows = self.context.file_explorer.table.len();
+                    let total_rows = ex.table.len();
                     let filtered_out = total_rows.saturating_sub(visible_cnt);
 
                     // Decide which stats to display: selected vs full table

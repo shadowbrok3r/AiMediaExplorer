@@ -18,7 +18,7 @@ impl super::FileExplorer {
                 let size = vec2(25., 25.);
                 ui.add_space(5.);
                 if Button::new(
-                    RichText::new("⚙").font(font.clone()).color(err_color)
+                    if self.open_quick_access { RichText::new("⚙").font(font.clone()).color(err_color) } else { RichText::new("⚙").font(font.clone()) }
                 )
                 .min_size(size)
                 .ui(ui)
@@ -34,7 +34,7 @@ impl super::FileExplorer {
                 if Button::new(RichText::new("⬅").font(font.clone()).color(err_color)).min_size(size).ui(ui).clicked() { self.nav_back(); }
                 if Button::new(RichText::new("➡").font(font.clone()).color(err_color)).min_size(size).ui(ui).clicked() { self.nav_forward(); }
                 if Button::new(RichText::new("⟲").font(font.clone()).color(err_color)).min_size(size).ui(ui).clicked() { self.refresh(); }
-                if Button::new(RichText::new("🏠").font(font).color(err_color)).min_size(size).ui(ui).clicked() { self.nav_home(); }
+                if Button::new(RichText::new("🏠").font(font.clone()).color(err_color)).min_size(size).ui(ui).clicked() { self.nav_home(); }
                 ui.separator();
                 let path_edit = TextEdit::singleline(&mut self.current_path)
                 .hint_text(if self.viewer.mode == super::table::ExplorerMode::Database {
@@ -42,11 +42,8 @@ impl super::FileExplorer {
                 } else {
                     "Current Directory"
                 })
-                .desired_width(300.)
+                .desired_width(400.)
                 .ui(ui);
-
-                // If browsing inside a zip archive, show a password button
-                // Zip password button removed; we show a modal automatically when needed
 
                 match self.viewer.mode {
                     super::table::ExplorerMode::FileSystem => {
@@ -55,10 +52,8 @@ impl super::FileExplorer {
                         }
                     },
                     super::table::ExplorerMode::Database => {
-                        let mut ai_box = self.ai_search_enabled;
-                        if ui.checkbox(&mut ai_box, "AI").on_hover_text("Use AI semantic search across the database (text prompt)").clicked() {
-                            self.ai_search_enabled = ai_box;
-                        }
+                        ui.checkbox(&mut self.ai_search_enabled, "AI").on_hover_text("Use AI semantic search across the database (text prompt)");
+
                         // Apply filter on Enter
                         if (path_edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)))
                             || ui.button("Apply Filter").clicked()
@@ -136,6 +131,7 @@ impl super::FileExplorer {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let style = StyleModifier::default();
                     style.apply(ui.style_mut());
+                    
                     MenuButton::new("🔻")
                     .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside).style(style))
                     .ui(ui, |ui| {
@@ -170,6 +166,19 @@ impl super::FileExplorer {
                                 // Note: clearing does not restore previously filtered rows to keep UX consistent with size filters
                             }
                         });
+
+                        let today: NaiveDate = Local::now().date_naive();
+                        let mut after_date: NaiveDate = self.viewer.ui_settings
+                        .filter_modified_after
+                        .as_deref()
+                        .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+                        .unwrap_or(today);
+
+                        let after_id =  format!("{after_date} Start date");
+                        let _resp_after = egui_extras::DatePickerButton::new(&mut after_date)
+                        .id_salt(&after_id)
+                        .ui(ui);
+
                         ui.horizontal_wrapped(|ui| {
                             let mut remove_idx: Option<usize> = None;
                             for (i, term) in self.excluded_terms.iter().enumerate() {
@@ -242,7 +251,10 @@ impl super::FileExplorer {
                             let changed_i = ui.checkbox(&mut self.viewer.types_show_images, "Images").changed();
                             let changed_v = ui.checkbox(&mut self.viewer.types_show_videos, "Videos").changed();
                             let changed_d = ui.checkbox(&mut self.viewer.types_show_dirs, "Folders").changed();
-                            if changed_i || changed_v || changed_d { self.active_filter_group = None; }
+                            if changed_i || changed_v || changed_d {
+                                // Immediate effect via RowViewer::filter_row; avoid destructive pruning
+                                self.active_filter_group = None;
+                            }
                         });
                         ui.horizontal(|ui| {
                             let mut skip_icons = self.viewer.ui_settings.filter_skip_icons;
@@ -417,27 +429,9 @@ impl super::FileExplorer {
                         });
                     });
 
-                    ui.menu_button("👁", |ui| {
-                        ui.set_width(250.);
-                        ui.checkbox(&mut self.open_preview_pane, "Show Preview Pane");
-                        ui.checkbox(&mut self.open_quick_access, "Show Quick Access");
-                        ui.separator();
-                        ui.checkbox(&mut self.follow_active_vision, "Follow active vision (auto-select)")
-                            .on_hover_text("When enabled, the preview auto-selects the image currently being described.");
-                        ui.separator();
-                        // Auto-save to DB toggle (persisted)
-                        let mut auto_save = self.viewer.ui_settings.auto_save_to_database;
-                        if ui.checkbox(&mut auto_save, "Auto save to database").on_hover_text("When enabled, newly discovered files will be saved to the database automatically (requires an active logical group)").changed() {
-                            self.viewer.ui_settings.auto_save_to_database = auto_save;
-                            crate::database::settings::save_settings(&self.viewer.ui_settings);
-                        }
-                        if self.active_logical_group_name.is_none() {
-                            ui.colored_label(Color32::YELLOW, "No active logical group. Auto save and indexing are gated.");
-                        } else {
-                            ui.colored_label(Color32::LIGHT_GREEN, format!("Active Group: {}", self.active_logical_group_name.clone().unwrap_or_default()));
-                        }
-
-                    });
+                    if ui.button(if self.open_preview_pane { RichText::new("👁").color(err_color) } else { RichText::new("👁").font(font) }).clicked() {
+                        self.open_preview_pane = !self.open_preview_pane;
+                    };
 
                     ui.separator();
 
@@ -465,10 +459,7 @@ impl super::FileExplorer {
                                     .unwrap()
                                     .push(crate::ui::file_table::FilterRequest::OpenPath { title, path, recursive: true, background: false });
                             }
-
-                            ui.separator();
-                            ui.heading("Scan by Type (Recursive)");
-                            if Button::new("Scan Images").ui(ui).on_hover_text("Recursive scan including only images").clicked() {
+                            if Button::new("Scan Images").right_text("🖼").ui(ui).on_hover_text("Recursive scan including only images").clicked() {
                                 self.recursive_scan = true;
                                 self.scan_done = false;
                                 self.table.clear();
@@ -489,7 +480,7 @@ impl super::FileExplorer {
                                 self.current_scan_id = Some(scan_id);
                                 tokio::spawn(async move { crate::spawn_scan(filters, tx, recurse, scan_id).await; });
                             }
-                            if Button::new("Scan Videos").ui(ui).on_hover_text("Recursive scan including only videos").clicked() {
+                            if Button::new("Scan Videos").right_text("📹").ui(ui).on_hover_text("Recursive scan including only videos").clicked() {
                                 self.recursive_scan = true;
                                 self.scan_done = false;
                                 self.table.clear();
@@ -510,7 +501,7 @@ impl super::FileExplorer {
                                 self.current_scan_id = Some(scan_id);
                                 tokio::spawn(async move { crate::spawn_scan(filters, tx, recurse, scan_id).await; });
                             }
-                            if Button::new("Scan Archives (.zip/.7z/.rar/.tar)").ui(ui).on_hover_text("Recursive scan including only archive containers").clicked() {
+                            if Button::new("Scan Archives (.zip/.7z/.rar/.tar)").right_text("🗄").ui(ui).on_hover_text("Recursive scan including only archive containers").clicked() {
                                 self.recursive_scan = true;
                                 self.scan_done = false;
                                 self.table.clear();
@@ -611,7 +602,11 @@ impl super::FileExplorer {
                                     self.file_scan_progress = 1.0;
                                 }
                             }
-                        
+                            // Auto-save to DB toggle (persisted)
+                            if ui.checkbox(&mut self.viewer.ui_settings.auto_save_to_database, "Auto save to database").on_hover_text("When enabled, newly discovered files will be saved to the database automatically (requires an active logical group)").changed() {
+                                crate::database::settings::save_settings(&self.viewer.ui_settings);
+                            }
+
                             ui.separator();
 
                             ui.heading("Bulk Operations");
@@ -659,7 +654,7 @@ impl super::FileExplorer {
                                 crate::ai::GLOBAL_AI_ENGINE.reset_bulk_cancel();
                             }
                             
-                            if Button::new("Generate Missing CLIP Embeddings").right_text("⚡").ui(ui).clicked() {
+                            if Button::new("Generate CLIP Embeddings").right_text("⚡").ui(ui).clicked() {
                                 // Collect all image paths currently visible in the table (current directory / DB page)
                                 let minb = self.viewer.ui_settings.db_min_size_bytes;
                                 let maxb = self.viewer.ui_settings.db_max_size_bytes;
@@ -694,27 +689,10 @@ impl super::FileExplorer {
                                 self.viewer.bulk_cancel_requested = true;
                             }
                             
-                        });
-                    });
+                            ui.separator();
+                            ui.checkbox(&mut self.follow_active_vision, "Follow active vision (auto-select)")
+                                .on_hover_text("When enabled, the preview auto-selects the image currently being described.");
 
-                    // Basic backup actions: copy/move all visible files to a selected directory
-                    MenuButton::new("Files")
-                    .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside).style(style.clone()))
-                    .ui(ui, |ui| {
-                        ui.set_width(250.);
-                        ui.vertical_centered_justified(|ui| {
-                            ui.heading("Backup Files");
-                            if ui.button("Copy Visible Files to Folder…").clicked() {
-                                if let Some(dir) = rfd::FileDialog::new().set_title("Choose backup destination").pick_folder() {
-                                    self.backup_copy_visible_to_dir(dir);
-                                }
-                            }
-                            if ui.button("Move Visible Files to Folder…").clicked() {
-                                if let Some(dir) = rfd::FileDialog::new().set_title("Choose destination for move").pick_folder() {
-                                    self.backup_move_visible_to_dir(dir);
-                                }
-                            }
-                            ui.label("Operates on all non-directory rows currently visible in the table.");
                         });
                     });
                     
@@ -722,14 +700,20 @@ impl super::FileExplorer {
                     .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside).style(style))
                     .ui(ui, |ui| {
                         ui.vertical_centered_justified(|ui| {
+                            // Switch mode controls: opening DB should create a new Entire Database tab by default
+                            let mut db_clicked = false;
                             let db_res = ui.selectable_value(&mut self.viewer.mode, super::table::ExplorerMode::Database, "Database");
+                            if db_res.clicked() { db_clicked = true; }
                             let fs_res = ui.selectable_value(&mut self.viewer.mode, super::table::ExplorerMode::FileSystem, "FileSystem");
 
-                            if db_res.changed() || fs_res.changed() {
-                                match self.viewer.mode {
-                                    super::table::ExplorerMode::Database => self.load_database_rows(),
-                                    super::table::ExplorerMode::FileSystem => self.populate_current_directory()
-                                }
+                            if fs_res.changed() {
+                                self.populate_current_directory();
+                            } else if db_clicked {
+                                // Open Entire Database in a new tab (do not hijack current FS view)
+                                crate::app::OPEN_TAB_REQUESTS
+                                    .lock()
+                                    .unwrap()
+                                    .push(crate::ui::file_table::FilterRequest::OpenDatabaseAll { title: "Entire Database".to_string(), background: false });
                             }
                             if ui.button("Reload Page").clicked() { self.load_database_rows(); }
                             if ui.button("Clear Table").clicked() { self.table.clear(); }
@@ -783,11 +767,12 @@ impl super::FileExplorer {
                             ui.set_width(470.);
                             ui.heading("Logical Groups");
                             ui.horizontal(|ui| {
-                                if let Some(name) = &self.active_logical_group_name {
-                                    ui.label(format!("Active: {}", name));
+                                if self.active_logical_group_name.is_none() {
+                                    ui.colored_label(Color32::YELLOW, "No active logical group. Auto save and indexing are gated.");
                                 } else {
-                                    ui.label("Active: (none)");
+                                    ui.colored_label(Color32::LIGHT_GREEN, format!("Active Group: {}", self.active_logical_group_name.clone().unwrap_or_default()));
                                 }
+
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                     if ui.button("⟲ Refresh").clicked() {
                                         let tx = self.logical_groups_tx.clone();
@@ -1097,6 +1082,27 @@ impl super::FileExplorer {
                             .filter(|r| r.file_type == "<DIR>" && self.viewer.selected.contains(&r.path))
                             .map(|r| r.path.clone())
                             .collect();
+
+                        let all_paths: Vec<String> = self
+                            .table
+                            .iter()
+                            .map(|r| r.path.clone())
+                            .collect();
+                        
+                        let selected_files: Vec<String> = self
+                            .table
+                            .iter()
+                            .filter(|r| r.file_type != "<DIR>" && self.viewer.selected.contains(&r.path))
+                            .map(|r| r.path.clone())
+                            .collect();
+
+                        let selected_to_copy = if selected_files.is_empty() {
+                            all_paths
+                        } else {
+                            selected_files
+                        };
+
+                        let len = selected_to_copy.len();
                         let count = selected_dirs.len();
                         if count == 0 {
                             ui.label(RichText::new("No directories selected").weak());
@@ -1119,6 +1125,19 @@ impl super::FileExplorer {
                             self.apply_filters_to_current_table();
                             ui.close();
                         }
+                        ui.separator();
+                        ui.heading("Backup Files");
+                        if ui.button(format!("Copy {len} items...")).clicked() {
+                            if let Some(dir) = rfd::FileDialog::new().set_title("Choose backup destination").pick_folder() {
+                                self.backup_copy_visible_to_dir(dir);
+                            }
+                        }
+                        if ui.button(format!("Move {len} items...")).clicked() {
+                            if let Some(dir) = rfd::FileDialog::new().set_title("Choose destination for move").pick_folder() {
+                                self.backup_move_visible_to_dir(dir);
+                            }
+                        }
+                        ui.label("Operates on all non-directory rows currently visible in the table.");
                     });
 
                     ui.separator();

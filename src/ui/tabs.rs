@@ -16,6 +16,8 @@ impl egui_dock::TabViewer for crate::app::SmartMediaContext {
     }
 
     fn ui(&mut self, ui: &mut Ui, tab: &mut Self::Tab) {
+        // Record active tab for context-aware metrics (e.g., thumbnails progress)
+        self.active_tab_title = Some(tab.clone());
         match tab.as_str() {
             "File Explorer" => self.file_explorer.ui(ui),
             "AI Assistant" => self.assistant.ui(ui, &mut self.file_explorer),
