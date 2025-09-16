@@ -304,45 +304,123 @@ impl crate::app::SmartMediaApp {
                     
                 ui.separator(); 
 
-                ui.add_space(10.);
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    // Selection count from current table
-                    let selected_cnt = self.context.file_explorer.selection_count();
-                    let mut img_cnt = 0usize;
-                    let mut vid_cnt = 0usize;
-                    let mut dir_cnt = 0usize;
-                    let mut total_size = 0u64;
+                // Thumbnail generation progress (visible, non-dir, image/video entries)
+                let mut thumbs_total = 0usize;
+                let mut thumbs_done = 0usize;
+                {
+                    let viewer = &self.context.file_explorer.viewer;
                     for r in self.context.file_explorer.table.iter() {
-                        if r.file_type == "<DIR>" {
-                            dir_cnt += 1;
-                            continue;
-                        }
+                        if !viewer.row_passes_filter(&r) { continue; }
+                        if r.file_type == "<DIR>" { continue; }
                         if let Some(ext) = std::path::Path::new(&r.path)
                             .extension()
                             .and_then(|e| e.to_str())
                             .map(|s| s.to_ascii_lowercase())
                         {
-                            if crate::is_image(ext.as_str()) {
-                                img_cnt += 1;
-                            }
-                            if crate::is_video(ext.as_str()) {
-                                vid_cnt += 1;
+                            if crate::is_image(ext.as_str()) || crate::is_video(ext.as_str()) {
+                                thumbs_total += 1;
+                                if viewer.thumb_cache.contains_key(&r.path) { thumbs_done += 1; }
                             }
                         }
-                        total_size += r.size;
                     }
-                    ui.label(format!("Selected: {}", selected_cnt));
-                    ui.separator();
-                    ui.label(format!("Dirs: {dir_cnt}"));
-                    ui.separator();
-                    ui.label(format!("Images: {img_cnt}"));
-                    ui.separator();
-                    ui.label(format!("Videos: {vid_cnt}"));
-                    ui.separator();
+                }
+                let prog = if thumbs_total == 0 { 0.0 } else { thumbs_done as f32 / thumbs_total as f32 };
+                ui.label(format!("Thumbs: {thumbs_done}/{thumbs_total}"));
+                ProgressBar::new(prog)
+                    .desired_width(100.)
+                    .desired_height(3.)
+                    .fill(ui.style().visuals.selection.bg_fill)
+                    .ui(ui);
+                ui.separator();
+
+                ui.add_space(10.);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    // Selected count (from table selection)
+                    let selected_cnt = self.context.file_explorer.selection_count();
+
+                    // Visible vs filtered counts using current viewer row filter
+                    let mut visible_cnt = 0usize;
+                    let mut all_img_cnt = 0usize;
+                    let mut all_vid_cnt = 0usize;
+                    let mut all_dir_cnt = 0usize;
+                    let mut all_total_size = 0u64; // sum across visible non-dirs
+
+                    // Selected-only tallies
+                    let mut sel_img_cnt = 0usize;
+                    let mut sel_vid_cnt = 0usize;
+                    let mut sel_dir_cnt = 0usize; // will generally be 0 (dirs not selected)
+                    let mut sel_total_size = 0u64;
+
+                    {
+                        let viewer = &self.context.file_explorer.viewer;
+                        for r in self.context.file_explorer.table.iter() {
+                            let is_visible = viewer.row_passes_filter(&r);
+                            if is_visible {
+                                visible_cnt += 1;
+                                if r.file_type == "<DIR>" {
+                                    all_dir_cnt += 1;
+                                } else {
+                                    all_total_size = all_total_size.saturating_add(r.size);
+                                    if let Some(ext) = std::path::Path::new(&r.path)
+                                        .extension()
+                                        .and_then(|e| e.to_str())
+                                        .map(|s| s.to_ascii_lowercase())
+                                    {
+                                        if crate::is_image(ext.as_str()) { all_img_cnt += 1; }
+                                        if crate::is_video(ext.as_str()) { all_vid_cnt += 1; }
+                                    }
+                                }
+                            }
+
+                            if viewer.selected.contains(&r.path) {
+                                if r.file_type == "<DIR>" {
+                                    sel_dir_cnt += 1; // typically 0 due to selection rules
+                                } else {
+                                    sel_total_size = sel_total_size.saturating_add(r.size);
+                                    if let Some(ext) = std::path::Path::new(&r.path)
+                                        .extension()
+                                        .and_then(|e| e.to_str())
+                                        .map(|s| s.to_ascii_lowercase())
+                                    {
+                                        if crate::is_image(ext.as_str()) { sel_img_cnt += 1; }
+                                        if crate::is_video(ext.as_str()) { sel_vid_cnt += 1; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let total_rows = self.context.file_explorer.table.len();
+                    let filtered_out = total_rows.saturating_sub(visible_cnt);
+
+                    // Decide which stats to display: selected vs full table
+                    let show_selected = selected_cnt > 0;
+                    let (img_cnt, vid_cnt, dir_cnt, total_size) = if show_selected {
+                        (sel_img_cnt, sel_vid_cnt, sel_dir_cnt, sel_total_size)
+                    } else {
+                        (all_img_cnt, all_vid_cnt, all_dir_cnt, all_total_size)
+                    };
+
+                    // Right-aligned labels
+                    if show_selected {
+                        // Subtle badge to indicate selection-based stats
+                        let badge = RichText::new("Selected").color(ui.style().visuals.warn_fg_color).strong();
+                        ui.label(badge);
+                        ui.separator();
+                    }
                     ui.label(format!(
                         "Total Size: {}",
                         humansize::format_size(total_size, DECIMAL)
                     ));
+                    ui.separator();
+                    ui.label(format!("Videos: {vid_cnt}"));
+                    ui.separator();
+                    ui.label(format!("Images: {img_cnt}"));
+                    ui.separator();
+                    ui.label(format!("Dirs: {dir_cnt}"));
+                    ui.separator();
+                    ui.label(format!("Filtered out: {filtered_out}"));
+                    ui.separator();
+                    ui.label(format!("Selected: {}", selected_cnt));
                 });
             });
         });

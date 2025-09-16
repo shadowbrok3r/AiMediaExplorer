@@ -1,7 +1,7 @@
 use eframe::egui::*;
 use humansize::DECIMAL;
+use base64::Engine as _;
 
-use crate::ui::file_table::insert_thumbnail;
 // use surrealdb::RecordId; // no longer needed: presence check relies on in-memory metadata only
 
 impl super::FileExplorer {
@@ -16,8 +16,36 @@ impl super::FileExplorer {
                     let thumb_cache = &mut self.viewer.thumb_cache;
                     ui.heading(name);
 
-                    insert_thumbnail(thumb_cache, self.current_thumb.clone());
-                    super::get_img_ui(&thumb_cache, &self.current_thumb.path, ui);
+                    // For preview pane, render a higher-quality preview instead of the small table thumb
+                    let cache_key = format!("preview::{},{}", self.current_thumb.path, 1600);
+                    if !thumb_cache.contains_key(&cache_key) {
+                        let path = std::path::Path::new(&self.current_thumb.path).to_path_buf();
+                        let tx = self.thumbnail_tx.clone();
+                        let cache_key_task = cache_key.clone();
+                        // Generate high-res preview off the UI thread
+                        tokio::spawn(async move {
+                            let png = crate::utilities::thumbs::generate_image_preview_png(&path, 1600)
+                                .or_else(|e| {
+                                    log::debug!("high-res preview failed: {}", e);
+                                    // Fall back to small thumb if needed
+                                    crate::utilities::thumbs::generate_image_thumb_data(&path)
+                                        .and_then(|data_url| {
+                                            let (_, b64) = data_url.split_once("data:image/png;base64,").unwrap_or(("", &data_url));
+                                            base64::engine::general_purpose::STANDARD
+                                                .decode(b64.as_bytes())
+                                                .map_err(|e| e.to_string())
+                                        })
+                                })
+                                .unwrap_or_default();
+                            if !png.is_empty() {
+                                let mut t = crate::database::Thumbnail::default();
+                                t.path = cache_key_task.clone();
+                                t.thumbnail_b64 = Some(base64::engine::general_purpose::STANDARD.encode(&png));
+                                let _ = tx.try_send(t);
+                            }
+                        });
+                    }
+                    super::get_img_ui(&thumb_cache, &cache_key, ui);
                     
                     ui.horizontal(|ui| {
                         if ui.button("Open").clicked() {

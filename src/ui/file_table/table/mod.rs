@@ -106,6 +106,45 @@ impl FileTableViewer {
             selected: std::collections::HashSet::new(),
         }
     }
+
+    // Immutable helper to check if a row passes current viewer filters
+    pub fn row_passes_filter(&self, row: &Thumbnail) -> bool {
+        match self.mode {
+            ExplorerMode::FileSystem | ExplorerMode::Database => {
+                // Apply simple type visibility (view-only) before text search
+                if row.file_type == "<DIR>" && !self.types_show_dirs { return false; }
+                if row.file_type != "<DIR>" {
+                    let ext_opt = if row.path.starts_with("zip://") {
+                        std::path::Path::new(&row.filename)
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .map(|s| s.to_ascii_lowercase())
+                    } else {
+                        std::path::Path::new(&row.path)
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .map(|s| s.to_ascii_lowercase())
+                    };
+                    if let Some(ext) = ext_opt {
+                        if crate::is_image(ext.as_str()) && !self.types_show_images { return false; }
+                        if crate::is_video(ext.as_str()) && !self.types_show_videos { return false; }
+                    }
+                }
+                if self.filter.trim().is_empty() { return true; }
+                let f = self.filter.to_lowercase();
+                let tags_join = row.tags.join(",");
+                row.filename.to_lowercase().contains(&f)
+                    || row.file_type.to_lowercase().contains(&f)
+                    || row.path.to_lowercase().contains(&f)
+                    || tags_join.to_lowercase().contains(&f)
+                    || row
+                        .category
+                        .as_ref()
+                        .map(|s| s.to_lowercase().contains(&f))
+                        .unwrap_or(false)
+            }
+        }
+    }
 }
 
 /* ----------------------------------------------------------------------------------------------
@@ -162,41 +201,7 @@ impl RowViewer<Thumbnail> for FileTableViewer {
     }
 
     fn filter_row(&mut self, row: &Thumbnail) -> bool {
-        match self.mode {
-            ExplorerMode::FileSystem | ExplorerMode::Database => {
-                // Apply simple type visibility (view-only) before text search
-                if row.file_type == "<DIR>" && !self.types_show_dirs { return false; }
-                if row.file_type != "<DIR>" {
-                    let ext_opt = if row.path.starts_with("zip://") {
-                        std::path::Path::new(&row.filename)
-                            .extension()
-                            .and_then(|e| e.to_str())
-                            .map(|s| s.to_ascii_lowercase())
-                    } else {
-                        std::path::Path::new(&row.path)
-                            .extension()
-                            .and_then(|e| e.to_str())
-                            .map(|s| s.to_ascii_lowercase())
-                    };
-                    if let Some(ext) = ext_opt {
-                        if crate::is_image(ext.as_str()) && !self.types_show_images { return false; }
-                        if crate::is_video(ext.as_str()) && !self.types_show_videos { return false; }
-                    }
-                }
-                if self.filter.trim().is_empty() { return true; }
-                let f = self.filter.to_lowercase();
-                let tags_join = row.tags.join(",");
-                row.filename.to_lowercase().contains(&f)
-                    || row.file_type.to_lowercase().contains(&f)
-                    || row.path.to_lowercase().contains(&f)
-                    || tags_join.to_lowercase().contains(&f)
-                    || row
-                        .category
-                        .as_ref()
-                        .map(|s| s.to_lowercase().contains(&f))
-                        .unwrap_or(false)
-            }
-        }
+        self.row_passes_filter(row)
     }
 
     fn hotkeys(&mut self, context: &UiActionContext) -> Vec<(KeyboardShortcut, UiAction)> {

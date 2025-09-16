@@ -1,12 +1,52 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use image::DynamicImage;
+use image::GenericImageView;
 use std::path::Path;
 
 use crate::LogicalGroup;
 
 pub fn generate_image_thumb_data(path: &Path) -> Result<String, String> {
     log::debug!("[thumb] generating image thumb: {}", path.display());
+    // Detect RAW formats we should decode via raw_decode helper first
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    let is_raw = matches!(ext.as_str(),
+        // Sony RAW
+        "arw" | "srf" | "sr2" |
+        // Canon RAW
+        "cr2" | "cr3" |
+        // Nikon RAW
+        "nef" | "nrw" |
+        // Adobe DNG
+        "dng" |
+        // Olympus
+        "orf" |
+        // Fuji
+        "raf" |
+        // Pentax
+        "pef" |
+        // Panasonic
+        "rw2" |
+        // Generic
+        "raw");
+
+    if is_raw {
+        // Try raw-to-png path first
+        match crate::utilities::raw_decode::decode_raw_to_png_bytes(path, 256) {
+            Ok(png) => {
+                let b64 = BASE64.encode(&png);
+                return Ok(format!("data:image/png;base64,{}", b64));
+            }
+            Err(e) => {
+                log::warn!("[thumb] raw decode failed {}: {} — falling back", path.display(), e);
+            }
+        }
+    }
+
     let img = match image::open(path) {
         Ok(img) => img,
         Err(e) => {
@@ -320,4 +360,50 @@ fn hbitmap_to_png_bytes(
         .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
         .map_err(|e| e.to_string())?;
     Ok(png)
+}
+
+/// Generate a higher-quality preview PNG bytes for preview pane (not the small grid thumb).
+/// Strategy:
+/// - For RAW: use raw_decode at a larger max dimension (e.g., 1600px)
+/// - Else: try image crate, resize to fit max_dim if larger, else use shell bitmap at larger size as fallback.
+pub fn generate_image_preview_png(path: &Path, max_dim: u32) -> Result<Vec<u8>, String> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    let is_raw = matches!(ext.as_str(),
+        "arw"|"srf"|"sr2"|"cr2"|"cr3"|"nef"|"nrw"|"dng"|"orf"|"raf"|"pef"|"rw2"|"raw");
+
+    if is_raw {
+        if let Ok(png) = crate::utilities::raw_decode::decode_raw_to_png_bytes(path, max_dim) {
+            return Ok(png);
+        }
+    }
+
+    match image::open(path) {
+        Ok(img) => {
+            let (w, h) = img.dimensions();
+            let (nw, nh) = if w.max(h) > max_dim {
+                if w >= h { (max_dim, ((h as f32) * (max_dim as f32) / (w as f32)).round() as u32) }
+                else { (((w as f32) * (max_dim as f32) / (h as f32)).round() as u32, max_dim) }
+            } else { (w, h) };
+            let img2 = if nw != w || nh != h { img.resize_exact(nw, nh, image::imageops::FilterType::Lanczos3) } else { img };
+            let mut out = Vec::new();
+            img2.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+                .map_err(|e| e.to_string())?;
+            Ok(out)
+        }
+        Err(_) => {
+            #[cfg(windows)]
+            {
+                // Fallback: larger shell bitmap for preview
+                return generate_shell_png_bytes(path, max_dim as i32);
+            }
+            #[cfg(not(windows))]
+            {
+                Err("preview decode failed".into())
+            }
+        }
+    }
 }

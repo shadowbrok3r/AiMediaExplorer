@@ -1,7 +1,19 @@
 
+// Limit concurrent per-thumbnail embedding lookups to avoid flooding
+static EMBED_CHECK_SEM: once_cell::sync::Lazy<std::sync::Arc<tokio::sync::Semaphore>> =
+    once_cell::sync::Lazy::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(8)));
+
 impl crate::ui::file_table::FileExplorer {
     pub fn receive_thumbnail(&mut self, ctx: &eframe::egui::Context) {
-        while let Ok(thumbnail) = self.thumbnail_rx.try_recv() {
+        if let Ok(thumbnail) = self.thumbnail_rx.try_recv() {
+            // Special-case: high-res preview thumbnails use a synthetic cache key ("preview::...")
+            // These should only populate the in-memory cache and not affect table rows or selection.
+            if thumbnail.path.starts_with("preview::") {
+                // Insert into preview cache
+                crate::ui::file_table::insert_thumbnail(&mut self.viewer.thumb_cache, thumbnail.clone());
+                ctx.request_repaint();
+                return;
+            }
             log::info!("Received: {}", thumbnail.filename);
             ctx.request_repaint();
             // Special control message: password prompt request
@@ -52,6 +64,21 @@ impl crate::ui::file_table::FileExplorer {
                     self.table.push(thumbnail.clone());
                     // Update paging tracking
                     self.db_last_batch_len += 1;
+
+                    // Kick off a lightweight, per-row CLIP embedding presence check for this item
+                    if thumbnail.file_type != "<DIR>" {
+                        let tx_clip = self.viewer.clip_embedding_tx.clone();
+                        let thumb = thumbnail.clone();
+                        // Skip if we already know we have an embedding for this path
+                        if !self.viewer.clip_presence.contains(&thumb.path) {
+                            tokio::spawn(async move {
+                                // Concurrency guard
+                                let _permit = EMBED_CHECK_SEM.clone().acquire_owned().await.ok();
+                                let embedding = thumb.get_embedding().await.unwrap_or_default();
+                                let _ = tx_clip.try_send(embedding);
+                            });
+                        }
+                    }
                 } else {
                     // Selection event: open preview
                     self.current_thumb = thumbnail.clone();

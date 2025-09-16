@@ -880,7 +880,7 @@ dependencies = [
  "rand 0.9.2",
  "rand_distr",
  "rayon",
- "safetensors",
+ "safetensors 0.4.5",
  "thiserror 1.0.69",
  "ug",
  "ug-cuda",
@@ -904,7 +904,7 @@ dependencies = [
  "image",
  "num-traits",
  "rayon",
- "safetensors",
+ "safetensors 0.4.5",
  "serde",
  "serde_json",
  "tokenizers 0.21.4",
@@ -929,7 +929,7 @@ dependencies = [
  "half",
  "num-traits",
  "rayon",
- "safetensors",
+ "safetensors 0.4.5",
  "serde",
  "thiserror 1.0.69",
 ]
@@ -2244,9 +2244,9 @@ dependencies = [
 
 [[package]]
 name = "fastembed"
-version = "5.1.0"
+version = "5.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b6ea4eee3e41add51440698fdde1b4afe83241e73fa90c29462a0460d69bcec"
+checksum = "d2e9bf3ea201e5d338450555088e02cff23b00be92bead3eff7ed341c68f5ac6"
 dependencies = [
  "anyhow",
  "hf-hub",
@@ -2254,7 +2254,7 @@ dependencies = [
  "ndarray 0.16.1",
  "ort",
  "serde_json",
- "tokenizers 0.21.4",
+ "tokenizers 0.22.0",
 ]
 
 [[package]]
@@ -6237,6 +6237,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "safetensors"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "172dd94c5a87b5c79f945c863da53b2ebc7ccef4eca24ac63cca66a41aab2178"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "salsa20"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6643,7 +6653,7 @@ dependencies = [
  "rayon",
  "regex",
  "rfd",
- "safetensors",
+ "safetensors 0.6.2",
  "serde",
  "serde_json",
  "sevenz-rust2",
@@ -7769,7 +7779,7 @@ dependencies = [
  "num-traits",
  "num_cpus",
  "rayon",
- "safetensors",
+ "safetensors 0.4.5",
  "serde",
  "thiserror 1.0.69",
  "tracing",
