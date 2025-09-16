@@ -11,7 +11,8 @@ impl crate::ui::file_table::FileExplorer {
         if let Some((scheme, archive_path, internal)) = parse_any_virtual_path(&self.current_path) {
             self.viewer.showing_similarity = false;
             self.viewer.similar_scores.clear();
-            self.table.clear();
+                self.table.clear();
+                self.table_index.clear();
             self.files.clear();
 
             let reg = ArchiveRegistry::default();
@@ -27,7 +28,9 @@ impl crate::ui::file_table::FileExplorer {
                     Ok(entries) => {
                         for e in entries {
                             let t = entry_to_thumbnail(&scheme, &archive_path, &internal, e.clone());
-                            self.table.push(t);
+                                self.table.push(t.clone());
+                                let idx = self.table.len()-1;
+                                self.table_index.insert(t.path.clone(), idx);
                             
                             // For media files, schedule asynchronous thumbnail generation
                             let ext = std::path::Path::new(&e.name)
@@ -110,7 +113,8 @@ impl crate::ui::file_table::FileExplorer {
         // Reset similarity view when changing directory
         self.viewer.showing_similarity = false;
         self.viewer.similar_scores.clear();
-        self.table.clear();
+            self.table.clear();
+            self.table_index.clear();
         self.files.clear();
         let excluded: Vec<String> = self
             .excluded_terms

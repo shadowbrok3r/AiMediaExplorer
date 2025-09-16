@@ -803,11 +803,19 @@ impl RowViewer<Thumbnail> for FileTableViewer {
             .icon("⚡")
             .enabled(true),
             CustomMenuItem::new(
+                "regenerate_description",
+                "Regenerate Description (overwrite)"
+            ).icon("♻").enabled(true),
+            CustomMenuItem::new(
                 "generate_clip_embeddings", 
                 "Generate CLIP Embedding"
             )
             .icon("⚡")
             .enabled(true),
+            CustomMenuItem::new(
+                "regenerate_clip_embedding",
+                "Regenerate CLIP Embedding"
+            ).icon("♻").enabled(true),
             CustomMenuItem::new(
                 "add_selection_to_group",
                 "Add selection to active group"
@@ -832,6 +840,11 @@ impl RowViewer<Thumbnail> for FileTableViewer {
             )
             .icon("🚫")
             .enabled(has_dirs),
+            CustomMenuItem::new(
+                "find_similar",
+                "Find Similar (CLIP)"
+            ).icon("🔍").enabled(!selection.selected_rows.is_empty()),
+            // Future: rerank actions (category / tags) can be added once sorting hook in FileExplorer is exposed.
         ]
     }
 
@@ -895,6 +908,34 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                     });
                 }
             }
+            "regenerate_description" => {
+                let engine = std::sync::Arc::new(crate::ai::GLOBAL_AI_ENGINE.clone());
+                let prompt = self.ui_settings.ai_prompt_template.clone();
+                for (_, row) in ctx.selection.selected_rows.iter() {
+                    if row.file_type == "<DIR>" { continue; }
+                    if let Some(ext) = Path::new(&row.path).extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()) { if !crate::is_image(ext.as_str()) { continue; } } else { continue; }
+                    let path_str = row.path.clone();
+                    let path_str_clone = path_str.clone();
+                    let tx_updates = self.ai_update_tx.clone();
+                    let prompt_clone = prompt.clone();
+                    let eng = engine.clone();
+                    tokio::spawn(async move {
+                        eng.stream_vision_description(Path::new(&path_str_clone), &prompt_clone, move |interim, final_opt| {
+                            if let Some(vd) = final_opt {
+                                let _ = tx_updates.try_send(crate::ui::file_table::AIUpdate::Final {
+                                    path: path_str.clone(),
+                                    description: vd.description.clone(),
+                                    caption: Some(vd.caption.clone()),
+                                    category: if vd.category.trim().is_empty() { None } else { Some(vd.category.clone()) },
+                                    tags: vd.tags.clone(),
+                                });
+                            } else {
+                                let _ = tx_updates.try_send(crate::ui::file_table::AIUpdate::Interim { path: path_str.clone(), text: interim.to_string() });
+                            }
+                        }).await;
+                    });
+                }
+            }
             "generate_clip_embeddings" => {
                 for (_, row) in ctx.selection.selected_rows.clone() {
                     if row.path.starts_with("zip://") || row.path.starts_with("tar://") || row.path.starts_with("7z://") { continue; }
@@ -910,6 +951,21 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                         let added = crate::ai::GLOBAL_AI_ENGINE.clip_generate_for_paths(&[path.clone()]).await?;
                         let _ = tx.try_send(thumb.get_embedding().await?);
                         log::info!("[CLIP] Manual per-item generation: added {added} for {path}");
+                        Ok::<(), anyhow::Error>(())
+                    });
+                }
+            }
+            "regenerate_clip_embedding" => {
+                for (_, row) in ctx.selection.selected_rows.clone() {
+                    if row.file_type == "<DIR>" { continue; }
+                    let path = row.path.clone();
+                    let thumb = row.clone();
+                    let tx = self.clip_embedding_tx.clone();
+                    tokio::spawn(async move {
+                        let _ = crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await;
+                        // Force re-generation by not checking existing presence
+                        let _ = crate::ai::GLOBAL_AI_ENGINE.clip_generate_for_paths(&[path.clone()]).await?;
+                        let _ = tx.try_send(thumb.get_embedding().await?);
                         Ok::<(), anyhow::Error>(())
                     });
                 }
@@ -986,6 +1042,41 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                 }
                 crate::database::settings::save_settings(&self.ui_settings);
                 log::info!("Added selected directories to excluded_dirs for recursive scans");
+            }
+            "find_similar" => {
+                if let Some((_, first)) = ctx.selection.selected_rows.first() {
+                    let origin = first.path.clone();
+                    // Request embedding and open a similarity tab via AIUpdate path used elsewhere
+                    let tx_updates = self.ai_update_tx.clone();
+                    tokio::spawn(async move {
+                        if let Ok(Some(thumb)) = crate::Thumbnail::get_thumbnail_by_path(&origin).await {
+                            if let Ok(embed_row) = thumb.clone().get_embedding().await {
+                                let embed_vec = embed_row.embedding.clone();
+                                if embed_vec.is_empty() { return; }
+                                if let Ok(hits) = crate::database::ClipEmbeddingRow::find_similar_by_embedding(&embed_vec, 256, 256).await {
+                                    let mut rows_out = Vec::new();
+                                    let mut scores_out = std::collections::HashMap::new();
+                                    for hit in hits.into_iter() {
+                                        if hit.path == origin { continue; }
+                                        let t = if let Some(t) = hit.thumb_ref { t } else { crate::Thumbnail::get_thumbnail_by_path(&hit.path).await.unwrap_or(None).unwrap_or_default() };
+                                        // Convert distance (lower better) to similarity (higher better)
+                                        let cosine_sim = 1.0 - hit.dist; // if dist = 1 - cos_sim
+                                        let norm_sim = ((cosine_sim + 1.0) / 2.0).clamp(0.0, 1.0); // map [-1,1] -> [0,1]
+                                        rows_out.push(t.clone());
+                                        scores_out.insert(hit.path.clone(), norm_sim);
+                                        if rows_out.len() >= 96 { break; }
+                                    }
+                                    let mut results = Vec::with_capacity(rows_out.len());
+                                    for t in rows_out.into_iter() { 
+                                        let score = scores_out.get(&t.path).copied();
+                                        results.push(crate::ui::file_table::SimilarResult { thumb: t, created: None, updated: None, similarity_score: score, clip_similarity_score: score });
+                                    }
+                                    let _ = tx_updates.try_send(crate::ui::file_table::AIUpdate::SimilarResults { origin_path: origin.clone(), results });
+                                }
+                            }
+                        }
+                    });
+                }
             }
             _ => {},
         }

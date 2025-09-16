@@ -47,16 +47,17 @@ impl RefinementsPanel {
         ui.separator();
         ui.horizontal(|ui| {
             egui::ComboBox::new("reranker-choice", "Reranker")
-                .selected_text(match self.reranker_choice { 
-                    crate::ai::refine::RerankerType::Heuristic => "Heuristic",
-                    crate::ai::refine::RerankerType::JinaM0 => "Jina M0",
-                    crate::ai::refine::RerankerType::QwenReranker => "Qwen (placeholder)",
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.reranker_choice, crate::ai::refine::RerankerType::Heuristic, "Heuristic");
-                    ui.selectable_value(&mut self.reranker_choice, crate::ai::refine::RerankerType::JinaM0, "Jina M0");
-                    ui.selectable_value(&mut self.reranker_choice, crate::ai::refine::RerankerType::QwenReranker, "Qwen (placeholder)");
-                });
+            .selected_text(match self.reranker_choice { 
+                crate::ai::refine::RerankerType::Heuristic => "Heuristic",
+                crate::ai::refine::RerankerType::JinaM0 => "Jina M0",
+                crate::ai::refine::RerankerType::QwenReranker => "Qwen (placeholder)",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.reranker_choice, crate::ai::refine::RerankerType::Heuristic, "Heuristic");
+                ui.selectable_value(&mut self.reranker_choice, crate::ai::refine::RerankerType::JinaM0, "Jina M0");
+                ui.selectable_value(&mut self.reranker_choice, crate::ai::refine::RerankerType::QwenReranker, "Qwen (placeholder)");
+            });
+            
             if ui.add_enabled(!self.generating, Button::new("Generate Proposals")).clicked() {
                 self.generating = true;
                 self.proposals.clear();
@@ -180,41 +181,41 @@ impl RefinementsPanel {
                 self.generating = false;
             }
             ui.add_sized([240.0, 20.0], TextEdit::singleline(&mut self.filter_text).hint_text("Filter by tag/category/path"));
+        
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.button("Accept All").clicked() {
+                    let to_apply = self.proposals.clone();
+                    let toast_tx = self.toast_tx.clone();
+                    tokio::spawn(async move {
+                        let mut ok = 0usize; let total = to_apply.len();
+                        for p in to_apply {
+                            if let Some(thumb) = crate::Thumbnail::get_thumbnail_by_path(&p.path).await.ok().flatten() {
+                                let meta = super::super::Thumbnail { id: thumb.id.clone(), db_created: thumb.db_created.clone(), path: thumb.path.clone(), filename: thumb.filename.clone(), file_type: thumb.file_type.clone(), size: thumb.size, description: p.new_description.clone(), caption: p.new_caption.clone(), tags: p.new_tags.clone(), category: p.new_category.clone(), thumbnail_b64: thumb.thumbnail_b64.clone(), modified: thumb.modified.clone(), hash: thumb.hash.clone(), parent_dir: thumb.parent_dir.clone(), logical_group: thumb.logical_group.clone(), };
+                                if thumb.update_or_create_thumbnail(&meta, meta.thumbnail_b64.clone()).await.is_ok() { ok += 1; }
+                            }
+                        }
+                        let _ = toast_tx.send((egui_toast::ToastKind::Success, format!("Accepted {ok}/{total} proposals")));
+                    });
+                }
+                if ui.button("Deselect All").clicked() { for p in &mut self.proposals { p.selected = false; } }
+                if ui.button("Select All").clicked() { for p in &mut self.proposals { p.selected = true; } }
+                if ui.button("Accept Selected").clicked() {
+                    let to_apply: Vec<_> = self.proposals.iter().filter(|p| p.selected).cloned().collect();
+                    let toast_tx = self.toast_tx.clone();
+                    tokio::spawn(async move {
+                        let mut ok = 0usize; let total = to_apply.len();
+                        for p in to_apply {
+                            if let Some(thumb) = crate::Thumbnail::get_thumbnail_by_path(&p.path).await.ok().flatten() {
+                                let meta = super::super::Thumbnail { id: thumb.id.clone(), db_created: thumb.db_created.clone(), path: thumb.path.clone(), filename: thumb.filename.clone(), file_type: thumb.file_type.clone(), size: thumb.size, description: p.new_description.clone(), caption: p.new_caption.clone(), tags: p.new_tags.clone(), category: p.new_category.clone(), thumbnail_b64: thumb.thumbnail_b64.clone(), modified: thumb.modified.clone(), hash: thumb.hash.clone(), parent_dir: thumb.parent_dir.clone(), logical_group: thumb.logical_group.clone(), };
+                                if thumb.update_or_create_thumbnail(&meta, meta.thumbnail_b64.clone()).await.is_ok() { ok += 1; }
+                            }
+                        }
+                        let _ = toast_tx.send((egui_toast::ToastKind::Success, format!("Accepted {ok}/{total} proposals")));
+                    });
+                }
+            });
         });
-        ui.separator();
 
-        ui.horizontal(|ui| {
-            if ui.button("Accept Selected").clicked() {
-                let to_apply: Vec<_> = self.proposals.iter().filter(|p| p.selected).cloned().collect();
-                let toast_tx = self.toast_tx.clone();
-                tokio::spawn(async move {
-                    let mut ok = 0usize; let total = to_apply.len();
-                    for p in to_apply {
-                        if let Some(thumb) = crate::Thumbnail::get_thumbnail_by_path(&p.path).await.ok().flatten() {
-                            let meta = super::super::Thumbnail { id: thumb.id.clone(), db_created: thumb.db_created.clone(), path: thumb.path.clone(), filename: thumb.filename.clone(), file_type: thumb.file_type.clone(), size: thumb.size, description: p.new_description.clone(), caption: p.new_caption.clone(), tags: p.new_tags.clone(), category: p.new_category.clone(), thumbnail_b64: thumb.thumbnail_b64.clone(), modified: thumb.modified.clone(), hash: thumb.hash.clone(), parent_dir: thumb.parent_dir.clone(), logical_group: thumb.logical_group.clone(), };
-                            if thumb.update_or_create_thumbnail(&meta, meta.thumbnail_b64.clone()).await.is_ok() { ok += 1; }
-                        }
-                    }
-                    let _ = toast_tx.send((egui_toast::ToastKind::Success, format!("Accepted {ok}/{total} proposals")));
-                });
-            }
-            if ui.button("Select All").clicked() { for p in &mut self.proposals { p.selected = true; } }
-            if ui.button("Deselect All").clicked() { for p in &mut self.proposals { p.selected = false; } }
-            if ui.button("Accept All").clicked() {
-                let to_apply = self.proposals.clone();
-                let toast_tx = self.toast_tx.clone();
-                tokio::spawn(async move {
-                    let mut ok = 0usize; let total = to_apply.len();
-                    for p in to_apply {
-                        if let Some(thumb) = crate::Thumbnail::get_thumbnail_by_path(&p.path).await.ok().flatten() {
-                            let meta = super::super::Thumbnail { id: thumb.id.clone(), db_created: thumb.db_created.clone(), path: thumb.path.clone(), filename: thumb.filename.clone(), file_type: thumb.file_type.clone(), size: thumb.size, description: p.new_description.clone(), caption: p.new_caption.clone(), tags: p.new_tags.clone(), category: p.new_category.clone(), thumbnail_b64: thumb.thumbnail_b64.clone(), modified: thumb.modified.clone(), hash: thumb.hash.clone(), parent_dir: thumb.parent_dir.clone(), logical_group: thumb.logical_group.clone(), };
-                            if thumb.update_or_create_thumbnail(&meta, meta.thumbnail_b64.clone()).await.is_ok() { ok += 1; }
-                        }
-                    }
-                    let _ = toast_tx.send((egui_toast::ToastKind::Success, format!("Accepted {ok}/{total} proposals")));
-                });
-            }
-        });
         ui.separator();
 
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {

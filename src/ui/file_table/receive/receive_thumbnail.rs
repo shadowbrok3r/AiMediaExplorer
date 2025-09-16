@@ -47,6 +47,7 @@ impl crate::ui::file_table::FileExplorer {
                     // Navigate into directory
                     self.current_path = thumbnail.path.clone();
                     self.table.clear();
+                    self.table_index.clear();
                     self.populate_current_directory();
                 } else {
                     log::info!("Opening preview for: {}", thumbnail.filename);
@@ -62,6 +63,8 @@ impl crate::ui::file_table::FileExplorer {
                 if !self.table.iter().any(|r| r.path == thumbnail.path) {
                     // New row arriving from async DB load
                     self.table.push(thumbnail.clone());
+                    let idx = self.table.len()-1;
+                    self.table_index.insert(thumbnail.path.clone(), idx);
                     // Update paging tracking
                     self.db_last_batch_len += 1;
 

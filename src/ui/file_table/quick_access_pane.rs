@@ -59,6 +59,7 @@ impl super::FileExplorer {
                                                 self.active_logical_group_name = Some(g.name.clone());
                                                 self.viewer.mode = super::table::ExplorerMode::Database;
                                                 self.table.clear();
+                                                self.table_index.clear();
                                                 self.db_offset = 0;
                                                 self.db_last_batch_len = 0;
                                                 self.db_loading = true;
@@ -284,6 +285,69 @@ impl super::FileExplorer {
                                     crate::database::settings::save_settings(&self.viewer.ui_settings);
                                 }
                             });
+                        });
+
+                        // Recent Scans
+                        CollapsingHeader::new(RichText::new("Recent Scans").strong())
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            if ui.button("Refresh").clicked() {
+                                let tx = self.scan_tx.clone();
+                                tokio::spawn(async move {
+                                    let _ = tx; // placeholder; refresh drives UI indirectly
+                                });
+                            }
+                            ui.add_space(4.0);
+                            // Fetch recent on first open (lazy)
+                            // For simplicity, fetch each frame but small limit; a better approach caches locally
+                            let mut recent: Vec<crate::database::CachedScan> = Vec::new();
+                            let handle = std::thread::spawn(|| {});
+                            drop(handle);
+                            // Blocking inside UI is not ideal, but as a first pass we use a channel
+                            let (txs, rxs) = crossbeam::channel::bounded(1);
+                            tokio::spawn(async move {
+                                let rows = crate::database::CachedScan::list_recent(10).await.unwrap_or_default();
+                                let _ = txs.send(rows);
+                            });
+                            if let Ok(rows) = rxs.recv_timeout(std::time::Duration::from_millis(50)) { recent = rows; }
+                            if recent.is_empty() {
+                                ui.label(RichText::new("No recent scans").weak());
+                            } else {
+                                for sc in recent.into_iter() {
+                                    let title = sc.title.clone().unwrap_or_else(|| sc.root.clone());
+                                    ui.horizontal(|ui| {
+                                        ui.label(format!("{}", title));
+                                        if ui.button("Open").clicked() {
+                                            // Load paths and open in a new tab
+                                            tokio::spawn(async move {
+                                                let mut offset = 0usize;
+                                                let limit = 5000usize;
+                                                let mut rows: Vec<crate::database::Thumbnail> = Vec::new();
+                                                loop {
+                                                    let paths = crate::database::CachedScanItem::list_paths(&sc.id, offset, limit).await.unwrap_or_default();
+                                                    if paths.is_empty() { break; }
+                                                    offset += paths.len();
+                                                    // Hydrate rows via DB if present, else minimal rows from disk
+                                                    if let Ok(ths) = crate::database::Thumbnail::find_thumbs_from_paths(paths.clone()).await {
+                                                        rows.extend(ths);
+                                                    } else {
+                                                        for p in paths.into_iter() {
+                                                            let mut r = crate::Thumbnail::default();
+                                                            r.path = p.clone();
+                                                            r.filename = std::path::Path::new(&p).file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+                                                            rows.push(r);
+                                                        }
+                                                    }
+                                                }
+                                                crate::app::OPEN_TAB_REQUESTS
+                                                    .lock()
+                                                    .unwrap()
+                                                    .push(crate::ui::file_table::FilterRequest::NewTab { title, rows, showing_similarity: false, similar_scores: None, origin_path: None, background: false });
+                                            });
+                                        }
+                                    });
+                                }
+                            }
                         });
 
                         // Compact scan performance panel (visible when we have data)

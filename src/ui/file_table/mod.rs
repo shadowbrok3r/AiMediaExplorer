@@ -3,7 +3,6 @@ use crossbeam::channel::{Receiver, Sender};
 use crate::{ScanEnvelope, Thumbnail};
 use std::sync::{Mutex, OnceLock};
 use egui::style::StyleModifier;
-use chrono::{DateTime, Local};
 use egui_data_table::Renderer;
 use table::FileTableViewer;
 use humansize::DECIMAL;
@@ -15,7 +14,7 @@ pub mod preview_pane;
 pub mod explorer;
 pub mod receive;
 pub mod table;
-pub mod navbar;
+pub mod menus;
 pub mod load;
 
 // Global accessor for the current active logical group name to be used by viewer context menu actions.
@@ -90,6 +89,8 @@ pub struct SimilarResult {
 pub struct FileExplorer {
     #[serde(skip)]
     pub table: egui_data_table::DataTable<Thumbnail>,
+    #[serde(skip)]
+    pub table_index: std::collections::HashMap<String, usize>,
     pub viewer: FileTableViewer,
     batch_size: usize,
     files: Vec<Thumbnail>,
@@ -224,6 +225,9 @@ pub struct FileExplorer {
     // Track which scan_id owns this explorer so updates don't leak across tabs
     #[serde(skip)]
     owning_scan_id: Option<u64>,
+    // The cached_scan id for the currently running recursive scan (DB record)
+    #[serde(skip)]
+    _cached_scan_id: Option<surrealdb::RecordId>,
     // Cached WSL data to avoid recomputing every frame
     #[serde(skip)]
     cached_wsl_distros: Option<Vec<String>>,
@@ -240,6 +244,11 @@ pub struct FileExplorer {
     perf_last_total: Option<std::time::Duration>,
         #[serde(skip)]
         perf_show_per_1k: bool,
+    // Similarity incremental append state
+    #[serde(skip)]
+    similarity_origin_path: Option<String>,
+    #[serde(skip)]
+    similarity_batch_size: usize,
 }
 
 impl FileExplorer {
@@ -261,6 +270,7 @@ impl FileExplorer {
         
         let mut this = Self {
             table: Default::default(),
+            table_index: std::collections::HashMap::new(),
             viewer: FileTableViewer::new(thumbnail_tx.clone(), ai_update_tx, clip_embedding_tx.clone()),
             files: Default::default(),
             open_preview_pane: false,
@@ -326,6 +336,7 @@ impl FileExplorer {
             zip_password_input: String::new(),
             show_zip_modal: false,
             owning_scan_id: None,
+            _cached_scan_id: None,
             cached_wsl_distros: Some(crate::utilities::explorer::list_wsl_distros()),
             cached_physical_drives: Some(crate::utilities::explorer::list_physical_drives()),
             batch_size: 128,
@@ -334,6 +345,8 @@ impl FileExplorer {
             perf_batches: Vec::new(),
             perf_last_total: None,
             perf_show_per_1k: false,
+            similarity_origin_path: None,
+            similarity_batch_size: 50,
         };
         // Preload saved filter groups
         {
@@ -411,6 +424,7 @@ impl FileExplorer {
                 
                 if should_remove_empty {
                     self.table.clear();
+                    self.table_index.clear();
                 }
             }
             
@@ -422,8 +436,6 @@ impl FileExplorer {
                 s.auto_shrink = [false, false].into();
             })
             .ui(ui);
-
-
 
             // Modal password prompt (appears at end of scans or when browsing encrypted archives)
             if self.show_zip_modal {
@@ -590,50 +602,7 @@ impl FileExplorer {
                 });
             }
 
-            // Pagination for Similar results tabs
-            if self.viewer.showing_similarity {
-                ui.separator();
-                let origin = self.current_path.clone();
-                if !origin.is_empty() {
-                    if ui.button("Load More Similar").on_hover_text("Fetch and append more similar results").clicked() {
-                        let existing: std::collections::HashSet<String> = self.table.iter().map(|r| r.path.clone()).collect();
-                        let mut rows_out: Vec<crate::database::Thumbnail> = Vec::new();
-                        let mut scores_out: std::collections::HashMap<String, f32> = self.viewer.similar_scores.clone();
-                        let current_path = origin.clone();
-                        let tx_updates = self.viewer.ai_update_tx.clone();
-                        tokio::spawn(async move {
-                            // Compute query embedding based on origin (either an image path or query:text)
-                            let q_opt: Option<Vec<f32>> = if let Some(q) = current_path.strip_prefix("query:") {
-                                let _ = crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await;
-                                let mut guard = crate::ai::GLOBAL_AI_ENGINE.clip_engine.lock().await;
-                                if let Some(eng) = guard.as_mut() { eng.embed_text(q).ok() } else { None }
-                            } else {
-                                let _ = crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await;
-                                let mut guard = crate::ai::GLOBAL_AI_ENGINE.clip_engine.lock().await;
-                                if let Some(eng) = guard.as_mut() { eng.embed_image_path(&current_path).ok() } else { None }
-                            };
-                            if let Some(qv) = q_opt {
-                                // Fetch a larger pool then filter out already present paths
-                                if let Ok(hits) = crate::database::ClipEmbeddingRow::find_similar_by_embedding(&qv, 128, 256).await {
-                                    for hit in hits.into_iter() {
-                                        if existing.contains(&hit.path) { continue; }
-                                        let thumb = if let Some(t) = hit.thumb_ref { t } else { crate::Thumbnail::get_thumbnail_by_path(&hit.path).await.unwrap_or(None).unwrap_or_default() };
-                                        scores_out.insert(hit.path.clone(), hit.dist);
-                                        rows_out.push(thumb);
-                                        if rows_out.len() >= 48 { break; }
-                                    }
-                                }
-                            }
-                            // Send as a SimilarResults update to append into the existing tab via the normal path
-                            let mut results: Vec<crate::ui::file_table::SimilarResult> = Vec::with_capacity(rows_out.len());
-                            for t in rows_out.into_iter() {
-                                results.push(crate::ui::file_table::SimilarResult { thumb: t, created: None, updated: None, similarity_score: None, clip_similarity_score: None });
-                            }
-                            let _ = tx_updates.try_send(crate::ui::file_table::AIUpdate::SimilarResults { origin_path: origin.clone(), results });
-                        });
-                    }
-                }
-            }
+            // Similarity button relocated to navbar
         });
     }
 
@@ -642,126 +611,30 @@ impl FileExplorer {
         self.viewer.selected.len()
     }
 
-    /// Load a virtual "folders" view where each folder is a distinct category
-    pub fn load_virtual_categories_view(&mut self) {
-        if self.db_loading { return; }
-        self.viewer.showing_similarity = false;
-        self.viewer.similar_scores.clear();
-        self.db_loading = true;
-        self.table.clear();
-        self.thumb_scheduled.clear();
-        self.pending_thumb_rows.clear();
-        self.viewer.clip_presence.clear();
-        self.viewer.clip_presence_hashes.clear();
-        let tx = self.thumbnail_tx.clone();
+    pub fn append_more_similar(&mut self) {
+        if !self.viewer.showing_similarity { return; }
+        let origin = if let Some(o) = self.similarity_origin_path.clone() { o } else { return; };
+        let batch = self.similarity_batch_size;
+        let tx_updates = self.viewer.ai_update_tx.clone();
+        let existing: std::collections::HashSet<String> = self.table.iter().map(|r| r.path.clone()).collect();
         tokio::spawn(async move {
-            match crate::Thumbnail::list_distinct_categories().await {
-                Ok(cats) => {
-                    for cat in cats.into_iter() {
-                        let mut row = crate::Thumbnail::default();
-                        row.file_type = "<DIR>".to_string();
-                        row.filename = cat.clone();
-                        row.path = format!("cat://{cat}");
-                        row.parent_dir = "cat://".to_string();
-                        let _ = tx.try_send(row);
+            if let Ok(Some(thumb)) = crate::Thumbnail::get_thumbnail_by_path(&origin).await {
+                let embed_vec = thumb.get_embedding().await.unwrap_or_default().embedding.clone();
+                if embed_vec.is_empty() { return; }
+                let k = existing.len() + batch * 4; // oversample to get enough new uniques
+                if let Ok(hits) = crate::database::ClipEmbeddingRow::find_similar_by_embedding(&embed_vec, k, 256).await {
+                    let mut results: Vec<crate::ui::file_table::SimilarResult> = Vec::new();
+                    for hit in hits.into_iter() {
+                        if existing.contains(&hit.path) { continue; }
+                        let thumb = if let Some(t) = hit.thumb_ref { t } else { crate::Thumbnail::get_thumbnail_by_path(&hit.path).await.unwrap_or(None).unwrap_or_default() };
+                        let cosine_sim = 1.0 - hit.dist;
+                        let norm_sim = ((cosine_sim + 1.0) / 2.0).clamp(0.0, 1.0);
+                        results.push(crate::ui::file_table::SimilarResult { thumb: thumb.clone(), created: None, updated: None, similarity_score: Some(norm_sim), clip_similarity_score: Some(norm_sim) });
+                        if results.len() >= batch { break; }
                     }
+                    if !results.is_empty() { let _ = tx_updates.try_send(crate::ui::file_table::AIUpdate::SimilarResults { origin_path: origin.clone(), results }); }
                 }
-                Err(e) => log::error!("Virtual categories load failed: {e:?}"),
             }
-        });
-        // Mark as not loading so UI can interact; rows will stream in via channel
-        self.db_loading = false;
-    }
-
-    /// Load a virtual "folders" view where each folder is a distinct tag
-    pub fn load_virtual_tags_view(&mut self) {
-        if self.db_loading { return; }
-        self.viewer.showing_similarity = false;
-        self.viewer.similar_scores.clear();
-        self.db_loading = true;
-        self.table.clear();
-        self.thumb_scheduled.clear();
-        self.pending_thumb_rows.clear();
-        self.viewer.clip_presence.clear();
-        self.viewer.clip_presence_hashes.clear();
-        let tx = self.thumbnail_tx.clone();
-        tokio::spawn(async move {
-            match crate::Thumbnail::list_distinct_tags().await {
-                Ok(tags) => {
-                    for tag in tags.into_iter() {
-                        let mut row = crate::Thumbnail::default();
-                        row.file_type = "<DIR>".to_string();
-                        row.filename = tag.clone();
-                        row.path = format!("tag://{tag}");
-                        row.parent_dir = "tag://".to_string();
-                        let _ = tx.try_send(row);
-                    }
-                }
-                Err(e) => log::error!("Virtual tags load failed: {e:?}"),
-            }
-        });
-        self.db_loading = false;
-    }
-
-    fn apply_filters_to_current_table(&mut self) {
-        use crate::utilities::filtering::FiltersExt;
-        // Build a Filters value from UI settings for consistent evaluation
-        let mut filters = crate::Filters::default();
-        filters.include_images = self.viewer.types_show_images;
-        filters.include_videos = self.viewer.types_show_videos;
-        // Archives are not shown in DB table rows normally; keep false
-        filters.include_archives = false;
-        filters.min_size_bytes = self.viewer.ui_settings.db_min_size_bytes;
-        filters.max_size_bytes = self.viewer.ui_settings.db_max_size_bytes;
-        filters.skip_icons = self.viewer.ui_settings.filter_skip_icons;
-        // Date filters from UI
-        filters.modified_after = self.viewer.ui_settings.filter_modified_after.clone();
-        filters.modified_before = self.viewer.ui_settings.filter_modified_before.clone();
-        let include_dirs = self.viewer.types_show_dirs;
-        let excluded_terms = self.excluded_terms.clone();
-        let have_date_filters = filters.modified_after.is_some() || filters.modified_before.is_some();
-
-        self.table.retain(|r| {
-            // Keep directories independent of FiltersExt logic
-            if r.file_type == "<DIR>" { return include_dirs; }
-
-            // Excluded terms (path/filename contains any term)
-            if !excluded_terms.is_empty() {
-                let lp = r.path.to_ascii_lowercase();
-                if excluded_terms.iter().any(|t| lp.contains(t)) { return false; }
-            }
-
-            let path = std::path::Path::new(&r.path);
-            // Quick kind check from extension to mirror scanner behavior
-            let is_archive_file = path.extension()
-                .and_then(|e| e.to_str())
-                .map(|s| s.to_ascii_lowercase())
-                .map(|e| crate::is_archive(e.as_str()))
-                .unwrap_or(false);
-            let kind = if let Some(ext) = path.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()) {
-                if crate::is_image(ext.as_str()) { crate::utilities::types::MediaKind::Image }
-                else if crate::is_video(ext.as_str()) { crate::utilities::types::MediaKind::Video }
-                else if crate::is_archive(ext.as_str()) { crate::utilities::types::MediaKind::Archive }
-                else { crate::utilities::types::MediaKind::Other }
-            } else { crate::utilities::types::MediaKind::Other };
-            if !filters.kind_allowed(&kind, is_archive_file) { return false; }
-
-            // Use FiltersExt to evaluate size and skip_icons heuristics (dates are not applied to DB view here)
-            let size_val = if r.size == 0 {
-                std::fs::metadata(&r.path).ok().map(|m| m.len()).unwrap_or(0)
-            } else { r.size };
-            // Use strict UI variant: still allows small non-image files, but filters tiny icon-like images
-            if !filters.skip_icons_strict_allows(path, size_val) { return false; }
-            if !filters.size_ok(size_val) { return false; }
-            // Apply date filter if active (use filesystem metadata; DB may not have timezone-local timestamps)
-            if have_date_filters {
-                let modified: Option<DateTime<Local>> = std::fs::metadata(&r.path)
-                    .ok()
-                    .and_then(|m| m.modified().ok())
-                    .map(|st| DateTime::<Local>::from(st));
-                if !filters.date_ok(modified, None, /*recursive*/ false) { return false; }
-            }
-            true
         });
     }
 }

@@ -14,8 +14,28 @@ impl super::FileExplorer {
                 ui.vertical_centered(|ui| {
                     let name = &self.current_thumb.filename;
                     let thumb_cache = &mut self.viewer.thumb_cache;
-                    ui.heading(name);
-
+                    ui.horizontal(|ui| {
+                        let btn = Button::new(
+                            RichText::new(name).heading().color(ui.style().visuals.error_fg_color)
+                        )
+                        .ui(ui)
+                        .on_hover_text("Left Click: Open File\nDouble Click: Open Folder\nRight Click: Open Folder");
+                        
+                        if btn.clicked() {
+                            let _ = open::that(self.current_thumb.path.clone());
+                        } else if btn.secondary_clicked() || btn.double_clicked() {
+                            let pb = std::path::PathBuf::from(self.current_thumb.path.clone());
+                            if let Some(parent) = pb.parent() { 
+                                let _ = open::that(parent); 
+                            }
+                        }
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.button(RichText::new("✖").color(ui.style().visuals.error_fg_color)).on_hover_text("Close panel").clicked() { 
+                                self.open_preview_pane = false; 
+                            }
+                        });
+                    });
+                    ui.separator();
                     // For preview pane, render a higher-quality preview instead of the small table thumb
                     let cache_key = format!("preview::{},{}", self.current_thumb.path, 1600);
                     if !thumb_cache.contains_key(&cache_key) {
@@ -46,20 +66,7 @@ impl super::FileExplorer {
                         });
                     }
                     super::get_img_ui(&thumb_cache, &cache_key, ui);
-                    
-                    ui.horizontal(|ui| {
-                        if ui.button("Open").clicked() {
-                            let _ = open::that(self.current_thumb.path.clone());
-                        }
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.button("Show in Folder").clicked() {
-                                let pb = std::path::PathBuf::from(self.current_thumb.path.clone());
-                                if let Some(parent) = pb.parent() { 
-                                    let _ = open::that(parent); 
-                                }
-                            }
-                        });        
-                    });
+
                     ui.separator();
 
                     ui.horizontal(|ui| {

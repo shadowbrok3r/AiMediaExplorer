@@ -162,21 +162,26 @@ impl crate::ui::file_table::FileExplorer {
                     }
                 }
                 AIUpdate::SimilarResults { origin_path, results } => {
-                    if !results.is_empty() {
-                        // Build rows and score map for a dedicated Similar tab
+                    if results.is_empty() { continue; }
+                    let same_origin = self.viewer.showing_similarity && (self.similarity_origin_path.as_deref() == Some(origin_path.as_str()) || self.current_path == origin_path);
+                    if same_origin {
+                        for r in results.into_iter() {
+                            if self.table_index.contains_key(&r.thumb.path) { continue; }
+                            let idx = self.table.len();
+                            self.table.push(r.thumb.clone());
+                            self.table_index.insert(r.thumb.path.clone(), idx);
+                            if let Some(s) = r.clip_similarity_score.or(r.similarity_score) { self.viewer.similar_scores.insert(r.thumb.path.clone(), s); }
+                        }
+                        self.similarity_origin_path.get_or_insert(origin_path);
+                    } else {
                         let mut rows: Vec<crate::database::Thumbnail> = Vec::with_capacity(results.len());
                         let mut scores: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
                         for r in results.into_iter() {
-                            if let Some(s) = r.clip_similarity_score.or(r.similarity_score) {
-                                scores.insert(r.thumb.path.clone(), s);
-                            }
+                            if let Some(s) = r.clip_similarity_score.or(r.similarity_score) { scores.insert(r.thumb.path.clone(), s); }
                             rows.push(r.thumb);
                         }
                         let title = format!("Similar to {}", PathBuf::from(&origin_path).file_name().unwrap_or_default().to_str().unwrap_or(&origin_path));
-                        crate::app::OPEN_TAB_REQUESTS
-                        .lock()
-                        .unwrap()
-                        .push(crate::ui::file_table::FilterRequest::NewTab {
+                        crate::app::OPEN_TAB_REQUESTS.lock().unwrap().push(crate::ui::file_table::FilterRequest::NewTab {
                             title,
                             rows,
                             showing_similarity: true,

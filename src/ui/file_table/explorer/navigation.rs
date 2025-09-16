@@ -23,7 +23,8 @@ impl crate::ui::file_table::FileExplorer {
         // reset view state
         self.viewer.showing_similarity = false;
         self.viewer.similar_scores.clear();
-        self.table.clear();
+    self.table.clear();
+    self.table_index.clear();
         if recursive {
             self.recursive_scan = true;
             self.scan_done = false;
@@ -68,16 +69,18 @@ impl crate::ui::file_table::FileExplorer {
     }
     
     pub fn set_rows(&mut self, rows: Vec<crate::database::Thumbnail>) {
-        self.viewer.mode = crate::ui::file_table::table::ExplorerMode::Database;
-        self.table.clear();
-        for r in rows.into_iter() { self.table.push(r); }
+    self.viewer.mode = crate::ui::file_table::table::ExplorerMode::Database;
+    self.table.clear();
+    self.table_index.clear();
+    for r in rows.into_iter() { let idx = self.table.len(); self.table.push(r.clone()); self.table_index.insert(r.path.clone(), idx); }
     }
     
     // Set the table rows from DB results and switch to Database viewing mode
     pub fn set_rows_from_db(&mut self, rows: Vec<crate::database::Thumbnail>) {
-        self.viewer.mode = crate::ui::file_table::table::ExplorerMode::Database;
-        self.table.clear();
-        for r in rows.into_iter() { self.table.push(r); }
+    self.viewer.mode = crate::ui::file_table::table::ExplorerMode::Database;
+    self.table.clear();
+    self.table_index.clear();
+    for r in rows.into_iter() { let idx = self.table.len(); self.table.push(r.clone()); self.table_index.insert(r.path.clone(), idx); }
     }
 
     pub fn push_history(&mut self, new_path: String) {
@@ -180,6 +183,7 @@ impl crate::ui::file_table::FileExplorer {
             self.db_last_batch_len = 0;
             self.load_database_rows();
         } else {
+            self.table.clear();
             self.populate_current_directory();
         }
     }

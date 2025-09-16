@@ -106,6 +106,7 @@ impl crate::app::SmartMediaApp {
                             }
                         }
                     });
+
                     ui.menu_button("AI", |ui| {
                         // Enable AI Search: spawn async global init if not already in progress
                         if ui.button("Enable AI Search").clicked() {
@@ -199,17 +200,21 @@ impl crate::app::SmartMediaApp {
                 ui.add_space(5.);
 
                 let current_path_clone = self.context.file_explorer.current_path.clone();
+
                 let parts: Vec<String> = current_path_clone
                     .split(['\\', '/'])
                     .filter(|s| !s.is_empty())
                     .map(|s| s.to_string())
                     .collect();
+                
                 let root_has_slash = current_path_clone.starts_with('/');
+
                 let mut accum = if root_has_slash {
                     String::from("/")
                 } else {
                     String::new()
                 };
+
                 ui.horizontal(|ui| {
                     for (i, part) in parts.iter().enumerate() {
                         if !accum.ends_with(std::path::MAIN_SEPARATOR) && !accum.is_empty() {
@@ -249,7 +254,7 @@ impl crate::app::SmartMediaApp {
         });
 
         TopBottomPanel::bottom("FileExplorer Bottom Panel")
-        .exact_height(22.)
+        .exact_height(24.)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 // Use active explorer (current tab) for progress and stats
@@ -405,13 +410,6 @@ impl crate::app::SmartMediaApp {
                         (all_img_cnt, all_vid_cnt, all_dir_cnt, all_total_size)
                     };
 
-                    // Right-aligned labels
-                    if show_selected {
-                        // Subtle badge to indicate selection-based stats
-                        let badge = RichText::new("Selected").color(ui.style().visuals.warn_fg_color).strong();
-                        ui.label(badge);
-                        ui.separator();
-                    }
                     ui.label(format!(
                         "Total Size: {}",
                         humansize::format_size(total_size, DECIMAL)
@@ -425,7 +423,9 @@ impl crate::app::SmartMediaApp {
                     ui.separator();
                     ui.label(format!("Filtered out: {filtered_out}"));
                     ui.separator();
-                    ui.label(format!("Selected: {}", selected_cnt));
+                    ex.selection_menu(ui);
+                    ui.separator();
+                    ex.logical_group_menu(ui);
                 });
             });
         });

@@ -29,22 +29,32 @@ impl Default for crate::Thumbnail {
 
 impl crate::Thumbnail {
     pub fn new(filename: &str) -> Self {
-        Self { 
-            id: RecordId::from_table_key("thumbnails", filename), 
-            db_created: Default::default(), 
-            path: Default::default(), 
-            filename: filename.to_string(), 
-            file_type: Default::default(), 
-            size: Default::default(), 
-            description: Default::default(), 
-            caption: Default::default(), 
-            tags: Default::default(), 
-            category: Default::default(), 
-            thumbnail_b64: Default::default(), 
-            modified: Default::default(), 
-            hash: Default::default(), 
-            parent_dir: Default::default(), 
-            logical_group: crate::LogicalGroup::default().id
+        // Previous implementation used the filename as the record key which caused ID collisions
+        // whenever two files in different directories shared the same filename. That resulted in
+        // SurrealDB errors like: "Database record `thumbnails:<name>` already exists" during
+        // scanning auto-save, preventing additional rows from being written. We now always
+        // generate a UUID-based id (same strategy as Default) and rely on the UNIQUE path index
+        // plus update_or_create_thumbnail() logic to keep rows in sync. Existing rows with
+        // filename-based IDs remain valid; new inserts will use UUIDs avoiding collisions.
+        Self {
+            id: RecordId::from_table_key(
+                "thumbnails",
+                surrealdb::sql::Uuid::new_v4().0.to_string(),
+            ),
+            db_created: Default::default(),
+            path: Default::default(),
+            filename: filename.to_string(),
+            file_type: Default::default(),
+            size: Default::default(),
+            description: Default::default(),
+            caption: Default::default(),
+            tags: Default::default(),
+            category: Default::default(),
+            thumbnail_b64: Default::default(),
+            modified: Default::default(),
+            hash: Default::default(),
+            parent_dir: Default::default(),
+            logical_group: crate::LogicalGroup::default().id,
         }
     }
 
@@ -381,15 +391,27 @@ impl crate::Thumbnail {
 
         // If no existing row matched (nothing updated), INSERT a new record
         if updated.is_none() {
-            let _: Option<Self> = DB
+            // Insert new row. If another concurrent task already inserted a row with the same
+            // (now UUID) id between our SELECT/UPDATE and this INSERT, we treat that as benign.
+            match DB
                 .create("thumbnails")
                 .content::<Self>(self.clone())
                 .await
-                .map_err(|e| {
-                    db_set_error(format!("Thumbnail insert after update miss failed: {e}"));
-                    e
-                })?
-                .take();
+            {
+                Ok(mut resp) => {
+                    let _: Option<Self> = resp.take();
+                }
+                Err(e) => {
+                    let es = e.to_string();
+                    if es.contains("already exists") {
+                        log::warn!("Thumbnail insert skipped (already exists) for path {}", self.path);
+                        // Silent success: another task inserted it. We proceed.
+                    } else {
+                        db_set_error(format!("Thumbnail insert after update miss failed: {e}"));
+                        return Err(e.into());
+                    }
+                }
+            }
         }
 
         log::info!("Cached data Is Some: {:?}", updated.is_some());

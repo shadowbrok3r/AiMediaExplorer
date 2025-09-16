@@ -11,12 +11,14 @@ pub mod settings;
 pub mod thumbnails;
 pub mod logical_groups;
 pub mod filter_groups;
+pub mod cached_scans;
 pub use clip_embeddings::*;
 pub use files::*;
 pub use settings::*;
 pub use thumbnails::*;
 pub use logical_groups::*;
 pub use filter_groups::*;
+pub use cached_scans::*;
 
 pub static DB: LazyLock<Surreal<Db>> = LazyLock::new(Surreal::init);
 pub const NS: &str = "file_explorer";
@@ -45,6 +47,8 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
         DEFINE TABLE IF NOT EXISTS user_settings TYPE NORMAL SCHEMALESS PERMISSIONS FULL;
         DEFINE TABLE IF NOT EXISTS filter_groups TYPE NORMAL SCHEMAFULL PERMISSIONS FULL;
         DEFINE TABLE IF NOT EXISTS logical_groups TYPE NORMAL SCHEMAFULL PERMISSIONS FULL;
+        DEFINE TABLE IF NOT EXISTS cached_scans TYPE NORMAL SCHEMAFULL PERMISSIONS FULL;
+        DEFINE TABLE IF NOT EXISTS cached_scan_items TYPE NORMAL SCHEMAFULL PERMISSIONS FULL;
         DEFINE TABLE IF NOT EXISTS clip_embeddings TYPE NORMAL SCHEMAFULL PERMISSIONS FULL;
 
         DEFINE FIELD IF NOT EXISTS caption ON thumbnails TYPE option<string> PERMISSIONS FULL;
@@ -90,6 +94,17 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
         DEFINE FIELD IF NOT EXISTS recent_paths ON user_settings TYPE array<string> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS auto_save_to_database ON user_settings TYPE bool PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS egui_preferences ON user_settings TYPE object DEFAULT {} PERMISSIONS FULL;
+
+        DEFINE FIELD IF NOT EXISTS root ON cached_scans TYPE string PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS started ON cached_scans TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS finished ON cached_scans TYPE option<datetime> PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS total ON cached_scans TYPE option<number> PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS title ON cached_scans TYPE option<string> PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS scan_id ON cached_scans TYPE option<number> PERMISSIONS FULL;
+
+        DEFINE FIELD IF NOT EXISTS scan_ref ON cached_scan_items TYPE record<cached_scans> PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS path ON cached_scan_items TYPE string PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS created ON cached_scan_items TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
         
         DEFINE FIELD IF NOT EXISTS name ON filter_groups TYPE string PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS include_images ON filter_groups TYPE bool PERMISSIONS FULL;
@@ -115,6 +130,8 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
         DEFINE INDEX IF NOT EXISTS idx_parent_dir ON thumbnails FIELDS parent_dir;
         DEFINE INDEX IF NOT EXISTS idx_thumb_logical_group ON thumbnails FIELDS logical_group;
         DEFINE INDEX IF NOT EXISTS idx_clip_hnsw ON clip_embeddings FIELDS embedding HNSW DIMENSION 1024 TYPE F32 DIST COSINE EFC 120 M 12;
+        DEFINE INDEX IF NOT EXISTS idx_cached_items_scan ON cached_scan_items FIELDS scan_ref;
+        DEFINE INDEX IF NOT EXISTS idx_cached_scans_started ON cached_scans FIELDS started;
 
         COMMIT;
     "#;
