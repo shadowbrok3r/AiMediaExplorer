@@ -639,32 +639,34 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                                 .map(|s| s.to_ascii_lowercase());
                             
                                 if let Some(ext) = ext_opt {
-                                    if crate::is_video(ext.as_str()) {
-                                        if let Ok(b64) = generate_video_thumb_data(Path::new(&row.path))
-                                        {
-                                            let thumb = Thumbnail {
-                                                thumbnail_b64: Some(b64),
-                                                ..row.clone()
-                                            };
-                                            let _ = self.thumbnail_tx.try_send(thumb.clone());
-                                        }
-                                    } else if crate::is_image(ext.as_str()) {
-                                        if let Ok(b64) = generate_image_thumb_data(Path::new(&row.path))
-                                        {
-                                            // embedding presence is tracked via clip embeddings table now
-                                            let thumb = Thumbnail {
-                                                thumbnail_b64: Some(b64),
-                                                ..row.clone()
-                                            };
-                                            let _ = self.thumbnail_tx.try_send(thumb.clone());
-                                            let tx = self.clip_embedding_tx.clone();
-                                            tokio::spawn(async move {
-                                                let _ = tx.try_send(thumb.get_embedding().await.unwrap_or_default());
-                                            });
-                                        }
+                                    if crate::is_video(ext.as_str()) || crate::is_image(ext.as_str()) {
+                                        let path_for_task = row.path.clone();
+                                        let file_name_for_task = std::path::Path::new(&path_for_task).file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                                        let tx_thumb = self.thumbnail_tx.clone();
+                                        let is_image_kind = crate::is_image(ext.as_str());
+                                        let clip_tx_opt = if is_image_kind { Some(self.clip_embedding_tx.clone()) } else { None };
+                                        // Heavy IO/decoding moved off UI thread
+                                        tokio::spawn(async move {
+                                            let path_clone_for_block = path_for_task.clone();
+                                            let thumb_res = tokio::task::spawn_blocking(move || {
+                                                if is_image_kind {
+                                                    generate_image_thumb_data(Path::new(&path_clone_for_block))
+                                                } else {
+                                                    generate_video_thumb_data(Path::new(&path_clone_for_block))
+                                                }
+                                            }).await.ok().and_then(|r| r.ok());
+                                            if let Some(b64) = thumb_res {
+                                                let mut t = Thumbnail { thumbnail_b64: Some(b64), ..Thumbnail::new(&file_name_for_task) };
+                                                t.path = path_for_task.clone();
+                                                let _ = tx_thumb.try_send(t.clone());
+                                                if let Some(clip_tx) = clip_tx_opt {
+                                                    tokio::spawn(async move {
+                                                        let _ = clip_tx.try_send(t.get_embedding().await.unwrap_or_default());
+                                                    });
+                                                }
+                                            }
+                                        });
                                     }
-                                } else {
-                                    // no extension, do nothing
                                 }
                             }
                         }

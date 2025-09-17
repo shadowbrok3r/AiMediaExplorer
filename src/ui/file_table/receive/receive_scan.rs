@@ -45,42 +45,56 @@ impl crate::ui::file_table::FileExplorer {
                 crate::utilities::scan::ScanMsg::FoundDir(dir) => {
                     if !self.viewer.types_show_dirs { ctx.request_repaint(); return; }
                     if let Some(row) = crate::ui::file_table::FileExplorer::directory_to_thumbnail(&dir.path) {
-                        if let Some(&idx) = self.table_index.get(&row.path) {
-                            // Update in-place to preserve selection state and caching
-                            if let Some(existing) = self.table.get_mut(idx) {
-                                let keep_thumb = existing.thumbnail_b64.clone();
-                                *existing = row;
-                                if existing.thumbnail_b64.is_none() { existing.thumbnail_b64 = keep_thumb; }
-                            }
-                        } else {
-                            let idx = self.table.len();
-                            self.table.push(row.clone());
-                            self.table_index.insert(row.path.clone(), idx);
-                        }
-                        // Track in last scan snapshot
-                        let dp = dir.path.to_string_lossy().to_string();
+                        let dp = row.path.clone();
                         if !self.last_scan_paths.contains(&dp) {
-                            if let Some(&i) = self.table_index.get(&dp) { if let Some(r) = self.table.get(i) {
-                                self.last_scan_rows.push(r.clone());
-                                self.last_scan_paths.insert(r.path.clone());
-                            }}
+                            self.last_scan_rows.push(row.clone());
+                            self.last_scan_paths.insert(dp.clone());
+                            // Only add to visible table if within current page slice (when paginating)
+                            if self.recursive_scan && self.last_scan_rows.len() > self.recursive_page_size {
+                                self.update_recursive_total_pages();
+                                let start = self.recursive_current_page * self.recursive_page_size;
+                                let end = (start + self.recursive_page_size).min(self.last_scan_rows.len());
+                                if self.last_scan_rows.len()-1 >= start && self.last_scan_rows.len()-1 < end {
+                                    let idx = self.table.len();
+                                    self.table_index.insert(row.path.clone(), idx);
+                                    self.table.push(row);
+                                }
+                            } else {
+                                let idx = self.table.len();
+                                self.table_index.insert(row.path.clone(), idx);
+                                self.table.push(row);
+                            }
+                            ctx.request_repaint();
                         }
-                        ctx.request_repaint();
                     }
                 }
                 crate::utilities::scan::ScanMsg::FoundDirBatch(dirs) => {
-                    // Start timing on first batch arrival if not already started
                     if self.perf_scan_started.is_none() { self.perf_scan_started = Some(std::time::Instant::now()); self.perf_last_batch_at = self.perf_scan_started; }
                     if self.viewer.types_show_dirs {
                         for d in dirs.iter() {
                             if let Some(row) = crate::ui::file_table::FileExplorer::directory_to_thumbnail(&d.path) {
-                                let idx = self.table.len();
-                                self.table.push(row.clone());
-                                self.table_index.insert(row.path.clone(), idx);
+                                if !self.last_scan_paths.contains(&row.path) {
+                                    self.last_scan_rows.push(row.clone());
+                                    self.last_scan_paths.insert(row.path.clone());
+                                    if self.recursive_scan && self.last_scan_rows.len() > self.recursive_page_size {
+                                        self.update_recursive_total_pages();
+                                        let start = self.recursive_current_page * self.recursive_page_size;
+                                        let end = (start + self.recursive_page_size).min(self.last_scan_rows.len());
+                                        if self.last_scan_rows.len()-1 >= start && self.last_scan_rows.len()-1 < end {
+                                            let idx = self.table.len();
+                                            self.table_index.insert(row.path.clone(), idx);
+                                            self.table.push(row);
+                                        }
+                                    } else {
+                                        let idx = self.table.len();
+                                        self.table_index.insert(row.path.clone(), idx);
+                                        self.table.push(row);
+                                    }
+                                }
                             }
                         }
+                        ctx.request_repaint();
                     }
-                    ctx.request_repaint();
                 }
                 crate::utilities::scan::ScanMsg::Found(item) => {
                     // Found single file (incremental processing)
@@ -120,20 +134,34 @@ impl crate::ui::file_table::FileExplorer {
                                 row.file_type = "<ARCHIVE>".into();
                             }
                         }
-                        // Insert or update via index
-                        if let Some(&idx) = self.table_index.get(&row.path) {
-                            if let Some(existing) = self.table.get_mut(idx) { *existing = row.clone(); }
-                        } else {
-                            let idx = self.table.len();
-                            self.table.push(row.clone());
-                            self.table_index.insert(row.path.clone(), idx);
-                        }
-                        // Snapshot rows to allow restore later
-                        if !self.last_scan_paths.contains(&row.path) {
+                        // Always snapshot first
+                        let is_new = !self.last_scan_paths.contains(&row.path);
+                        if is_new {
                             self.last_scan_rows.push(row.clone());
                             self.last_scan_paths.insert(row.path.clone());
                         }
-                        ctx.request_repaint();
+                        if self.recursive_scan && self.last_scan_rows.len() > self.recursive_page_size {
+                            self.update_recursive_total_pages();
+                            // Only add to visible table if the new row falls on current page
+                            let start = self.recursive_current_page * self.recursive_page_size;
+                            let end = (start + self.recursive_page_size).min(self.last_scan_rows.len());
+                            if self.last_scan_rows.len() - 1 >= start && self.last_scan_rows.len() - 1 < end {
+                                let idx = self.table.len();
+                                self.table.push(row.clone());
+                                self.table_index.insert(row.path.clone(), idx);
+                                ctx.request_repaint();
+                            }
+                        } else {
+                            // Non paginated path or below threshold
+                            if let Some(&idx) = self.table_index.get(&row.path) {
+                                if let Some(existing) = self.table.get_mut(idx) { *existing = row.clone(); }
+                            } else {
+                                let idx = self.table.len();
+                                self.table.push(row.clone());
+                                self.table_index.insert(row.path.clone(), idx);
+                            }
+                            ctx.request_repaint();
+                        }
                         // Append to cached scan items buffer
                         if self.recursive_scan {
                             let path_str = row.path.clone();
@@ -303,26 +331,36 @@ impl crate::ui::file_table::FileExplorer {
                                     row.file_type = "<ARCHIVE>".into();
                                 }
                             }
-                            // Clone for snapshot before potentially moving `row`
+                            // Snapshot first
                             let row_snapshot = row.clone();
-                            if let Some(&idx) = self.table_index.get(&row_snapshot.path) {
-                                if let Some(existing) = self.table.get_mut(idx) {
-                                    let keep_thumb = existing.thumbnail_b64.clone();
-                                    *existing = row;
-                                    if existing.thumbnail_b64.is_none() { existing.thumbnail_b64 = keep_thumb; }
-                                }
-                            } else {
-                                let idx = self.table.len();
-                                self.table.push(row_snapshot.clone());
-                                self.table_index.insert(row_snapshot.path.clone(), idx);
-                                if self.recursive_scan { cached_paths.push(row_snapshot.path.clone()); }
-                            }
-                            // snapshot
-                            if !self.last_scan_paths.contains(&row_snapshot.path) {
+                            let is_new_global = !self.last_scan_paths.contains(&row_snapshot.path);
+                            if is_new_global {
                                 self.last_scan_rows.push(row_snapshot.clone());
                                 self.last_scan_paths.insert(row_snapshot.path.clone());
                             }
-                            need_repaint = true;
+                            // Decide if row is visible on current page (if paginating)
+                            let mut show_in_page = true;
+                            if self.recursive_scan && self.last_scan_rows.len() > self.recursive_page_size {
+                                self.update_recursive_total_pages();
+                                let start = self.recursive_current_page * self.recursive_page_size;
+                                let end = (start + self.recursive_page_size).min(self.last_scan_rows.len());
+                                show_in_page = is_new_global && (self.last_scan_rows.len() - 1) >= start && (self.last_scan_rows.len() - 1) < end;
+                            }
+                            if show_in_page {
+                                if let Some(&idx) = self.table_index.get(&row_snapshot.path) {
+                                    if let Some(existing) = self.table.get_mut(idx) {
+                                        let keep_thumb = existing.thumbnail_b64.clone();
+                                        *existing = row_snapshot.clone();
+                                        if existing.thumbnail_b64.is_none() { existing.thumbnail_b64 = keep_thumb; }
+                                    }
+                                } else {
+                                    let idx = self.table.len();
+                                    self.table.push(row_snapshot.clone());
+                                    self.table_index.insert(row_snapshot.path.clone(), idx);
+                                    if self.recursive_scan { cached_paths.push(row_snapshot.path.clone()); }
+                                }
+                                need_repaint = true;
+                            }
                             // Schedule thumbnail generation if none yet
                             if item.thumb_data.is_none() {
                                 let p_str = item.path.to_string_lossy().to_string();
@@ -609,6 +647,11 @@ impl crate::ui::file_table::FileExplorer {
                     self.file_scan_progress = 1.0;
                     self.scan_done = true;
                     self.current_scan_id = None;
+                    if self.recursive_scan && self.last_scan_rows.len() > self.recursive_page_size {
+                        self.update_recursive_total_pages();
+                        // Rebuild current page to ensure correct slice (in case of overflow on last batch)
+                        self.rebuild_recursive_page();
+                    }
                     // Record total elapsed for this scan
                     if let Some(start) = self.perf_scan_started.take() {
                         let total = start.elapsed();

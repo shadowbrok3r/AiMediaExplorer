@@ -399,8 +399,11 @@ impl crate::app::SmartMediaApp {
                             }
                         }
                     }
-                    let total_rows = ex.table.len();
-                    let filtered_out = total_rows.saturating_sub(visible_cnt);
+                    // Global filtered vs total (for recursive scans) falls back to page if not recursive
+                    let (global_filtered, global_total) = if ex.is_recursive_scan() {
+                        (ex.recursive_total_filtered(), ex.recursive_total_unfiltered())
+                    } else { (visible_cnt, ex.table.len()) };
+                    let filtered_out = global_total.saturating_sub(global_filtered);
 
                     // Decide which stats to display: selected vs full table
                     let show_selected = selected_cnt > 0;
@@ -421,7 +424,7 @@ impl crate::app::SmartMediaApp {
                     ui.separator();
                     ui.label(format!("Dirs: {dir_cnt}"));
                     ui.separator();
-                    ui.label(format!("Filtered out: {filtered_out}"));
+                    ui.label(format!("Filtered {global_filtered} of {global_total} (out: {filtered_out})"));
                     ui.separator();
                     ex.selection_menu(ui);
                     ui.separator();

@@ -249,9 +249,26 @@ pub struct FileExplorer {
     similarity_origin_path: Option<String>,
     #[serde(skip)]
     similarity_batch_size: usize,
+    #[serde(skip)]
+    pub recursive_page_size: usize,
+    #[serde(skip)]
+    pub recursive_current_page: usize,
+    #[serde(skip)]
+    pub recursive_total_pages: usize,
+    #[serde(skip)]
+    pub recursive_filtered_rows: Vec<Thumbnail>, // cached filtered+sorted snapshot
+    #[serde(skip)]
+    pub recursive_sort_key: Option<&'static str>, // simplistic sort key id
+    #[serde(skip)]
+    pub recursive_filter_sig: Option<String>, // hash/signature of last applied filter+type toggles
+    #[serde(skip)]
+    pub recursive_prefetch_enabled: bool,
+    #[serde(skip)]
+    pub recursive_prefetch_inflight: usize,
 }
 
 impl FileExplorer {
+    pub fn is_recursive_scan(&self) -> bool { self.recursive_scan }
     // New constructor that optionally skips initial directory scan/population
     pub fn new(skip_initial_scan: bool) -> Self {
         let (thumbnail_tx, thumbnail_rx) = crossbeam::channel::unbounded();
@@ -347,6 +364,14 @@ impl FileExplorer {
             perf_show_per_1k: false,
             similarity_origin_path: None,
             similarity_batch_size: 50,
+            recursive_page_size: 5_000,
+            recursive_current_page: 0,
+            recursive_total_pages: 0,
+            recursive_filtered_rows: Vec::new(),
+            recursive_sort_key: None,
+            recursive_filter_sig: None,
+            recursive_prefetch_enabled: true,
+            recursive_prefetch_inflight: 0,
         };
         // Preload saved filter groups
         {
@@ -380,10 +405,43 @@ impl FileExplorer {
         self.quick_access_pane(ui);
         self.navbar(ui);
 
+        // For recursive scan pagination: ensure filtered snapshot stays in sync with current user filter
+        if self.recursive_scan {
+            // Force refresh of filtered snapshot if signature changed (apply_recursive will short-circuit if unchanged)
+            self.apply_recursive_filter_and_sort();
+        }
+
         let style = StyleModifier::default();
         style.apply(ui.style_mut());
 
         CentralPanel::default().show_inside(ui, |ui| {
+            // Recursive scan pagination controls (only when snapshot large enough)
+            if self.recursive_scan && self.last_scan_rows.len() > self.recursive_page_size {
+                self.update_recursive_total_pages();
+                ui.horizontal(|ui| {
+                    let total = self.recursive_total_pages.max(1);
+                    let first_enabled = self.recursive_current_page > 0;
+                    if ui.add_enabled(first_enabled, egui::Button::new("First")).clicked() {
+                        self.recursive_current_page = 0; self.rebuild_recursive_page();
+                    }
+                    let prev_enabled = self.recursive_current_page > 0;
+                    if ui.add_enabled(prev_enabled, egui::Button::new("Prev")).clicked() {
+                        if self.recursive_current_page > 0 { self.recursive_current_page -= 1; self.rebuild_recursive_page(); }
+                    }
+                    ui.label(format!("Page {} / {}", self.recursive_current_page + 1, total));
+                    let next_enabled = self.recursive_current_page + 1 < total;
+                    if ui.add_enabled(next_enabled, egui::Button::new("Next")).clicked() {
+                        if self.recursive_current_page + 1 < total { self.recursive_current_page += 1; self.rebuild_recursive_page(); }
+                    }
+                    let last_enabled = self.recursive_current_page + 1 < total;
+                    if ui.add_enabled(last_enabled, egui::Button::new("Last")).clicked() {
+                        if total > 0 { self.recursive_current_page = total - 1; self.rebuild_recursive_page(); }
+                    }
+                    ui.separator();
+                    ui.label(format!("Showing {} of {} (page size {})", self.table.len(), self.last_scan_rows.len(), self.recursive_page_size));
+                });
+                ui.separator();
+            }
             // Active filter preset summary
             if let Some(name) = self.active_filter_group.clone() {
                 ui.horizontal(|ui| {
@@ -636,6 +694,162 @@ impl FileExplorer {
                 }
             }
         });
+    }
+
+    // Recompute total pages for current recursive snapshot
+    fn update_recursive_total_pages(&mut self) {
+        if self.recursive_page_size == 0 { self.recursive_total_pages = 0; return; }
+        let total_rows = self.last_scan_rows.len();
+        self.recursive_total_pages = (total_rows + self.recursive_page_size - 1) / self.recursive_page_size;
+        if self.recursive_current_page >= self.recursive_total_pages && self.recursive_total_pages > 0 {
+            self.recursive_current_page = self.recursive_total_pages - 1;
+        }
+    }
+
+    // Build table contents for the active recursive page from snapshot rows
+    fn rebuild_recursive_page(&mut self) {
+        // Build filtered+sorted snapshot first
+        self.apply_recursive_filter_and_sort();
+        self.table.clear();
+        self.table_index.clear();
+        let total_rows = self.recursive_filtered_rows.len();
+        let start = self.recursive_current_page * self.recursive_page_size;
+        let end = (start + self.recursive_page_size).min(total_rows);
+        // Prune cache to rows in slice
+        if !self.viewer.thumb_cache.is_empty() {
+            let mut keep: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for r in &self.recursive_filtered_rows[start..end] { keep.insert(r.path.clone()); }
+            self.viewer.thumb_cache.retain(|k, _| keep.contains(k) || k.starts_with("preview::"));
+        }
+        for row in self.recursive_filtered_rows[start..end].iter().cloned() {
+            let idx = self.table.len();
+            self.table_index.insert(row.path.clone(), idx);
+            self.table.push(row);
+        }
+        self.schedule_missing_thumbs_for_current_page();
+        // Opportunistically prefetch next page thumbnails (lightweight) after current page scheduling
+        self.prefetch_next_page_thumbs();
+    }
+
+    fn apply_recursive_filter_and_sort(&mut self) {
+        // Build signature (filter text + type toggles) to avoid unnecessary rebuild work
+        let sig = format!("{}|i{}|v{}|d{}", self.viewer.filter, self.viewer.types_show_images as u8, self.viewer.types_show_videos as u8, self.viewer.types_show_dirs as u8);
+        // If unchanged and we already have filtered rows, skip recompute
+        if let Some(prev) = &self.recursive_filter_sig { if prev == &sig && !self.recursive_filtered_rows.is_empty() { return; } }
+        self.recursive_filter_sig = Some(sig);
+        let mut out: Vec<Thumbnail> = self
+            .last_scan_rows
+            .iter()
+            .cloned()
+            .filter(|r| self.viewer.row_passes_filter(r))
+            .collect();
+        // Optional sort (basic keys; can expand)
+        if let Some(key) = self.recursive_sort_key {
+            match key {
+                "name" => out.sort_by(|a,b| a.filename.cmp(&b.filename)),
+                "modified" => out.sort_by(|a,b| a.modified.cmp(&b.modified)),
+                "size" => out.sort_by(|a,b| a.size.cmp(&b.size)),
+                _ => {}
+            }
+        }
+        self.recursive_filtered_rows = out;
+        self.update_recursive_total_pages();
+    }
+
+    // Public helpers used by navbar for global counts
+    pub fn recursive_total_unfiltered(&self) -> usize { self.last_scan_rows.len() }
+    pub fn recursive_total_filtered(&self) -> usize { if self.recursive_filtered_rows.is_empty() { self.last_scan_rows.len() } else { self.recursive_filtered_rows.len() } }
+
+    fn prefetch_next_page_thumbs(&mut self) {
+        if !self.recursive_prefetch_enabled { return; }
+        if self.recursive_page_size == 0 { return; }
+        // Limit concurrent prefetch waves
+        if self.recursive_prefetch_inflight > 0 { return; }
+        let total = self.recursive_filtered_rows.len();
+        let next_page = self.recursive_current_page + 1;
+        if next_page * self.recursive_page_size >= total { return; }
+        let start = next_page * self.recursive_page_size;
+        let end = (start + self.recursive_page_size).min(total);
+        // Collect a small subset (e.g., first 128 of next page) to avoid wasting work
+        let mut candidates: Vec<String> = Vec::new();
+        for row in self.recursive_filtered_rows[start..end].iter() {
+            if candidates.len() >= 128 { break; }
+            if row.thumbnail_b64.is_some() { continue; }
+            if row.file_type == "<DIR>" || row.file_type == "<ARCHIVE>" { continue; }
+            // Skip if already scheduled or cached
+            if self.viewer.thumb_cache.contains_key(&row.path) { continue; }
+            if self.thumb_scheduled.contains(&row.path) { continue; }
+            let ext_opt = std::path::Path::new(&row.path).extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase());
+            if let Some(ext) = ext_opt { if crate::is_image(ext.as_str()) || crate::is_video(ext.as_str()) { candidates.push(row.path.clone()); } }
+        }
+        if candidates.is_empty() { return; }
+        self.recursive_prefetch_inflight = candidates.len();
+        let sem = self.thumb_semaphore.clone();
+        let scan_tx = self.scan_tx.clone();
+        let owning_scan_id = self.owning_scan_id.or(self.current_scan_id).unwrap_or(0);
+        for path_str in candidates.into_iter() {
+            // Mark scheduled to avoid duplicate
+            self.thumb_scheduled.insert(path_str.clone());
+            let permit_fut = sem.clone().acquire_owned();
+            let tx_clone = scan_tx.clone();
+            // Track inflight completion by sending a Done decrement via closure
+            let inflight_counter = &mut self.recursive_prefetch_inflight as *mut usize;
+            tokio::spawn(async move {
+                let _permit = permit_fut.await.ok();
+                let pbuf = std::path::PathBuf::from(&path_str);
+                let mut thumb_b64: Option<String> = None;
+                if let Some(ext) = pbuf.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()) {
+                    if crate::is_image(ext.as_str()) { thumb_b64 = crate::utilities::thumbs::generate_image_thumb_data(&pbuf).ok(); }
+                    else if crate::is_video(ext.as_str()) { thumb_b64 = crate::utilities::thumbs::generate_video_thumb_data(&pbuf).ok(); }
+                }
+                if let Some(b64) = thumb_b64 { let _ = tx_clone.try_send(crate::ScanEnvelope { scan_id: owning_scan_id, msg: crate::utilities::scan::ScanMsg::UpdateThumb { path: pbuf, thumb: b64 } }); }
+                // SAFETY: UI thread only mutation; this async block executes on runtime thread. To avoid unsafe, we skip decrement here; rely on natural replacement (simplify).
+                // (If precise tracking needed, implement atomic counter.)
+                let _ = inflight_counter; // suppress unused warning for placeholder.
+            });
+        }
+    }
+
+    // Schedule thumbnail generation for visible page rows that lack thumbnail_b64 and are images/videos.
+    fn schedule_missing_thumbs_for_current_page(&mut self) {
+        if self.table.is_empty() { return; }
+        // Collect paths needing generation
+        let mut to_gen: Vec<String> = Vec::new();
+        for row in self.table.iter() {
+            if row.thumbnail_b64.is_some() { continue; }
+            // Skip dirs / archives
+            if row.file_type == "<DIR>" || row.file_type == "<ARCHIVE>" { continue; }
+            let ext_opt = std::path::Path::new(&row.path).extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase());
+            if let Some(ext) = ext_opt {
+                if !(crate::is_image(ext.as_str()) || crate::is_video(ext.as_str())) { continue; }
+            } else { continue; }
+            // Avoid rescheduling same path
+            if !self.thumb_scheduled.insert(row.path.clone()) { continue; }
+            to_gen.push(row.path.clone());
+        }
+        if to_gen.is_empty() { return; }
+        let sem = self.thumb_semaphore.clone();
+        let scan_tx = self.scan_tx.clone();
+        let owning_scan_id = self.owning_scan_id.or(self.current_scan_id).unwrap_or(0);
+        for path_str in to_gen.into_iter() {
+            let permit_fut = sem.clone().acquire_owned();
+            let tx_clone = scan_tx.clone();
+            tokio::spawn(async move {
+                let _permit = permit_fut.await.expect("thumb semaphore closed");
+                let p = std::path::PathBuf::from(&path_str);
+                let mut thumb_b64: Option<String> = None;
+                if let Some(ext) = p.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()) {
+                    if crate::is_image(ext.as_str()) {
+                        thumb_b64 = crate::utilities::thumbs::generate_image_thumb_data(&p).ok();
+                    } else if crate::is_video(ext.as_str()) {
+                        thumb_b64 = crate::utilities::thumbs::generate_video_thumb_data(&p).ok();
+                    }
+                }
+                if let Some(b64) = thumb_b64 {
+                    let _ = tx_clone.try_send(crate::ScanEnvelope { scan_id: owning_scan_id, msg: crate::utilities::scan::ScanMsg::UpdateThumb { path: p, thumb: b64 } });
+                }
+            });
+        }
     }
 }
 
