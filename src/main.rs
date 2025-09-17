@@ -25,14 +25,21 @@ impl eframe::App for app::SmartMediaApp {
                             self.tree[egui_dock::SurfaceIndex::main()].push_to_focused_leaf(title.clone());
                             self.context.open_tabs.insert(title.clone());
                         }
-                        let mut ex = crate::ui::file_table::FileExplorer::new(true);
-                        ex.set_rows(rows);
-                        if showing_similarity {
-                            ex.viewer.showing_similarity = true;
-                            if let Some(scores) = similar_scores { ex.viewer.similar_scores = scores; }
-                            if let Some(origin) = origin_path { ex.current_path = origin; }
+                        if title.starts_with("Image Edit") {
+                            if let Some(origin) = origin_path.as_ref() {
+                                self.context.image_edit.open_with_path(origin);
+                            }
+                            // No filtered tab to manage; the TabViewer renders self.context.image_edit
+                        } else {
+                            let mut ex = crate::ui::file_table::FileExplorer::new(true);
+                            ex.set_rows(rows);
+                            if showing_similarity {
+                                ex.viewer.showing_similarity = true;
+                                if let Some(scores) = similar_scores { ex.viewer.similar_scores = scores; }
+                                if let Some(origin) = origin_path { ex.current_path = origin; }
+                            }
+                            self.context.filtered_tabs.insert(title.clone(), ex);
                         }
-                        self.context.filtered_tabs.insert(title.clone(), ex);
                     }
                     crate::ui::file_table::FilterRequest::OpenDatabaseAll { title, background } => {
                         let title = uniquify_title(&self.context.open_tabs, &title);

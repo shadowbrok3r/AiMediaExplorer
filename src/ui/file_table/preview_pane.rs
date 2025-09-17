@@ -33,6 +33,20 @@ impl super::FileExplorer {
                             if ui.button(RichText::new("✖").color(ui.style().visuals.error_fg_color)).on_hover_text("Close panel").clicked() { 
                                 self.open_preview_pane = false; 
                             }
+                            let can_edit = self.current_thumb.file_type != "<DIR>";
+                            if ui.add_enabled(can_edit, Button::new("Edit Image")).on_hover_text("Open image editing tab for this image").clicked() {
+                                // Open the Image Edit tab with this image preloaded
+                                let path = self.current_thumb.path.clone();
+                                crate::app::OPEN_TAB_REQUESTS.lock().unwrap()
+                                    .push(crate::ui::file_table::FilterRequest::NewTab {
+                                        title: "Image Edit".to_string(),
+                                        rows: vec![],
+                                        showing_similarity: false,
+                                        similar_scores: None,
+                                        origin_path: Some(path.clone()),
+                                        background: false,
+                                    });
+                            }
                         });
                     });
                     ui.separator();

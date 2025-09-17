@@ -4,3 +4,6 @@ use anyhow::Result;
 pub trait HFAiModel: Sized {
     fn load_from_hub(model_key: &str) -> Result<Self>;
 }
+
+// Re-export a convenient alias for the Qwen image edit pipeline
+pub type QwenImageEdit = crate::ai::qwen_image_edit::model::QwenImageEditPipeline;

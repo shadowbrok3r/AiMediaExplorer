@@ -43,6 +43,7 @@ pub struct SmartMediaContext {
     pub filtered_tabs: std::collections::HashMap<String, crate::ui::file_table::FileExplorer>,
     pub assistant: crate::ui::assistant::AssistantPanel,
     pub refinements: crate::ui::refine::RefinementsPanel,
+    pub image_edit: crate::ui::image_edit::ImageEditPanel,
     pub open_ui_settings: bool,
     // UI state for adding excluded directories
     pub new_excluded_dir: String,
@@ -113,6 +114,7 @@ impl SmartMediaApp {
             filtered_tabs: std::collections::HashMap::new(),
             assistant: Default::default(),
             refinements: RefinementsPanel::new(refine_tx.clone(), toast_tx.clone()),
+            image_edit: Default::default(),
             open_ui_settings: false,
             new_excluded_dir: String::new(),
             toasts: Toasts::new().anchor(eframe::egui::Align2::RIGHT_TOP, (-10.0, 10.0)),
@@ -203,5 +205,15 @@ impl SmartMediaContext {
             }
         }
         &mut self.file_explorer
+    }
+
+    pub fn open_image_edit_with_path(&mut self, path: &str, tree: &mut egui_dock::DockState<String>) {
+        // Ensure the Image Edit tab exists and is focused
+        let title = "Image Edit".to_string();
+        if !self.open_tabs.contains(&title) {
+            tree[egui_dock::SurfaceIndex::main()].push_to_focused_leaf(title.clone());
+            self.open_tabs.insert(title.clone());
+        }
+        self.image_edit.open_with_path(path);
     }
 }

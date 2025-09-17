@@ -269,10 +269,22 @@ pub fn generate_shell_png_bytes(path: &Path, size: i32) -> Result<Vec<u8>, Strin
         core::{Interface, PCWSTR},
     };
 
+    // Initialize COM only once per thread to avoid repeated init warnings
+    thread_local! {
+        static COM_INIT: std::cell::Cell<bool> = std::cell::Cell::new(false);
+    }
+    COM_INIT.with(|cell| {
+        if !cell.get() {
+            unsafe {
+                if CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok() {
+                    cell.set(true);
+                } else {
+                    // Ignore and continue; shell calls may still succeed depending on apartment
+                }
+            }
+        }
+    });
     unsafe {
-        CoInitializeEx(None, COINIT_APARTMENTTHREADED)
-            .ok()
-            .map_err(|e| format!("CoInitializeEx: {e}"))?;
         let wide: Vec<u16> = path
             .as_os_str()
             .encode_wide()

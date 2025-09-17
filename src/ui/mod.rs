@@ -4,3 +4,4 @@ pub mod status;
 pub mod tabs;
 pub mod assistant;
 pub mod refine;
+pub mod image_edit;

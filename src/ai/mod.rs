@@ -20,7 +20,7 @@ pub use jina_m0::*;
 use crate::database::Thumbnail;
 use crate::ui::status::{CLIP_STATUS, GlobalStatusIndicator, VISION_STATUS, StatusState};
 use once_cell::sync::Lazy;
-
+pub mod qwen_image_edit;
 // Global lazy AI engine accessor. Initialized on first use. 
 pub static GLOBAL_AI_ENGINE: Lazy<AISearchEngine> = Lazy::new(|| AISearchEngine::new());
 

@@ -117,14 +117,19 @@ fn start_thumbnail_workers(rx: Receiver<ThumbJob>) {
                     }
                     continue; 
                 }
-                if let Some(thumb_b64) = generate_thumb(&job.path, &job.kind) {
-                    // Route thumbnail to the UI that owns this scan_id
-                    if let Ok(map) = SCAN_ROUTERS.lock() {
-                        if let Some(tx) = map.get(&job.scan_id) {
-                            let _ = tx.send(ScanEnvelope {
-                                scan_id: job.scan_id,
-                                msg: ScanMsg::UpdateThumb { path: job.path.clone(), thumb: thumb_b64 },
-                            });
+                match generate_thumb(&job.path, &job.kind) {
+                    Ok(thumb_b64) => {
+                        if let Ok(map) = SCAN_ROUTERS.lock() {
+                            if let Some(tx) = map.get(&job.scan_id) {
+                                let _ = tx.send(ScanEnvelope { scan_id: job.scan_id, msg: ScanMsg::UpdateThumb { path: job.path.clone(), thumb: thumb_b64 } });
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        if let Ok(map) = SCAN_ROUTERS.lock() {
+                            if let Some(tx) = map.get(&job.scan_id) {
+                                let _ = tx.send(ScanEnvelope { scan_id: job.scan_id, msg: ScanMsg::ThumbFailed { path: job.path.clone(), error: e } });
+                            }
                         }
                     }
                 }
@@ -160,16 +165,16 @@ fn enqueue_thumb_job(path: &Path, kind: MediaKind, scan_id: u64) {
     }
 }
 
-fn generate_thumb(path: &Path, kind: &MediaKind) -> Option<String> {
+fn generate_thumb(path: &Path, kind: &MediaKind) -> Result<String, String> {
     match kind {
-        MediaKind::Image => crate::utilities::thumbs::generate_image_thumb_data(path).ok(),
+        MediaKind::Image => crate::utilities::thumbs::generate_image_thumb_data(path),
         MediaKind::Video => {
             #[cfg(windows)]
-            { return crate::utilities::thumbs::generate_video_thumb_data(path).ok(); }
+            { crate::utilities::thumbs::generate_video_thumb_data(path) }
             #[cfg(not(windows))]
-            { return None; }
+            { Err("video thumbs unsupported on this platform".to_string()) }
         }
-        _ => None,
+        _ => Err("unsupported kind".to_string()),
     }
 }
 
@@ -182,6 +187,10 @@ pub enum ScanMsg {
     UpdateThumb {
         path: std::path::PathBuf,
         thumb: String,
+    },
+    ThumbFailed {
+        path: std::path::PathBuf,
+        error: String,
     },
     /// Report encrypted archives encountered during scans so the UI can prompt once at the end.
     EncryptedArchives(Vec<String>),

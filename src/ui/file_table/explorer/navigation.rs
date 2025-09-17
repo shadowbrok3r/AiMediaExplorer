@@ -33,6 +33,11 @@ impl crate::ui::file_table::FileExplorer {
             self.last_scan_rows.clear();
             self.last_scan_paths.clear();
             self.last_scan_root = Some(self.current_path.clone());
+                // Clear scheduled thumbnails from previous context
+                self.thumb_scheduled.clear();
+            // Reset failure collection state
+            self.failed_thumbs.clear();
+            self.failed_tab_opened = false;
             // Spawn recursive scan with current filters
             let scan_id = crate::next_scan_id();
             self.owning_scan_id = Some(scan_id);

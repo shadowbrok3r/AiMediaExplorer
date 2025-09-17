@@ -265,6 +265,13 @@ pub struct FileExplorer {
     pub recursive_prefetch_enabled: bool,
     #[serde(skip)]
     pub recursive_prefetch_inflight: usize,
+    // Collect failed thumbnail generations for a dedicated tab after scan completes
+    #[serde(skip)]
+    pub failed_thumbs: Vec<(String, String)>, // (path, error)
+    #[serde(skip)]
+    pub failed_tab_opened: bool,
+    #[serde(skip)]
+    repaint_next: bool,
 }
 
 impl FileExplorer {
@@ -372,6 +379,9 @@ impl FileExplorer {
             recursive_filter_sig: None,
             recursive_prefetch_enabled: true,
             recursive_prefetch_inflight: 0,
+            failed_thumbs: Vec::new(),
+            failed_tab_opened: false,
+            repaint_next: false,
         };
         // Preload saved filter groups
         {
@@ -379,7 +389,7 @@ impl FileExplorer {
             tokio::spawn(async move {
                 match crate::database::list_filter_groups().await {
                     Ok(groups) => { let _ = tx.try_send(groups); },
-                    Err(e) => log::debug!("No filter groups yet or failed to load: {e:?}"),
+                    Err(e) => log::warn!("No filter groups yet or failed to load: {e:?}"),
                 }
             });
         }
@@ -389,7 +399,7 @@ impl FileExplorer {
             tokio::spawn(async move {
                 match crate::database::LogicalGroup::list_all().await {
                     Ok(groups) => { let _ = tx.try_send(groups); },
-                    Err(e) => log::debug!("No logical groups yet or failed to load: {e:?}"),
+                    Err(e) => log::warn!("No logical groups yet or failed to load: {e:?}"),
                 }
             });
         }
@@ -401,6 +411,7 @@ impl FileExplorer {
 
     pub fn ui(&mut self, ui: &mut Ui) {
         self.receive(ui.ctx());
+        if self.repaint_next { ui.ctx().request_repaint(); self.repaint_next = false; }
         self.preview_pane(ui);
         self.quick_access_pane(ui);
         self.navbar(ui);
@@ -422,23 +433,34 @@ impl FileExplorer {
                     let total = self.recursive_total_pages.max(1);
                     let first_enabled = self.recursive_current_page > 0;
                     if ui.add_enabled(first_enabled, egui::Button::new("First")).clicked() {
+                        log::info!("Pagination: First clicked");
                         self.recursive_current_page = 0; self.rebuild_recursive_page();
                     }
                     let prev_enabled = self.recursive_current_page > 0;
                     if ui.add_enabled(prev_enabled, egui::Button::new("Prev")).clicked() {
+                        log::info!("Pagination: Prev clicked (from {})", self.recursive_current_page);
                         if self.recursive_current_page > 0 { self.recursive_current_page -= 1; self.rebuild_recursive_page(); }
                     }
                     ui.label(format!("Page {} / {}", self.recursive_current_page + 1, total));
                     let next_enabled = self.recursive_current_page + 1 < total;
                     if ui.add_enabled(next_enabled, egui::Button::new("Next")).clicked() {
+                        log::info!("Pagination: Next clicked (from {})", self.recursive_current_page);
                         if self.recursive_current_page + 1 < total { self.recursive_current_page += 1; self.rebuild_recursive_page(); }
                     }
                     let last_enabled = self.recursive_current_page + 1 < total;
                     if ui.add_enabled(last_enabled, egui::Button::new("Last")).clicked() {
+                        log::info!("Pagination: Last clicked (target {}-1)", total);
                         if total > 0 { self.recursive_current_page = total - 1; self.rebuild_recursive_page(); }
                     }
                     ui.separator();
                     ui.label(format!("Showing {} of {} (page size {})", self.table.len(), self.last_scan_rows.len(), self.recursive_page_size));
+                    // Display the current row range (1-based) for clarity
+                    if self.recursive_page_size > 0 && !self.recursive_filtered_rows.is_empty() {
+                        let start_idx = self.recursive_current_page * self.recursive_page_size;
+                        let end_idx = (start_idx + self.recursive_page_size).min(self.recursive_filtered_rows.len());
+                        ui.separator();
+                        ui.label(format!("Rows {}-{}", start_idx + 1, end_idx));
+                    }
                 });
                 ui.separator();
             }
@@ -713,12 +735,29 @@ impl FileExplorer {
         self.table.clear();
         self.table_index.clear();
         let total_rows = self.recursive_filtered_rows.len();
-        let start = self.recursive_current_page * self.recursive_page_size;
+        // Defensive recompute & clamp.
+        if self.recursive_page_size == 0 {
+            self.recursive_current_page = 0;
+        } else {
+            let max_pages = if total_rows == 0 { 0 } else { (total_rows + self.recursive_page_size - 1) / self.recursive_page_size };
+            if max_pages == 0 { self.recursive_current_page = 0; }
+            else if self.recursive_current_page >= max_pages { self.recursive_current_page = max_pages - 1; }
+        }
+        let start = self.recursive_current_page.saturating_mul(self.recursive_page_size);
+        if start >= total_rows { return; }
         let end = (start + self.recursive_page_size).min(total_rows);
+        log::warn!(
+            "rebuild_recursive_page: total_rows={}, page_size={}, current_page={}, slice={}..{}",
+            total_rows,
+            self.recursive_page_size,
+            self.recursive_current_page,
+            start,
+            end
+        );
         // Prune cache to rows in slice
         if !self.viewer.thumb_cache.is_empty() {
             let mut keep: std::collections::HashSet<String> = std::collections::HashSet::new();
-            for r in &self.recursive_filtered_rows[start..end] { keep.insert(r.path.clone()); }
+            for r in self.recursive_filtered_rows[start..end].iter() { keep.insert(r.path.clone()); }
             self.viewer.thumb_cache.retain(|k, _| keep.contains(k) || k.starts_with("preview::"));
         }
         for row in self.recursive_filtered_rows[start..end].iter().cloned() {
@@ -729,14 +768,18 @@ impl FileExplorer {
         self.schedule_missing_thumbs_for_current_page();
         // Opportunistically prefetch next page thumbnails (lightweight) after current page scheduling
         self.prefetch_next_page_thumbs();
+        // Ask for a repaint on next frame (we don't hold a ctx here)
+        self.repaint_next = true;
     }
 
     fn apply_recursive_filter_and_sort(&mut self) {
         // Build signature (filter text + type toggles) to avoid unnecessary rebuild work
         let sig = format!("{}|i{}|v{}|d{}", self.viewer.filter, self.viewer.types_show_images as u8, self.viewer.types_show_videos as u8, self.viewer.types_show_dirs as u8);
+        let changed = self.recursive_filter_sig.as_ref().map(|p| p != &sig).unwrap_or(true);
         // If unchanged and we already have filtered rows, skip recompute
-        if let Some(prev) = &self.recursive_filter_sig { if prev == &sig && !self.recursive_filtered_rows.is_empty() { return; } }
-        self.recursive_filter_sig = Some(sig);
+        if !changed && !self.recursive_filtered_rows.is_empty() { return; }
+        if changed { self.recursive_current_page = 0; }
+        self.recursive_filter_sig = Some(sig.clone());
         let mut out: Vec<Thumbnail> = self
             .last_scan_rows
             .iter()
@@ -802,7 +845,8 @@ impl FileExplorer {
                     if crate::is_image(ext.as_str()) { thumb_b64 = crate::utilities::thumbs::generate_image_thumb_data(&pbuf).ok(); }
                     else if crate::is_video(ext.as_str()) { thumb_b64 = crate::utilities::thumbs::generate_video_thumb_data(&pbuf).ok(); }
                 }
-                if let Some(b64) = thumb_b64 { let _ = tx_clone.try_send(crate::ScanEnvelope { scan_id: owning_scan_id, msg: crate::utilities::scan::ScanMsg::UpdateThumb { path: pbuf, thumb: b64 } }); }
+                if let Some(b64) = thumb_b64 { let _ = tx_clone.try_send(crate::ScanEnvelope { scan_id: owning_scan_id, msg: crate::utilities::scan::ScanMsg::UpdateThumb { path: pbuf.clone(), thumb: b64 } }); }
+                else { let _ = tx_clone.try_send(crate::ScanEnvelope { scan_id: owning_scan_id, msg: crate::utilities::scan::ScanMsg::ThumbFailed { path: pbuf.clone(), error: "prefetch thumbnail generation failed".to_string() } }); }
                 // SAFETY: UI thread only mutation; this async block executes on runtime thread. To avoid unsafe, we skip decrement here; rely on natural replacement (simplify).
                 // (If precise tracking needed, implement atomic counter.)
                 let _ = inflight_counter; // suppress unused warning for placeholder.
@@ -845,9 +889,8 @@ impl FileExplorer {
                         thumb_b64 = crate::utilities::thumbs::generate_video_thumb_data(&p).ok();
                     }
                 }
-                if let Some(b64) = thumb_b64 {
-                    let _ = tx_clone.try_send(crate::ScanEnvelope { scan_id: owning_scan_id, msg: crate::utilities::scan::ScanMsg::UpdateThumb { path: p, thumb: b64 } });
-                }
+                if let Some(b64) = thumb_b64 { let _ = tx_clone.try_send(crate::ScanEnvelope { scan_id: owning_scan_id, msg: crate::utilities::scan::ScanMsg::UpdateThumb { path: p.clone(), thumb: b64 } }); }
+                else { let _ = tx_clone.try_send(crate::ScanEnvelope { scan_id: owning_scan_id, msg: crate::utilities::scan::ScanMsg::ThumbFailed { path: p.clone(), error: "thumbnail generation failed".to_string() } }); }
             });
         }
     }

@@ -22,6 +22,7 @@ impl egui_dock::TabViewer for crate::app::SmartMediaContext {
             "File Explorer" => self.file_explorer.ui(ui),
             "AI Assistant" => self.assistant.ui(ui, &mut self.file_explorer),
             "AI Refinements" => self.refinements.ui(ui),
+            "Image Edit" => self.image_edit.ui(ui),
             "Logs" => egui_logger::logger_ui()
                 .warn_color(Color32::from_rgb(94, 215, 221)) 
                 .error_color(Color32::from_rgb(255, 55, 102)) 

@@ -22,8 +22,8 @@ impl crate::ui::file_table::FileExplorer {
                 }
             }
             if !accept {
-                // Ignore stray messages for other tabs/scans
-                return;
+                // Ignore stray messages for other tabs/scans, but continue draining the queue
+                continue;
             }
             // Create or reuse a cached scan record when a recursive scan begins receiving
             if self.recursive_scan && self.owning_scan_id.is_some() && self.last_scan_root.is_none() {
@@ -140,6 +140,14 @@ impl crate::ui::file_table::FileExplorer {
                             self.last_scan_rows.push(row.clone());
                             self.last_scan_paths.insert(row.path.clone());
                         }
+                        // If the scan provided a thumbnail upfront, keep it cached so UI doesn't lose it on rebuild
+                        if let Some(ref b64) = row.thumbnail_b64 {
+                            let key = row.path.clone();
+                            let s = b64.strip_prefix("data:image/png;base64,").unwrap_or(b64);
+                            if let Ok(bytes) = B64.decode(s.as_bytes()) {
+                                self.viewer.thumb_cache.entry(key).or_insert_with(|| Arc::from(bytes.into_boxed_slice()));
+                            }
+                        }
                         if self.recursive_scan && self.last_scan_rows.len() > self.recursive_page_size {
                             self.update_recursive_total_pages();
                             // Only add to visible table if the new row falls on current page
@@ -222,7 +230,8 @@ impl crate::ui::file_table::FileExplorer {
                         };
 
                         let auto_save = self.viewer.ui_settings.auto_save_to_database;
-                        if auto_save {
+                        // Only auto-save immediately if we already have a thumbnail (so failed thumbs don't get stored).
+                        if auto_save && meta.thumbnail_b64.is_some() {
                             let group_name = self.active_logical_group_name.clone();
                             let meta_clone = meta.clone();
                             let do_index = self.viewer.ui_settings.auto_indexing;
@@ -361,6 +370,14 @@ impl crate::ui::file_table::FileExplorer {
                                 }
                                 need_repaint = true;
                             }
+                            // If batch item came with a thumb, update cache immediately
+                            if let Some(ref b64) = row_snapshot.thumbnail_b64 {
+                                let key = row_snapshot.path.clone();
+                                let s = b64.strip_prefix("data:image/png;base64,").unwrap_or(b64);
+                                if let Ok(bytes) = B64.decode(s.as_bytes()) {
+                                    self.viewer.thumb_cache.entry(key).or_insert_with(|| Arc::from(bytes.into_boxed_slice()));
+                                }
+                            }
                             // Schedule thumbnail generation if none yet
                             if item.thumb_data.is_none() {
                                 let p_str = item.path.to_string_lossy().to_string();
@@ -383,9 +400,10 @@ impl crate::ui::file_table::FileExplorer {
                                 let mut m = db_row.clone();
                                 if let Some(sz) = item.size { m.size = sz; }
                                 if item.thumb_data.is_some() { m.thumbnail_b64 = item.thumb_data.clone(); }
-                                to_index.push(m);
+                                // Only include for immediate DB upsert if we have a thumbnail already
+                                if m.thumbnail_b64.is_some() { to_index.push(m); }
                             } else {
-                                to_index.push(crate::database::Thumbnail {
+                                let row_for_db = crate::database::Thumbnail {
                                     id: crate::Thumbnail::new(
                                         &item
                                             .path
@@ -413,7 +431,8 @@ impl crate::ui::file_table::FileExplorer {
                                     category: None,
                                     parent_dir,
                                     logical_group: crate::LogicalGroup::default().id,
-                                });
+                                };
+                                if row_for_db.thumbnail_b64.is_some() { to_index.push(row_for_db); }
                             }
                             // If auto CLIP is enabled but auto indexing is off, schedule CLIP embedding for images here
                             if self.viewer.ui_settings.auto_clip_embeddings && !self.viewer.ui_settings.auto_indexing {
@@ -533,8 +552,16 @@ impl crate::ui::file_table::FileExplorer {
                                     let _ = tx_clone.try_send(crate::ScanEnvelope {
                                         scan_id: scan_id_for_updates,
                                         msg: crate::utilities::scan::ScanMsg::UpdateThumb {
-                                            path: path_buf,
+                                            path: path_buf.clone(),
                                             thumb: t,
+                                        },
+                                    });
+                                } else {
+                                    let _ = tx_clone.try_send(crate::ScanEnvelope {
+                                        scan_id: scan_id_for_updates,
+                                        msg: crate::utilities::scan::ScanMsg::ThumbFailed {
+                                            path: path_buf.clone(),
+                                            error: "thumbnail generation failed".to_string(),
                                         },
                                     });
                                 }
@@ -550,56 +577,81 @@ impl crate::ui::file_table::FileExplorer {
                             self.pending_thumb_rows.push(found.clone());
                         }
                     } else {
-                        // Path not yet present (likely due to message reordering). Create a
-                        // placeholder row so the thumbnail appears immediately instead of
-                        // spamming errors. We only insert if filters would normally allow it.
-                        let ext_lc = std::path::Path::new(&key)
-                            .extension()
-                            .and_then(|e| e.to_str())
-                            .map(|s| s.to_ascii_lowercase())
-                            .unwrap_or_default();
-                        let is_img = crate::is_image(ext_lc.as_str());
-                        let is_vid = crate::is_video(ext_lc.as_str());
-                        if (is_img && self.viewer.types_show_images) || (is_vid && self.viewer.types_show_videos) {
-                            use chrono::Utc;
-                            let filename = std::path::Path::new(&key)
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let parent_dir = std::path::Path::new(&key)
-                                .parent()
-                                .map(|p| p.to_string_lossy().to_string())
-                                .unwrap_or_default();
-                            let row = crate::Thumbnail {
-                                id: crate::Thumbnail::new(&filename).id,
-                                db_created: Some(Utc::now().into()),
-                                path: key.clone(),
-                                filename,
-                                file_type: ext_lc.clone(),
-                                size: 0,
-                                description: None,
-                                caption: None,
-                                tags: Vec::new(),
-                                category: None,
-                                thumbnail_b64: Some(thumb.clone()),
-                                modified: Some(Utc::now().into()),
-                                hash: None,
-                                parent_dir,
-                                logical_group: crate::LogicalGroup::default().id,
-                            };
-                            let idx = self.table.len();
-                            self.table.push(row.clone());
-                            self.table_index.insert(row.path.clone(), idx);
-                            self.pending_thumb_rows.push(row);
-                            log::debug!("Inserted placeholder row for missing UpdateThumb: {}", key);
+                        // Path not yet present (likely due to message reordering).
+                        // Do NOT inject into table during recursive scans to avoid page bleed; let Found/Batch add rows.
+                        if self.recursive_scan {
+                            log::debug!("UpdateThumb for unknown path during recursive scan; deferring: {}", key);
                         } else {
-                            log::debug!("Skipping placeholder for UpdateThumb (filtered out): {}", key);
+                            // For non-recursive views, create a placeholder row for immediate display.
+                            let ext_lc = std::path::Path::new(&key)
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .map(|s| s.to_ascii_lowercase())
+                                .unwrap_or_default();
+                            let is_img = crate::is_image(ext_lc.as_str());
+                            let is_vid = crate::is_video(ext_lc.as_str());
+                            if (is_img && self.viewer.types_show_images) || (is_vid && self.viewer.types_show_videos) {
+                                use chrono::Utc;
+                                let filename = std::path::Path::new(&key)
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let parent_dir = std::path::Path::new(&key)
+                                    .parent()
+                                    .map(|p| p.to_string_lossy().to_string())
+                                    .unwrap_or_default();
+                                let row = crate::Thumbnail {
+                                    id: crate::Thumbnail::new(&filename).id,
+                                    db_created: Some(Utc::now().into()),
+                                    path: key.clone(),
+                                    filename,
+                                    file_type: ext_lc.clone(),
+                                    size: 0,
+                                    description: None,
+                                    caption: None,
+                                    tags: Vec::new(),
+                                    category: None,
+                                    thumbnail_b64: Some(thumb.clone()),
+                                    modified: Some(Utc::now().into()),
+                                    hash: None,
+                                    parent_dir,
+                                    logical_group: crate::LogicalGroup::default().id,
+                                };
+                                let idx = self.table.len();
+                                self.table.push(row.clone());
+                                self.table_index.insert(row.path.clone(), idx);
+                                self.pending_thumb_rows.push(row);
+                                log::debug!("Inserted placeholder row for missing UpdateThumb: {}", key);
+                            }
                         }
                     }
-                    if let Ok(decoded) = B64.decode(thumb.as_bytes()) {
-                        let key = path.to_string_lossy().to_string();
-                        self.viewer
+                    // Also persist thumbnail into our snapshot rows so it survives page rebuilds
+                    if let Some(r) = self
+                        .last_scan_rows
+                        .iter_mut()
+                        .find(|r| r.path == key)
+                    {
+                        r.thumbnail_b64 = Some(thumb.clone());
+                    }
+                    if !self.recursive_filtered_rows.is_empty() {
+                        if let Some(r) = self
+                            .recursive_filtered_rows
+                            .iter_mut()
+                            .find(|r| r.path == key)
+                        {
+                            r.thumbnail_b64 = Some(thumb.clone());
+                        }
+                    }
+                    // Decode into cache (strip data URL prefix if present)
+                    let thumb_str = if let Some(stripped) = thumb.strip_prefix("data:image/png;base64,") {
+                        stripped
+                    } else {
+                        thumb.as_str()
+                    };
+                    if let Ok(decoded) = B64.decode(thumb_str.as_bytes()) {
+                        self
+                            .viewer
                             .thumb_cache
                             .entry(key)
                             .or_insert_with(|| Arc::from(decoded.into_boxed_slice()));
@@ -626,6 +678,42 @@ impl crate::ui::file_table::FileExplorer {
                         });
                     }
                 }
+                crate::utilities::scan::ScanMsg::ThumbFailed { path, error } => {
+                    let key = path.to_string_lossy().to_string();
+                    self.failed_thumbs.push((key.clone(), error.clone()));
+                    log::warn!("Thumbnail failed: {} => {}", key, error);
+                    // If scan already done (or user switched tabs and came back), open a failed tab now
+                    if self.scan_done && !self.failed_thumbs.is_empty() && !self.failed_tab_opened {
+                        let mut rows: Vec<crate::database::Thumbnail> = Vec::new();
+                        for (p, err) in self.failed_thumbs.iter() {
+                            let filename = std::path::Path::new(p).file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+                            let ext = std::path::Path::new(p).extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()).unwrap_or_default();
+                            rows.push(crate::database::Thumbnail {
+                                id: crate::Thumbnail::new(&filename).id,
+                                db_created: None,
+                                path: p.clone(),
+                                filename,
+                                file_type: ext,
+                                size: 0,
+                                description: Some(format!("Thumbnail failed: {}", err)),
+                                caption: None,
+                                tags: Vec::new(),
+                                category: Some("<FAILED_THUMB>".to_string()),
+                                thumbnail_b64: None,
+                                modified: None,
+                                hash: None,
+                                parent_dir: std::path::Path::new(p).parent().map(|pp| pp.to_string_lossy().to_string()).unwrap_or_default(),
+                                logical_group: crate::LogicalGroup::default().id,
+                            });
+                        }
+                        let title = format!("Failed thumbnails ({})", rows.len());
+                        crate::app::OPEN_TAB_REQUESTS
+                            .lock()
+                            .unwrap()
+                            .push(crate::ui::file_table::FilterRequest::NewTab { title, rows, showing_similarity: false, similar_scores: None, origin_path: None, background: false });
+                        self.failed_tab_opened = true;
+                    }
+                }
                 crate::utilities::scan::ScanMsg::EncryptedArchives(zips) => {
                     // Queue unique archives; show modal after scan completes
                     for z in zips.into_iter() {
@@ -643,6 +731,41 @@ impl crate::ui::file_table::FileExplorer {
                     log::error!("ScanMsg Error: {e:?}");
                 }
                 crate::utilities::scan::ScanMsg::Done => {
+                    // Rebuild page view at end of scan to ensure correct slice size
+                    if self.recursive_scan { self.rebuild_recursive_page(); }
+
+                    // Open a tab listing failed thumbnails, if any
+                    if !self.failed_thumbs.is_empty() && !self.failed_tab_opened {
+                        let mut rows: Vec<crate::database::Thumbnail> = Vec::new();
+                        for (p, err) in self.failed_thumbs.iter() {
+                            let filename = std::path::Path::new(p).file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+                            let ext = std::path::Path::new(p).extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()).unwrap_or_default();
+                            rows.push(crate::database::Thumbnail {
+                                id: crate::Thumbnail::new(&filename).id,
+                                db_created: None,
+                                path: p.clone(),
+                                filename,
+                                file_type: ext,
+                                size: 0,
+                                description: Some(format!("Thumbnail failed: {}", err)),
+                                caption: None,
+                                tags: Vec::new(),
+                                category: Some("<FAILED_THUMB>".to_string()),
+                                thumbnail_b64: None,
+                                modified: None,
+                                hash: None,
+                                parent_dir: std::path::Path::new(p).parent().map(|pp| pp.to_string_lossy().to_string()).unwrap_or_default(),
+                                logical_group: crate::LogicalGroup::default().id,
+                            });
+                        }
+                        let title = format!("Failed thumbnails ({})", rows.len());
+                        crate::app::OPEN_TAB_REQUESTS
+                            .lock()
+                            .unwrap()
+                            .push(crate::ui::file_table::FilterRequest::NewTab { title, rows, showing_similarity: false, similar_scores: None, origin_path: None, background: false });
+                        self.failed_tab_opened = true;
+                        self.failed_thumbs.clear();
+                    }
                     log::info!("Done");
                     self.file_scan_progress = 1.0;
                     self.scan_done = true;
