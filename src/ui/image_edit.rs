@@ -18,6 +18,9 @@ pub struct ImageEditPanel {
     pub loading_model: bool,
     pub model_error: Option<String>,
     pipeline: std::sync::Arc<tokio::sync::Mutex<Option<crate::ai::qwen_image_edit::model::QwenImageEditPipeline>>>,
+    // Loader status channel (background -> UI)
+    status_tx: crossbeam::channel::Sender<Result<(), String>>,
+    status_rx: crossbeam::channel::Receiver<Result<(), String>>,
 }
 
 impl Default for ImageEditPanel {
@@ -30,11 +33,18 @@ impl Default for ImageEditPanel {
             strength: 0.7,
             steps: 30,
             thumb_cache: Arc::new(Mutex::new(HashMap::new())),
-            model_repo: String::new(),
+            model_repo: "Qwen/Qwen-Image-Edit".to_string(),
             model_loaded: false,
             loading_model: false,
             model_error: None,
             pipeline: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+            // initialize a channel; will be replaced in new() if needed
+            status_tx: {
+                let (tx, _rx) = crossbeam::channel::unbounded(); tx
+            },
+            status_rx: {
+                let (_tx, rx) = crossbeam::channel::unbounded(); rx
+            },
         }
     }
 }
@@ -42,6 +52,27 @@ impl Default for ImageEditPanel {
 impl ImageEditPanel {
     pub fn open_with_path(&mut self, path: &str) {
         self.current_path = Some(path.to_string());
+        // Auto-load model as soon as user opens Image Edit with a path.
+        if !self.loading_model && !self.model_loaded && !self.model_repo.trim().is_empty() {
+            self.loading_model = true;
+            self.model_error = None;
+            let repo = self.model_repo.clone();
+            let slot = self.pipeline.clone();
+            // fresh channel for this load
+            let (tx, rx) = crossbeam::channel::unbounded();
+            self.status_tx = tx.clone();
+            self.status_rx = rx;
+            tokio::spawn(async move {
+                crate::ai::unload_heavy_models_except("").await;
+                let prefer = if candle_core::Device::new_cuda(0).is_ok() { candle_core::DType::F16 } else { candle_core::DType::F32 };
+                let res = crate::ai::qwen_image_edit::model::QwenImageEditPipeline::load_from_hf(&repo, prefer)
+                    .map_err(|e| e.to_string());
+                match res {
+                    Ok(p) => { let mut g = slot.lock().await; *g = Some(p); let _ = tx.send(Ok(())); }
+                    Err(e) => { log::error!("[ImageEdit] model load failed: {e}"); let mut g = slot.lock().await; *g = None; let _ = tx.send(Err(e)); }
+                }
+            });
+        }
     }
 
     pub fn ui(&mut self, ui: &mut Ui) {
@@ -51,7 +82,7 @@ impl ImageEditPanel {
             // Model controls
             ui.horizontal(|ui| {
                 ui.label("Model repo:");
-                let hint = if self.model_repo.trim().is_empty() { "e.g. Qwen/your-image-edit-repo" } else { "" };
+                let hint = if self.model_repo.trim().is_empty() { "e.g. Qwen/Qwen-Image-Edit" } else { "" };
                 ui.add_sized([ui.available_width()*0.7, 20.0], TextEdit::singleline(&mut self.model_repo).hint_text(hint));
                 let can_load = !self.loading_model && !self.model_repo.trim().is_empty();
                 if ui.add_enabled(can_load, Button::new(if self.model_loaded { "Reload Model" } else { "Load Model" })).clicked() {
@@ -59,23 +90,30 @@ impl ImageEditPanel {
                     self.model_error = None;
                     let repo = self.model_repo.clone();
                     let slot = self.pipeline.clone();
+                    // create a fresh channel for this load
+                    let (tx, rx) = crossbeam::channel::unbounded();
+                    self.status_tx = tx.clone();
+                    self.status_rx = rx;
                     tokio::spawn(async move {
                         crate::ai::unload_heavy_models_except("").await;
                         let prefer = if candle_core::Device::new_cuda(0).is_ok() { candle_core::DType::F16 } else { candle_core::DType::F32 };
-                        match crate::ai::qwen_image_edit::model::QwenImageEditPipeline::load_from_hf(&repo, prefer) {
-                            Ok(p) => { let mut g = slot.lock().await; *g = Some(p); }
-                            Err(e) => { log::error!("[ImageEdit] model load failed: {e}"); let mut g = slot.lock().await; *g = None; }
+                        let res = crate::ai::qwen_image_edit::model::QwenImageEditPipeline::load_from_hf(&repo, prefer)
+                            .map_err(|e| e.to_string());
+                        match res {
+                            Ok(p) => { let mut g = slot.lock().await; *g = Some(p); let _ = tx.send(Ok(())); }
+                            Err(e) => { log::error!("[ImageEdit] model load failed: {e}"); let mut g = slot.lock().await; *g = None; let _ = tx.send(Err(e)); }
                         }
                     });
                 }
             });
             if self.loading_model {
                 ui.horizontal(|ui| { ui.label("Loading model…"); Spinner::new().ui(ui); });
-                // Poll once per UI frame for loaded status
-                if let Ok(g) = self.pipeline.try_lock() {
-                    if g.is_some() {
-                        self.loading_model = false;
-                        self.model_loaded = true;
+                // Poll loader status channel for completion or error
+                if let Ok(msg) = self.status_rx.try_recv() {
+                    self.loading_model = false;
+                    match msg {
+                        Ok(()) => { self.model_loaded = true; self.model_error = None; }
+                        Err(e) => { self.model_loaded = false; self.model_error = Some(e); }
                     }
                 }
             } else if let Some(err) = &self.model_error { ui.colored_label(Color32::RED, err); }
@@ -127,6 +165,24 @@ impl ImageEditPanel {
                 ui.weak("Loading preview…");
             }
 
+            // If we have a generated result, show it side-by-side or below
+            let result_key = format!("imageedit::result::{}", path);
+            let mut has_result = false;
+            if let Ok(cache) = self.thumb_cache.lock() {
+                if let Some(bytes_arc) = cache.get(&result_key) {
+                    has_result = true;
+                    ui.separator();
+                    ui.label(RichText::new("Result:").underline().strong());
+                    let img_src = eframe::egui::ImageSource::Bytes {
+                        uri: std::borrow::Cow::from(format!("bytes://{}", result_key)),
+                        bytes: eframe::egui::load::Bytes::Shared(bytes_arc.clone()),
+                    };
+                    eframe::egui::Image::new(img_src)
+                        .max_size(ui.available_size()/1.3)
+                        .ui(ui);
+                }
+            }
+
             ui.separator();
             ui.horizontal(|ui| {
                 ui.label("Prompt:");
@@ -156,6 +212,7 @@ impl ImageEditPanel {
                         strength: self.strength,
                         scheduler: Some("flow_match_euler".into()),
                         seed: None,
+                        deterministic_vae: true,
                     };
                     tokio::spawn(async move {
                         let png = if let Some(pipe) = slot.lock().await.as_ref() {
@@ -166,6 +223,21 @@ impl ImageEditPanel {
                             if let Ok(mut guard) = cache.lock() { guard.insert(key, Arc::from(png.into_boxed_slice())); }
                         }
                     });
+                }
+                if has_result && ui.button("Save Result As…").clicked() {
+                    // Offer a save dialog and write PNG bytes from cache
+                    if let Some(file) = rfd::FileDialog::new()
+                        .set_title("Save edited image as PNG")
+                        .add_filter("PNG", &["png"]) 
+                        .set_file_name("edited.png")
+                        .save_file() {
+                        if let Ok(cache) = self.thumb_cache.lock() {
+                            if let Some(bytes_arc) = cache.get(&result_key) {
+                                let bytes: Vec<u8> = bytes_arc.as_ref().to_vec();
+                                let _ = std::fs::write(&file, bytes);
+                            }
+                        }
+                    }
                 }
                 if ui.button("Open Source Folder").clicked() {
                     if let Some(pb) = std::path::Path::new(path).parent() { let _ = open::that(pb); }

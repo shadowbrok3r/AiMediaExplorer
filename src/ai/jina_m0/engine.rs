@@ -201,6 +201,7 @@ impl JinaM0Engine {
                     sliding_window: t.sliding_window,
                     max_window_layers: t.max_window_layers.unwrap_or_else(|| t.num_hidden_layers.unwrap_or(28)),
                     mrope_section: None,
+                    rope_scaling: None,
                 };
                 let vraw = root.vision_config.unwrap_or(HFVisionConfig { hidden_size: None, in_chans: None, spatial_patch_size: None });
                 let vision_cfg = crate::ai::qwen2_5_vl::VisionConfig {
@@ -213,6 +214,8 @@ impl JinaM0Engine {
                     num_channels: vraw.in_chans.unwrap_or(3),
                     spatial_merge_size: 2,
                     temporal_patch_size: 2,
+                    out_hidden_size: None,
+                    window_size: None,
                 };
                 return Ok(crate::ai::qwen2_5_vl::Config {
                     vision_config: vision_cfg,
@@ -258,6 +261,7 @@ impl JinaM0Engine {
             sliding_window,
             max_window_layers,
             mrope_section: rope_scaling,
+            rope_scaling: None,
         };
         let vc = v.get("vision_config").cloned().unwrap_or(serde_json::json!({}));
         let v_hidden = vc.get("hidden_size").and_then(|x| x.as_u64()).map(|u| u as usize).unwrap_or(1536);
@@ -273,6 +277,8 @@ impl JinaM0Engine {
             num_channels: v_in,
             spatial_merge_size: 2,
             temporal_patch_size: 2,
+            out_hidden_size: None,
+            window_size: None,
         };
         let vision_start_token_id = v.get("vision_start_token_id").and_then(|x| x.as_u64()).map(|u| u as u32).unwrap_or(151652);
         let vision_end_token_id = v.get("vision_end_token_id").and_then(|x| x.as_u64()).map(|u| u as u32).unwrap_or(151653);
@@ -799,6 +805,7 @@ impl JinaM0Engine {
             sliding_window: Some(32768),
             max_window_layers: num_hidden_layers,
             mrope_section: None,
+            rope_scaling: None,
         };
         Ok(Some(text_cfg))
     }
@@ -860,7 +867,8 @@ impl RawJinaConfig {
             use_sliding_window: self.use_sliding_window.unwrap_or(false),
             sliding_window: Some(self.sliding_window.unwrap_or(32768)),
             max_window_layers: self.max_window_layers.unwrap_or(28),
-            mrope_section: self.rope_scaling.and_then(|r| r.mrope_section),
+            mrope_section: self.rope_scaling.as_ref().and_then(|r| r.mrope_section.clone()),
+            rope_scaling: None,
         };
 
         let vraw = self.vision_config.unwrap_or(RawVisionConfig { hidden_size: None, in_chans: None, spatial_patch_size: None });
@@ -874,6 +882,8 @@ impl RawJinaConfig {
             num_channels: vraw.in_chans.unwrap_or(3),
             spatial_merge_size: 2,
             temporal_patch_size: 2,
+            out_hidden_size: None,
+            window_size: None,
         };
 
         crate::ai::qwen2_5_vl::Config {

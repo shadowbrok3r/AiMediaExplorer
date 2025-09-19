@@ -9,6 +9,9 @@ pub mod reranker;
 pub mod model;
 pub mod jina_m0;
 pub mod qwen2_5_vl;
+pub mod vae;
+pub mod qwen_image_transformer;
+pub mod flux_transformer;
 
 pub use ai_search::*;
 pub use joycap as joycaption_adapter;

@@ -8,20 +8,24 @@ pub struct VisionConfig {
     pub hidden_size: usize,
     #[serde(default)]
     pub intermediate_size: usize,
-    #[serde(default = "default_num_hidden_layers")]
+    #[serde(alias = "depth", default = "default_num_hidden_layers")]
     pub num_hidden_layers: usize,
-    #[serde(default = "default_num_attention_heads")]
+    #[serde(alias = "num_heads", default = "default_num_attention_heads")]
     pub num_attention_heads: usize,
     #[serde(default = "default_image_size")]
     pub image_size: usize,
     #[serde(alias = "spatial_patch_size", default = "default_patch_size")]
     pub patch_size: usize,
-    #[serde(alias = "in_chans", default = "default_num_channels")]
+    #[serde(alias = "in_chans", alias = "in_channels", default = "default_num_channels")]
     pub num_channels: usize,
     #[serde(default = "default_spatial_merge_size")]
     pub spatial_merge_size: usize,
     #[serde(default = "default_temporal_patch_size")]
     pub temporal_patch_size: usize,
+    #[serde(default)]
+    pub out_hidden_size: Option<usize>,
+    #[serde(default)]
+    pub window_size: Option<usize>,
 }
 
 impl Default for VisionConfig {
@@ -36,6 +40,8 @@ impl Default for VisionConfig {
             num_channels: 3,
             spatial_merge_size: 2,
             temporal_patch_size: 2,
+            out_hidden_size: None,
+            window_size: None,
         }
     }
 }
@@ -64,6 +70,18 @@ pub struct TextConfig {
     pub max_window_layers: usize,
     // Optional scaling configuration for rotary embedding sections
     pub mrope_section: Option<Vec<usize>>,
+    #[serde(default)]
+    pub rope_scaling: Option<RopeScaling>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, Default)]
+pub struct RopeScaling {
+    #[serde(default)]
+    pub mrope_section: Option<Vec<usize>>,
+    #[serde(default)]
+    pub rope_type: Option<String>,
+    #[serde(default, rename = "type")]
+    pub r#type: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
@@ -97,6 +115,7 @@ impl Default for Config {
                 sliding_window: None,
                 max_window_layers: 28,
                 mrope_section: None,
+                rope_scaling: None,
             },
             hidden_size: 3584,
             vision_start_token_id: 151652,
@@ -702,6 +721,7 @@ impl TextModel {
         let mrope_section = config
             .mrope_section
             .clone()
+            .or_else(|| config.rope_scaling.as_ref().and_then(|r| r.mrope_section.clone()))
             .unwrap_or_else(|| vec![head_dim / 3, head_dim / 3, head_dim / 3]);
         let rotary_emb = Arc::new(MultimodalRotaryEmbedding::new(
             head_dim,
@@ -763,7 +783,15 @@ impl Qwen2_5VL {
     pub fn new(config: &Config, vb: VarBuilder) -> Result<Self> {
         let vision_model = VisionModel::new(&config.vision_config, vb.pp("vision_model"))?;
         let text_model = TextModel::new(&config.text_config, vb.pp("text_model"))?;
-
+        // If out_hidden_size is provided in vision config, ensure it matches text hidden size; else fall back to text hidden.
+        if let Some(oh) = config.vision_config.out_hidden_size {
+            if oh != config.text_config.hidden_size {
+                log::warn!(
+                    "[Qwen2.5-VL] vision.out_hidden_size ({}) != text.hidden_size ({}); using text.hidden_size for visual_tokenizer output",
+                    oh, config.text_config.hidden_size
+                );
+            }
+        }
         let visual_tokenizer = linear(
             config.vision_config.hidden_size,
             config.text_config.hidden_size,

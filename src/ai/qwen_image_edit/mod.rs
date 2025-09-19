@@ -24,6 +24,7 @@ pub struct EditOptions {
     pub strength: f32,
     pub scheduler: Option<String>,
     pub seed: Option<u64>,
+    pub deterministic_vae: bool,
 }
 
 impl Default for EditOptions {
@@ -37,6 +38,7 @@ impl Default for EditOptions {
             // Match the pipeline's default scheduler from model_index.json
             scheduler: Some("flow_match_euler".into()),
             seed: None,
+            deterministic_vae: true,
         }
     }
 }
