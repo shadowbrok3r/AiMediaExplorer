@@ -99,8 +99,13 @@ impl QwenImageTransformer2DModel {
                 .reshape((b, tlen, heads, head_dim))?
                 .transpose(1, 2)?; // [B,H,T,Hd]
             let scale = (head_dim as f64).sqrt();
-            let attn = (q.matmul(&k.transpose(D::Minus1, D::Minus2)?)? / scale)?; // [B,H,N,T]
+            // Ensure contiguous tensors before matmul operations
+            let q = q.contiguous()?; // [B,H,N,Hd]
+            let k_t = k.transpose(D::Minus1, D::Minus2)?.contiguous()?; // [B,H,Hd,T]
+            let attn = (q.matmul(&k_t)? / scale)?; // [B,H,N,T]
             let attn = candle_nn::ops::softmax_last_dim(&attn)?; // [B,H,N,T]
+            let attn = attn.contiguous()?;
+            let v = v.contiguous()?;
             let ctx = attn.matmul(&v)?; // [B,H,N,Hd]
             let ctx = ctx.transpose(1, 2)? // [B,N,H,Hd]
                 .reshape((b, n, model_dim))?; // [B,N,D]

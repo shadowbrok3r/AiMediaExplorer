@@ -563,8 +563,9 @@ impl QwenImageEditPipeline {
     let mut x = candle_core::Tensor::from_vec(data, (1usize, 3usize, h as usize, w as usize), &self.device)?;
     if x.dtype() != self.dtype { x = x.to_dtype(self.dtype)?; }
 
-        // Encode with auto pad
-        let (mut z, oh, ow, _ph, _pw) = vae.encode_with_auto_pad(&x, !opts.deterministic_vae)?;
+    // Encode with auto pad
+    let (mut z, oh, ow, _ph, _pw) = vae.encode_with_auto_pad(&x, !opts.deterministic_vae)?;
+    if z.dtype() != self.dtype { z = z.to_dtype(self.dtype)?; }
 
         // Build embeddings for cond and uncond
         let (text_cond, text_uncond) = if self.tokenizer.is_some() && self.has_text_encoder {
@@ -586,8 +587,8 @@ impl QwenImageEditPipeline {
                     .unwrap_or(3584);
                 (151936usize, joint_dim, 1e-6f32)
             };
-            // Load embedding + norm once
-            let (emb_layer, norm_w) = unsafe {
+            // Try to load embedding + norm; if not found, fall back to zeros.
+            let loaded: anyhow::Result<(Embedding, candle_core::Tensor)> = unsafe {
                 with_mmap_varbuilder_multi(&self.paths.text_encoder_files, self.dtype, &self.device, |vb: VarBuilder| {
                     let try_build = |vb: VarBuilder, pfx: &str| -> anyhow::Result<(Embedding, candle_core::Tensor)> {
                         let vb = if pfx.is_empty() { vb } else { vb.pp(pfx) };
@@ -601,27 +602,38 @@ impl QwenImageEditPipeline {
                     }
                     Err(anyhow::anyhow!("text_encoder embed/norm not found"))
                 })
-            }?;
-            let embed_once = |s: &str| -> anyhow::Result<candle_core::Tensor> {
-                let enc = tok.encode(s, true).map_err(anyhow::Error::msg)?;
-                let ids: Vec<i64> = enc.get_ids().iter().map(|&u| u as i64).collect();
-                let input_ids = candle_core::Tensor::new(ids, &self.device)?.unsqueeze(0)?; // [1,L]
-                let x = emb_layer.forward(&input_ids)?; // [1,L,D]
-                // RMSNorm inline
-                let x_dtype = x.dtype();
-                let x32 = x.to_dtype(candle_core::DType::F32)?;
-                let variance = x32.sqr()?.mean_keepdim(candle_core::D::Minus1)?;
-                let eps_t = candle_core::Tensor::new(eps, &self.device)?;
-                let x32 = x32.broadcast_div(&((variance + &eps_t)?.sqrt()?))?;
-                let x = x32.to_dtype(x_dtype)?;
-                Ok(x.broadcast_mul(&norm_w)?)
             };
-            let mut cond = embed_once(&opts.prompt)?;
-            let uncond_text = opts.negative_prompt.as_deref().unwrap_or("");
-            let mut uncond = embed_once(uncond_text)?;
-            if cond.dtype() != self.dtype { cond = cond.to_dtype(self.dtype)?; }
-            if uncond.dtype() != self.dtype { uncond = uncond.to_dtype(self.dtype)?; }
-            (cond, uncond)
+            if let Ok((emb_layer, mut norm_w)) = loaded {
+                let mut embed_once = |s: &str| -> anyhow::Result<candle_core::Tensor> {
+                    let enc = tok.encode(s, true).map_err(anyhow::Error::msg)?;
+                    let ids: Vec<i64> = enc.get_ids().iter().map(|&u| u as i64).collect();
+                    let input_ids = candle_core::Tensor::new(ids, &self.device)?.unsqueeze(0)?; // [1,L]
+                    let x = emb_layer.forward(&input_ids)?; // [1,L,D]
+                    // RMSNorm inline
+                    let x_dtype = x.dtype();
+                    let x32 = x.to_dtype(candle_core::DType::F32)?;
+                    let variance = x32.sqr()?.mean_keepdim(candle_core::D::Minus1)?;
+                    let eps_t = candle_core::Tensor::new(eps, &self.device)?;
+                    let x32 = x32.broadcast_div(&((variance + &eps_t)?.sqrt()?))?;
+                    let mut x = x32.to_dtype(x_dtype)?;
+                    if norm_w.dtype() != x.dtype() { norm_w = norm_w.to_dtype(x.dtype())?; }
+                    x = x.broadcast_mul(&norm_w)?;
+                    Ok(x)
+                };
+                let mut cond = embed_once(&opts.prompt)?;
+                let uncond_text = opts.negative_prompt.as_deref().unwrap_or("");
+                let mut uncond = embed_once(uncond_text)?;
+                if cond.dtype() != self.dtype { cond = cond.to_dtype(self.dtype)?; }
+                if uncond.dtype() != self.dtype { uncond = uncond.to_dtype(self.dtype)?; }
+                (cond, uncond)
+            } else {
+                log::warn!("[qwen-image-edit] text_encoder embed/norm not found in weights; falling back to zero embeddings.");
+                let d = self.transformer_flux.as_ref().map(|m| m.config.joint_attention_dim)
+                    .or_else(|| self.transformer_model.as_ref().map(|m| m.config.joint_attention_dim))
+                    .unwrap_or(3584);
+                let zero = candle_core::Tensor::zeros((1usize, 1usize, d), self.dtype, &self.device)?;
+                (zero.clone(), zero)
+            }
         } else {
             let d = self.transformer_flux.as_ref().map(|m| m.config.joint_attention_dim)
                 .or_else(|| self.transformer_model.as_ref().map(|m| m.config.joint_attention_dim))
@@ -629,6 +641,19 @@ impl QwenImageEditPipeline {
             let zero = candle_core::Tensor::zeros((1usize, 1usize, d), self.dtype, &self.device)?;
             (zero.clone(), zero)
         };
+
+        // If using Flux-style transformer, ensure latent spatial dims are divisible by patch_size
+        if let Some(tf) = tr_flux_opt {
+            let ps = tf.config.patch_size.max(1);
+            let (b, c, zh, zw) = z.dims4()?;
+            let zh2 = ((zh + ps - 1) / ps) * ps;
+            let zw2 = ((zw + ps - 1) / ps) * ps;
+            if zh2 != zh || zw2 != zw {
+                let mut z_pad = candle_core::Tensor::zeros((b, c, zh2, zw2), z.dtype(), z.device())?;
+                z_pad = z_pad.slice_assign(&[0..b, 0..c, 0..zh, 0..zw], &z)?;
+                z = z_pad;
+            }
+        }
 
         // Noise schedule
         let steps = opts.num_inference_steps.max(1);
@@ -643,7 +668,8 @@ impl QwenImageEditPipeline {
                 let zu = if let Some(tf) = tr_flux_opt { tf.forward(&z, &text_uncond)? } else { tr_qwen_opt.unwrap().forward(&z, &text_uncond)? };
                 let zc = if let Some(tf) = tr_flux_opt { tf.forward(&z, &text_cond)? } else { tr_qwen_opt.unwrap().forward(&z, &text_cond)? };
                 let diff = (zc - &zu)?;
-                let g = candle_core::Tensor::new(guidance as f32, &self.device)?;
+                let mut g = candle_core::Tensor::new(guidance as f32, &self.device)?;
+                if g.dtype() != zu.dtype() { g = g.to_dtype(zu.dtype())?; }
                 z = (&zu + diff.broadcast_mul(&g)?)?;
             } else {
                 z = if let Some(tf) = tr_flux_opt { tf.forward(&z, &text_cond)? } else { tr_qwen_opt.unwrap().forward(&z, &text_cond)? };
@@ -651,9 +677,13 @@ impl QwenImageEditPipeline {
         }
 
         // Decode back to original size
-        let x_out = vae.decode_to_original(&z, oh, ow)?;
-        // To PNG
-    let x_u8 = (x_out.clamp(0f32, 1f32)? * 255.0)?.to_dtype(candle_core::DType::U8)?;
+    let mut x_out = vae.decode_to_original(&z, oh, ow)?;
+    if x_out.dtype() != self.dtype { x_out = x_out.to_dtype(self.dtype)?; }
+        // To PNG (upcast to F32 to avoid dtype mismatch on scalar mul)
+    let x32 = x_out.to_dtype(candle_core::DType::F32)?;
+    let x32 = x32.clamp(0f32, 1f32)?;
+    let scale = candle_core::Tensor::new(255.0f32, &self.device)?;
+    let x_u8 = x32.broadcast_mul(&scale)?.to_dtype(candle_core::DType::U8)?;
     let img_out = x_u8.i(0)?; // [3,H,W]
     let (hh, ww) = (img_out.dim(1)?, img_out.dim(2)?);
     let mut buf = image::ImageBuffer::<image::Rgb<u8>, Vec<u8>>::new(ww as u32, hh as u32);

@@ -127,8 +127,13 @@ impl FluxTransformer2DModel {
                 (k, v)
             };
             let scale = (head_dim as f64).sqrt();
-            let attn = (q.matmul(&k.transpose(D::Minus1, D::Minus2)?)? / scale)?; // (b,H,n,t)
+            // Ensure contiguous tensors before matmul operations
+            let q = q.contiguous()?; // (b,H,n,h)
+            let k_t = k.transpose(D::Minus1, D::Minus2)?.contiguous()?; // (b,H,h,t)
+            let attn = (q.matmul(&k_t)? / scale)?; // (b,H,n,t)
             let attn = candle_nn::ops::softmax_last_dim(&attn)?;
+            let v = v.contiguous()?; // (b,H,t,h) or (b,H,n,h)
+            let attn = attn.contiguous()?; // (b,H,n,t)
             let ctx = attn.matmul(&v)? // (b,H,n,h)
                 .transpose(1, 2)? // (b,n,H,h)
                 .reshape((b, n, model_dim))?; // (b,n,D)

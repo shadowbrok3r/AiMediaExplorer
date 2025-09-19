@@ -257,16 +257,18 @@ impl AutoencoderKL {
         let logvar = self.to_logvar.forward(&y)?;
         let z = if sample {
             // z = mu + exp(0.5*logvar) * eps, eps ~ N(0,1)
-            let half = Tensor::new(0.5f32, &self.device)?;
+            let half = Tensor::new(0.5f32, &self.device)?.to_dtype(logvar.dtype())?;
             let std = logvar.broadcast_mul(&half)?.exp()?;
-            let eps = Tensor::randn(0f32, 1f32, mu.dims(), &self.device)?;
+            let mut eps = Tensor::randn(0f32, 1f32, mu.dims(), &self.device)?;
+            if eps.dtype() != mu.dtype() { eps = eps.to_dtype(mu.dtype())?; }
             (&mu + std.broadcast_mul(&eps)?)?
         } else {
             mu
         };
         // Apply scaling factor to latents as in SD-style VAEs
         let scale = self.config.scaling_factor.unwrap_or(0.18215);
-        let scale_t = Tensor::new(scale, &self.device)?;
+        let mut scale_t = Tensor::new(scale, &self.device)?;
+        if scale_t.dtype() != z.dtype() { scale_t = scale_t.to_dtype(z.dtype())?; }
         z.broadcast_mul(&scale_t)
     }
 
@@ -333,8 +335,9 @@ impl AutoencoderKL {
         let b = z.dim(0)?;
         // Rescale back from latent space scaling
         let scale = self.config.scaling_factor.unwrap_or(0.18215);
-        let inv = Tensor::new(1.0f32 / scale, &self.device)?;
-        let mut y = z.broadcast_mul(&inv)?; // [B, lc, H/8, W/8]
+    let mut inv = Tensor::new(1.0f32 / scale, &self.device)?;
+    if inv.dtype() != z.dtype() { inv = inv.to_dtype(z.dtype())?; }
+    let mut y = z.broadcast_mul(&inv)?; // [B, lc, H/8, W/8]
         // Map from latent channels to decoder start channels
         y = self.from_latent.forward(&y)?; // [B, C_last, H/8, W/8]
         for (i, deconv) in self.up_blocks.iter().enumerate() {

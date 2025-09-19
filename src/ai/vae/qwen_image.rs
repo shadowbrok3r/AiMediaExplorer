@@ -328,11 +328,14 @@ impl QwenImageVaeSimplified {
             mu
         } else {
             // z = mu + exp(0.5*logvar) * eps
-            let std = (&logvar * 0.5)?.exp()?;
-            let eps = Tensor::randn(0f32, 1f32, mu.dims(), x.device())?;
+            let half = Tensor::new(0.5f32, x.device())?.to_dtype(logvar.dtype())?;
+            let std = logvar.broadcast_mul(&half)?.exp()?;
+            let mut eps = Tensor::randn(0f32, 1f32, mu.dims(), x.device())?;
+            if eps.dtype() != mu.dtype() { eps = eps.to_dtype(mu.dtype())?; }
             (&mu + std.broadcast_mul(&eps)?)?
         };
-        let scale = Tensor::new(self.scaling, x.device())?;
+        let mut scale = Tensor::new(self.scaling, x.device())?;
+        if scale.dtype() != z.dtype() { scale = scale.to_dtype(z.dtype())?; }
         z.broadcast_mul(&scale)
     }
 
@@ -352,8 +355,9 @@ impl QwenImageVaeSimplified {
     }
 
     pub fn decode(&self, z: &Tensor) -> Result<Tensor> {
-        let inv = Tensor::new(1.0f32 / self.scaling, z.device())?;
-        let mut y = z.broadcast_mul(&inv)?; // [B,16,H',W']
+    let mut inv = Tensor::new(1.0f32 / self.scaling, z.device())?;
+    if inv.dtype() != z.dtype() { inv = inv.to_dtype(z.dtype())?; }
+    let mut y = z.broadcast_mul(&inv)?; // [B,16,H',W']
         y = self.dec_in.forward(&y)?; // [B,384,H',W']
         for d in &self.dec_extra {
             y = d.forward(&y)?;
