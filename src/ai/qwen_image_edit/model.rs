@@ -310,15 +310,15 @@ impl QwenImageEditPipeline {
 
         let device = pick_device_cuda0_or_cpu();
         let mut dtype = prefer_dtype;
-        // Force lower precision on CUDA to reduce VRAM usage
+        // Prefer F16 on CUDA; BF16 is unsupported on older GPUs (e.g., Turing/2070S) and can cause missing CUDA symbols.
         if matches!(device, candle_core::Device::Cuda(_)) {
-            if dtype != candle_core::DType::F16 && dtype != candle_core::DType::BF16 {
+            if dtype != candle_core::DType::F16 {
                 log::warn!(
-                    "[qwen-image-edit] Overriding dtype to BF16 for CUDA to reduce memory (was {:?})",
+                    "[qwen-image-edit] Using F16 on CUDA for compatibility (was {:?}).",
                     dtype
                 );
             }
-            dtype = candle_core::DType::BF16;
+            dtype = candle_core::DType::F16;
         }
 
         // Load scheduler config; fall back to defaults if parsing fails so we always have a scheduler
@@ -829,7 +829,8 @@ impl QwenImageEditPipeline {
         let (mut w, mut h) = img.dimensions();
         // Optional: clamp max side to reduce memory (keeps aspect). Default very high.
     // Conservative cap to limit VRAM; consider making this a user option if needed.
-    let max_side: u32 = 1536;
+    // Lowered default to 1024 for broader GPU compatibility (e.g., 2070S).
+    let max_side: u32 = 1024;
         if w.max(h) > max_side {
             let scale = max_side as f32 / w.max(h) as f32;
             w = (w as f32 * scale).round() as u32;
@@ -855,10 +856,54 @@ impl QwenImageEditPipeline {
             x = x.to_dtype(self.dtype)?;
         }
 
-        // Encode with auto pad
-        let (mut z, oh, ow, _ph, _pw) = vae.encode_with_auto_pad(&x, !opts.deterministic_vae)?;
+        // Encode with auto pad, with runtime CPU fallback if CUDA named symbol is missing
+        let mut vae_cpu_fallback: Option<Box<dyn crate::ai::vae::VaeLike>> = None;
+        let (mut z, oh, ow, _ph, _pw) = match vae.encode_with_auto_pad(&x, !opts.deterministic_vae) {
+            Ok(v) => v,
+            Err(e) => {
+                let msg = format!("{}", e);
+                if msg.contains("CUDA_ERROR_NOT_FOUND") || msg.contains("named symbol not found") {
+                    log::warn!(
+                        "[qwen-image-edit] VAE encode failed on CUDA due to named symbol; retrying encode on CPU/F32 with simplified Qwen VAE."
+                    );
+                    let cpu = candle_core::Device::Cpu;
+                    let scale = 0.18215f32;
+                    // Build a temporary CPU simplified VAE and use it only for encode/decode
+                    match crate::ai::vae::build_qwen_vae_simplified_from_files(
+                        &self.paths.vae_files,
+                        candle_core::DType::F32,
+                        &cpu,
+                        scale,
+                    ) {
+                        Ok(vs) => {
+                            let vbox: Box<dyn crate::ai::vae::VaeLike> = Box::new(vs);
+                            // Move input to CPU for CPU VAE
+                            let mut x_cpu = x.to_device(&cpu)?;
+                            if x_cpu.dtype() != candle_core::DType::F32 {
+                                x_cpu = x_cpu.to_dtype(candle_core::DType::F32)?;
+                            }
+                            let out = vbox.encode_with_auto_pad(&x_cpu, !opts.deterministic_vae)?;
+                            vae_cpu_fallback = Some(vbox);
+                            out
+                        }
+                        Err(e2) => {
+                            // If fallback build also fails, return original error
+                            return Err(anyhow::anyhow!(
+                                "VAE encode failed on CUDA and CPU fallback build failed: {} | {}",
+                                msg, e2
+                            ));
+                        }
+                    }
+                } else {
+                    return Err(anyhow::Error::msg(msg));
+                }
+            }
+        };
         if z.dtype() != self.dtype {
             z = z.to_dtype(self.dtype)?;
+        }
+        if z.device().is_cuda() != self.device.is_cuda() {
+            z = z.to_device(&self.device)?;
         }
 
         // Build embeddings for cond and uncond
@@ -1006,18 +1051,26 @@ impl QwenImageEditPipeline {
             // Optionally trim channels if encoder produced extra channels beyond expected latent channels
             let expect = tf.config.in_channels;
             if c > expect { z = z.i((.., 0..expect, .., ..))?; }
+            // Log tokens and chunk size for visibility
+            let n_tokens = (zh2 / ps) * (zw2 / ps);
+            let chunk = tf.config.attn_chunk_size.unwrap_or(2048).min(n_tokens);
+            log::info!(
+                "[qwen-image-edit] Starting denoise: latent=({b},{c},{zh2},{zw2}), ps={ps}, tokens={n_tokens}, chunk={chunk}, heads={}, head_dim={}",
+                tf.config.num_attention_heads,
+                tf.config.attention_head_dim
+            );
         }
 
-    // Noise schedule
+        // Noise schedule
         let steps = opts.num_inference_steps.max(1);
         let sigmas = sched.inference_sigmas(steps);
 
         // CFG mix (structure ready). If guidance_scale=1.0, falls back to conditional only.
         let guidance = opts.guidance_scale;
-    // Initialize UI progress for the denoise loop
-    QWEN_EDIT_STATUS.set_state(StatusState::Running, "Denoising");
-    QWEN_EDIT_STATUS.set_progress(0, steps as u64);
-    QWEN_EDIT_STATUS.set_detail(format!("Step {}/{}", 0, steps));
+        // Initialize UI progress for the denoise loop
+        QWEN_EDIT_STATUS.set_state(StatusState::Running, "Denoising");
+        QWEN_EDIT_STATUS.set_progress(0, steps as u64);
+        QWEN_EDIT_STATUS.set_detail(format!("Step {}/{}", 0, steps));
         // Reuse guidance scalar tensor across steps to reduce allocations
         let g_scale = if guidance > 1.0 {
             let mut g = candle_core::Tensor::new(guidance as f32, &self.device)?;
@@ -1059,7 +1112,52 @@ impl QwenImageEditPipeline {
 
         // Decode back to original size
         QWEN_EDIT_STATUS.set_detail("Decoding");
-        let mut x_out = vae.decode_to_original(&z, oh, ow)?;
+        // Decode with CPU fallback if we used a CPU VAE for encode, or CUDA decode fails similarly
+        let mut x_out = if let Some(ref vcpu) = vae_cpu_fallback {
+            let mut z_cpu = z.to_device(&candle_core::Device::Cpu)?;
+            if z_cpu.dtype() != candle_core::DType::F32 {
+                z_cpu = z_cpu.to_dtype(candle_core::DType::F32)?;
+            }
+            vcpu.decode_to_original(&z_cpu, oh, ow)?
+        } else {
+            match vae.decode_to_original(&z, oh, ow) {
+                Ok(img) => img,
+                Err(e) => {
+                    let msg = format!("{}", e);
+                    if msg.contains("CUDA_ERROR_NOT_FOUND") || msg.contains("named symbol not found") {
+                        log::warn!(
+                            "[qwen-image-edit] VAE decode failed on CUDA due to named symbol; retrying decode on CPU/F32 with simplified Qwen VAE."
+                        );
+                        let cpu = candle_core::Device::Cpu;
+                        let scale = 0.18215f32;
+                        let vb = crate::ai::vae::build_qwen_vae_simplified_from_files(
+                            &self.paths.vae_files,
+                            candle_core::DType::F32,
+                            &cpu,
+                            scale,
+                        );
+                        match vb {
+                            Ok(vs) => {
+                                let vbox: Box<dyn crate::ai::vae::VaeLike> = Box::new(vs);
+                                let mut z_cpu = z.to_device(&cpu)?;
+                                if z_cpu.dtype() != candle_core::DType::F32 {
+                                    z_cpu = z_cpu.to_dtype(candle_core::DType::F32)?;
+                                }
+                                vbox.decode_to_original(&z_cpu, oh, ow)?
+                            }
+                            Err(e2) => {
+                                return Err(anyhow::anyhow!(
+                                    "VAE decode failed on CUDA and CPU fallback build failed: {} | {}",
+                                    msg, e2
+                                ));
+                            }
+                        }
+                    } else {
+                        return Err(anyhow::Error::msg(msg));
+                    }
+                }
+            }
+        };
         if x_out.dtype() != self.dtype {
             x_out = x_out.to_dtype(self.dtype)?;
         }

@@ -168,36 +168,36 @@ impl FluxTransformer2DModel {
             .transpose(1, 2)?; // (b, n, c*ps*ps)
         // Embed patches to model_dim using learned 'img_in' linear, expecting in_dim = out_channels*ps^2
         // If input channel product differs, slice to expected
-        let needed = self.config.out_channels * (ps * ps);
-        if tokens_sd.dim(2)? != needed {
-            if tokens_sd.dim(2)? < needed {
+        let needed_in = self.config.out_channels * (ps * ps);
+        if tokens_sd.dim(2)? != needed_in {
+            if tokens_sd.dim(2)? < needed_in {
                 candle_core::bail!(
                     "Not enough channels for patch embed: got {}, need {}",
                     tokens_sd.dim(2)?,
-                    needed
+                    needed_in
                 );
             }
             // Trim extra channels deterministically to limit memory
             log::warn!(
                 "[flux] trimming patch channels from {} to {}",
                 tokens_sd.dim(2)?,
-                needed
+                needed_in
             );
         }
-        let tokens_in = tokens_sd.i((.., .., 0..needed))?; // (b,n,needed)
+        let tokens_in = tokens_sd.i((.., .., 0..needed_in))?; // (b,n,needed_in)
         let mut tokens = self.img_in.forward(&tokens_in)?; // (b,n,D)
 
         let heads = self.config.num_attention_heads;
         let head_dim = self.config.attention_head_dim;
         let (bt, tlen, _td) = text.dims3()?;
         assert_eq!(bt, b, "batch mismatch");
+
         // Main blocks
         for blk in &self.blocks {
             // Image tokens already at model_dim
             let img = tokens.clone(); // (b,n,D)
-            // Build Q from image (optionally bias by text via add_q_proj if available)
-            // Build K,V from text via add_* if available; else fall back to projecting img for K/V (still strict weights for img path)
-            let (k, v, use_text_kv) = if let (Some(kp), Some(vp)) = (&blk.add_k_proj, &blk.add_v_proj) {
+            // Build K,V from text via add_* if available; else fall back to projecting img for K/V (self-attention)
+            let (k, v) = if let (Some(kp), Some(vp)) = (&blk.add_k_proj, &blk.add_v_proj) {
                 let k = kp
                     .forward(text)? // (b, t, D)
                     .reshape((b, tlen, heads, head_dim))?
@@ -206,7 +206,7 @@ impl FluxTransformer2DModel {
                     .forward(text)?
                     .reshape((b, tlen, heads, head_dim))?
                     .transpose(1, 2)?; // (b,H,t,h)
-                (k, v, true)
+                (k, v)
             } else {
                 let k = blk
                     .to_k
@@ -218,26 +218,32 @@ impl FluxTransformer2DModel {
                     .forward(&img)?
                     .reshape((b, n, heads, head_dim))?
                     .transpose(1, 2)?; // (b,H,n,h)
-                (k, v, false)
+                (k, v)
             };
-            let k_t = k.transpose(D::Minus1, D::Minus2)?.contiguous()?; // (b,H,h,t)
-            let v = v.contiguous()?; // (b,H,t,h)
+            let k_t = k.transpose(D::Minus1, D::Minus2)?.contiguous()?; // (b,H,h,Lkv)
+            let v = v.contiguous()?; // (b,H,Lkv,h)
             let scale = (head_dim as f64).sqrt();
+
+            // Prepare Q input, optionally biased by pooled text through add_q_proj
+            let mut q_proj_in = img.clone(); // (b,n,D)
+            if let Some(qp) = &blk.add_q_proj {
+                // Pool text across sequence to avoid shape mismatch and broadcast to tokens
+                let txt_pooled = text.mean(D::Minus2)?; // (b, joint_attention_dim)
+                let txt_bias = qp.forward(&txt_pooled)?; // (b, D)
+                let txt_bias = txt_bias.unsqueeze(1)?.expand((b, n, model_dim))?; // (b,n,D)
+                q_proj_in = (&q_proj_in + &txt_bias)?;
+            }
 
             // Chunk along token dimension to cap peak memory
             let chunk = self.config.attn_chunk_size.unwrap_or(2048).min(n);
             if chunk >= n {
                 // Fast path: original behavior
-                let mut q_proj_in = img.clone();
-                if let Some(qp) = &blk.add_q_proj {
-                    q_proj_in = (&q_proj_in + &qp.forward(text)?)?;
-                }
                 let q_lin = blk.to_q.forward(&q_proj_in)?; // (b,n,D)
                 let q = q_lin
                     .reshape((b, n, heads, head_dim))? // (b,n,H,h)
                     .transpose(1, 2)? // (b,H,n,h)
                     .contiguous()?;
-                let attn = (q.matmul(&k_t)? / scale)?; // (b,H,n,t)
+                let attn = (q.matmul(&k_t)? / scale)?; // (b,H,n,Lkv)
                 let attn = candle_nn::ops::softmax_last_dim(&attn)?.contiguous()?;
                 let ctx = attn
                     .matmul(&v)? // (b,H,n,h)
@@ -246,35 +252,31 @@ impl FluxTransformer2DModel {
                 let out = blk.to_out0.forward(&ctx)?; // (b,n,D)
                 tokens = (img + out)?;
             } else {
-                let mut out_tokens = Tensor::zeros((b, n, model_dim), img.dtype(), img.device())?;
+                // Chunked path
+                let q_lin_full = blk.to_q.forward(&q_proj_in)?; // (b,n,D)
+                let mut acc = Tensor::zeros((b, n, model_dim), img.dtype(), img.device())?;
                 let mut start = 0;
                 while start < n {
                     let end = (start + chunk).min(n);
-                    let img_chunk = img.i((.., start..end, ..))?; // (b,chunk,D)
-                    let mut q_proj_in = img_chunk.clone();
-                    if let Some(qp) = &blk.add_q_proj {
-                        q_proj_in = (&q_proj_in + &qp.forward(text)?)?; // broadcast over chunk
-                    }
-                    let q_lin = blk.to_q.forward(&q_proj_in)?; // (b,chunk,D)
-                    let q = q_lin
-                        .reshape((b, end - start, heads, head_dim))? // (b,chunk,H,h)
-                        .transpose(1, 2)? // (b,H,chunk,h)
-                        .contiguous()?;
-                    let attn = (q.matmul(&k_t)? / scale)?; // (b,H,chunk,t)
+                    let q_lin_chunk = q_lin_full.i((.., start..end, ..))?; // (b,chunk,D)
+                    let q = q_lin_chunk
+                        .reshape((b, end - start, heads, head_dim))?
+                        .transpose(1, 2)?
+                        .contiguous()?; // (b,H,chunk,h)
+                    let attn = (q.matmul(&k_t)? / scale)?; // (b,H,chunk,Lkv)
                     let attn = candle_nn::ops::softmax_last_dim(&attn)?.contiguous()?;
                     let ctx = attn
                         .matmul(&v)? // (b,H,chunk,h)
                         .transpose(1, 2)? // (b,chunk,H,h)
                         .reshape((b, end - start, model_dim))?; // (b,chunk,D)
-                    let out_chunk = blk.to_out0.forward(&ctx)?; // (b,chunk,D)
-                    let res_chunk = (&img_chunk + out_chunk)?;
-                    out_tokens = out_tokens.slice_assign(&[0..b, start..end, 0..model_dim], &res_chunk)?;
+                    acc = acc.slice_assign(&[0..b, start..end, 0..model_dim], &ctx)?;
                     start = end;
                 }
-                tokens = out_tokens;
+                let out = blk.to_out0.forward(&acc)?; // (b,n,D)
+                tokens = (img + out)?;
             }
         }
-        // Unpatchify using learned out_proj when available: tokens (b,n,D) -> (b,n,C*ps^2)
+
         let y_tokens = if let Some(op) = &self.out_proj {
             op.forward(&tokens)?
         } else {
@@ -289,9 +291,9 @@ impl FluxTransformer2DModel {
             .transpose(1, 2)? // (b, C*ps^2, n)
             .reshape((b, cout_patched, h2, w2))?; // (b, C*ps^2, h2, w2)
         // If out_proj was not available, fallback to taking first C*ps^2 channels from model_dim for depth-to-space
-        let needed = self.config.in_channels * (ps * ps);
-        let y = if cout_patched != needed {
-            y.i((.., 0..needed, .., ..))?
+        let needed_out = self.config.in_channels * (ps * ps);
+        let y = if cout_patched != needed_out {
+            y.i((.., 0..needed_out, .., ..))?
         } else {
             y
         };

@@ -756,69 +756,148 @@ pub fn build_qwen_vae_simplified_from_files(
     let tmp_path_buf = std::path::PathBuf::from(tmp_path.as_ref() as &std::path::Path);
     // Move extra lists into the closure to satisfy potential 'static bounds
     let enc_extra_owned = enc_extra.clone();
-    unsafe {
-        crate::ai::hf::with_mmap_varbuilder_multi(
-            std::slice::from_ref(&tmp_path_buf),
-            dtype,
-            device,
-            move |vb| {
-                // Use hints if available, else fallback to heuristic defaults
-                if let (Some(ein), Some(eout), Some(din), Some(dout)) =
-                    (enc_in_ch, enc_out_ch, dec_in_ch, dec_out_ch)
-                {
-                    // Ensure stable ordering by block index then greedily pick a channel-consistent chain.
-                    enc_down_shapes.sort_by_key(|x| x.0);
-                    dec_up_shapes.sort_by_key(|x| x.0);
+    // Helper function to perform the actual build with a given dtype/device without capturing moved state
+    fn do_build_once(
+        tmp_path_buf: &std::path::PathBuf,
+        dtype_build: DType,
+        device_build: &Device,
+        enc_in_ch: Option<(usize, usize)>,
+        enc_out_ch: Option<(usize, usize)>,
+        dec_in_ch: Option<(usize, usize)>,
+        dec_out_ch: Option<(usize, usize)>,
+        enc_down_shapes: &Vec<(usize, usize, usize)>,
+        dec_up_shapes: &Vec<(usize, usize, usize)>,
+        enc_extra_owned: &Vec<(String, usize, usize, usize)>,
+        scaling: f32,
+    ) -> anyhow::Result<QwenImageVaeSimplified> {
+        let enc_down_shapes_cloned = enc_down_shapes.clone();
+        let dec_up_shapes_cloned = dec_up_shapes.clone();
+        let enc_extra_owned_cloned = enc_extra_owned.clone();
+        unsafe {
+            crate::ai::hf::with_mmap_varbuilder_multi(
+                std::slice::from_ref(tmp_path_buf),
+                dtype_build,
+                device_build,
+                move |vb| {
+                    // Use hints if available, else fallback to heuristic defaults
+                    if let (Some(ein), Some(eout), Some(din), Some(dout)) =
+                        (enc_in_ch, enc_out_ch, dec_in_ch, dec_out_ch)
+                    {
+                        // Local mutable copies
+                        let mut enc_down_shapes_local = enc_down_shapes_cloned.clone();
+                        let mut dec_up_shapes_local = dec_up_shapes_cloned.clone();
+                        enc_down_shapes_local.sort_by_key(|x| x.0);
+                        dec_up_shapes_local.sort_by_key(|x| x.0);
 
-                    // Build encoder chain: start from enc_in out-channels and follow shapes with matching in_c.
-                    let mut enc_chain: Vec<(usize, usize, usize)> = Vec::new();
-                    let mut cur_enc_c = ein.1; // output channels of encoder.conv_in
-                    for &triple in enc_down_shapes.iter() {
-                        let (_idx, in_c, out_c) = triple;
-                        if in_c == cur_enc_c {
-                            enc_chain.push(triple);
-                            cur_enc_c = out_c;
+                        // Build encoder chain
+                        let mut enc_chain: Vec<(usize, usize, usize)> = Vec::new();
+                        let mut cur_enc_c = ein.1;
+                        for &triple in enc_down_shapes_local.iter() {
+                            let (_idx, in_c, out_c) = triple;
+                            if in_c == cur_enc_c {
+                                enc_chain.push(triple);
+                                cur_enc_c = out_c;
+                            }
                         }
-                    }
-                    // Build decoder chain: start from decoder.conv_in out-channels (after latent lift)
-                    let mut dec_chain: Vec<(usize, usize, usize)> = Vec::new();
-                    let mut cur_dec_c = din.1; // output channels of decoder.conv_in
-                    for &triple in dec_up_shapes.iter() {
-                        let (_idx, in_c, out_c) = triple;
-                        if in_c == cur_dec_c {
-                            dec_chain.push(triple);
-                            cur_dec_c = out_c;
+                        // Build decoder chain
+                        let mut dec_chain: Vec<(usize, usize, usize)> = Vec::new();
+                        let mut cur_dec_c = din.1;
+                        for &triple in dec_up_shapes_local.iter() {
+                            let (_idx, in_c, out_c) = triple;
+                            if in_c == cur_dec_c {
+                                dec_chain.push(triple);
+                                cur_dec_c = out_c;
+                            }
                         }
-                    }
-                    // If chains ended up empty (unexpected), fall back to original lists
-                    let enc_use = if enc_chain.is_empty() {
-                        &enc_down_shapes[..]
-                    } else {
-                        &enc_chain[..]
-                    };
-                    let dec_use = if dec_chain.is_empty() {
-                        &dec_up_shapes[..]
-                    } else {
-                        &dec_chain[..]
-                    };
+                        let enc_use = if enc_chain.is_empty() { &enc_down_shapes_local[..] } else { &enc_chain[..] };
+                        let dec_use = if dec_chain.is_empty() { &dec_up_shapes_local[..] } else { &dec_chain[..] };
 
-                    QwenImageVaeSimplified::new_with_hints(
-                        vb,
-                        scaling,
-                        ein,
-                        enc_use,
-                        eout,
-                        din,
-                        dec_use,
-                        dout,
-                        &enc_extra_owned,
-                    )
-                    .map_err(anyhow::Error::from)
-                } else {
-                    QwenImageVaeSimplified::new(vb, scaling).map_err(anyhow::Error::from)
+                        QwenImageVaeSimplified::new_with_hints(
+                            vb,
+                            scaling,
+                            ein,
+                            enc_use,
+                            eout,
+                            din,
+                            dec_use,
+                            dout,
+                            &enc_extra_owned_cloned,
+                        )
+                        .map_err(anyhow::Error::from)
+                    } else {
+                        QwenImageVaeSimplified::new(vb, scaling).map_err(anyhow::Error::from)
+                    }
+                },
+            )
+        }
+    }
+
+    // First attempt: requested device/dtype
+    match do_build_once(
+        &tmp_path_buf,
+        dtype,
+        device,
+        enc_in_ch,
+        enc_out_ch,
+        dec_in_ch,
+        dec_out_ch,
+        &enc_down_shapes,
+        &dec_up_shapes,
+        &enc_extra_owned,
+        scaling,
+    ) {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            let msg = format!("{}", e);
+            // Detect CUDA named symbol error and fall back to CPU/F32
+            if msg.contains("CUDA_ERROR_NOT_FOUND") || msg.contains("named symbol not found") {
+                log::warn!(
+                    "[qwen-image-edit] VAE simplified build failed on {:?}/{:?} due to CUDA named symbol not found; retrying on same device with F32, then CPU/F32 if needed.",
+                    device,
+                    dtype
+                );
+                // First retry: same device but F32
+                let retry = do_build_once(
+                    &tmp_path_buf,
+                    DType::F32,
+                    device,
+                    enc_in_ch,
+                    enc_out_ch,
+                    dec_in_ch,
+                    dec_out_ch,
+                    &enc_down_shapes,
+                    &dec_up_shapes,
+                    &enc_extra_owned,
+                    scaling,
+                );
+                match retry {
+                    Ok(v2) => return Ok(v2),
+                    Err(_e_f32_cuda) => {
+                        // Fall back to CPU/F32
+                    }
                 }
-            },
-        )
+                let cpu = Device::Cpu;
+                let retry = do_build_once(
+                    &tmp_path_buf,
+                    DType::F32,
+                    &cpu,
+                    enc_in_ch,
+                    enc_out_ch,
+                    dec_in_ch,
+                    dec_out_ch,
+                    &enc_down_shapes,
+                    &dec_up_shapes,
+                    &enc_extra_owned,
+                    scaling,
+                );
+                match retry {
+                    Ok(v2) => Ok(v2),
+                    Err(e2) => Err(e2),
+                }
+            } else {
+                Err(e)
+            }
+        }
     }
 }
 
