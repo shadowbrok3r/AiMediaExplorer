@@ -44,6 +44,10 @@ impl SiglipEngine {
         })
     }
 
+    pub fn is_cuda(&self) -> bool {
+        matches!(self.device, Device::Cuda(_))
+    }
+
     fn load_image_tensor<T: AsRef<std::path::Path>>(&self, path: T) -> Result<Tensor> {
         let img = image::ImageReader::open(path)?.decode()?;
         let (height, width) = (self.image_size, self.image_size);

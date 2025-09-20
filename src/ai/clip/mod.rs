@@ -69,7 +69,21 @@ pub(crate) async fn ensure_clip_engine(engine_slot: &std::sync::Arc<tokio::sync:
         CLIP_STATUS.set_model(&model_key);
         log::info!("[CLIP] Loading model key: {}", model_key);
         match ClipEngine::new_with_model_key(&model_key) {
-            Ok(c) => { *guard = Some(c); log::info!("[CLIP] Loaded."); CLIP_STATUS.set_state(StatusState::Idle, "Ready"); },
+            Ok(c) => {
+                let dev = match &c.backend {
+                    ClipBackend::Siglip(sig) => {
+                        if sig.is_cuda() { crate::ui::status::DeviceKind::GPU } else { crate::ui::status::DeviceKind::CPU }
+                    }
+                    ClipBackend::FastEmbed { .. } => {
+                        // FastEmbed runs on CPU
+                        crate::ui::status::DeviceKind::CPU
+                    }
+                };
+                CLIP_STATUS.set_device(dev);
+                *guard = Some(c);
+                log::info!("[CLIP] Loaded.");
+                CLIP_STATUS.set_state(StatusState::Idle, "Ready");
+            },
             Err(e) => { log::error!("[CLIP] Failed to init: {e}"); CLIP_STATUS.set_state(StatusState::Error, "Init failed"); return Err(e); }
         }
     }
@@ -80,6 +94,8 @@ pub(crate) async fn clear_clip_engine(engine_slot: &std::sync::Arc<tokio::sync::
     let mut guard = engine_slot.lock().await;
     *guard = None;
     CLIP_STATUS.set_state(StatusState::Idle, "Unloaded");
+    // Clear device info
+    CLIP_STATUS.set_detail("Unloaded");
 }
 
 fn l2_normalize(mut v: Vec<f32>) -> Vec<f32> {

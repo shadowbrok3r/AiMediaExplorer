@@ -3890,12 +3890,6 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "lzma-rust2"
-version = "0.10.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f60b8ad6122c05a4d5e23db8eab1ced778e252b3e29c5e96b4a965fc72476277"
-
-[[package]]
-name = "lzma-rust2"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c60a23ffb90d527e23192f1246b14746e2f7f071cb84476dd879071696c18a4a"
@@ -3903,6 +3897,12 @@ dependencies = [
  "crc",
  "sha2",
 ]
+
+[[package]]
+name = "lzma-rust2"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "79ef85f79493b5f9baabde64dc8456092886647c5682c44ff48a54b247228dda"
 
 [[package]]
 name = "lzma-sys"
@@ -6508,18 +6508,17 @@ dependencies = [
 
 [[package]]
 name = "sevenz-rust2"
-version = "0.18.0"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8f3cc2b52a3f98e75e6a1884e40fc986bf5f1966274aec869a4e6a0a5f72292"
+checksum = "5635c7cedd84efe2723df4e54047252e65fde0cb273acaff91c1942ef8396844"
 dependencies = [
  "aes",
- "byteorder",
  "bzip2",
  "cbc",
  "crc32fast",
  "getrandom 0.3.3",
  "js-sys",
- "lzma-rust2 0.10.2",
+ "lzma-rust2 0.14.0",
  "ppmd-rust",
  "sha2",
  "wasm-bindgen",

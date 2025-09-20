@@ -1,8 +1,8 @@
 //! Minimal scaffold for Jina M0 text model forward to be implemented with Candle.
 #![allow(dead_code)]
 
-use candle_core::{Tensor, Device, DType};
 use anyhow::Result;
+use candle_core::{DType, Device, Tensor};
 
 #[derive(Debug)]
 pub struct TextModelConfig {
@@ -20,7 +20,11 @@ pub struct TextModel {
 
 impl TextModel {
     pub fn new(device: Device, dtype: DType, config: TextModelConfig) -> Self {
-        Self { device, dtype, config }
+        Self {
+            device,
+            dtype,
+            config,
+        }
     }
 
     /// Placeholder forward: returns a dummy pooled representation per sequence.
@@ -30,7 +34,9 @@ impl TextModel {
         // [B, L] -> [B, H] dummy: sum token ids, expand to hidden size
         let sums = input_ids.sum(1)?; // [B]
         let b = sums.dims()[0];
-        let rep = sums.unsqueeze(1)?.broadcast_as(&[b, self.config.hidden_size])?;
+        let rep = sums
+            .unsqueeze(1)?
+            .broadcast_as(&[b, self.config.hidden_size])?;
         Ok(rep)
     }
 }

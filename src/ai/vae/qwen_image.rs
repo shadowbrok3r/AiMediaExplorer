@@ -211,7 +211,9 @@ impl QwenImageVaeSimplified {
                     .filter(|(idx, (_k, ain, _aout, _ks))| !used[*idx] && *ain == cur_enc_c)
                     .map(|(idx, (k, ain, aout, ks))| (idx, k, *ain, *aout, *ks))
                     .collect();
-                if candidates.is_empty() { break; }
+                if candidates.is_empty() {
+                    break;
+                }
                 candidates.sort_by_key(|&(_idx, _k, _ain, aout, _ks)| aout);
                 let pick = candidates
                     .iter()
@@ -221,21 +223,43 @@ impl QwenImageVaeSimplified {
                     .or_else(|| candidates.first().copied());
                 if let Some((pidx, key, ain, aout, ksz)) = pick {
                     let pad = if ksz == 1 { 0 } else { 1 };
-                    let prefix = if key.ends_with(".weight") { &key[..key.len()-7] } else { key.as_str() };
-                    let conv = conv2d(ain, aout, ksz, Conv2dConfig { stride: 1, padding: pad, ..Default::default() }, vb.pp(prefix))?;
+                    let prefix = if key.ends_with(".weight") {
+                        &key[..key.len() - 7]
+                    } else {
+                        key.as_str()
+                    };
+                    let conv = conv2d(
+                        ain,
+                        aout,
+                        ksz,
+                        Conv2dConfig {
+                            stride: 1,
+                            padding: pad,
+                            ..Default::default()
+                        },
+                        vb.pp(prefix),
+                    )?;
                     enc_extra_layers.push(conv);
                     cur_enc_c = aout;
                     used[pidx] = true;
-                } else { break; }
+                } else {
+                    break;
+                }
                 guard += 1;
             }
-            if cur_enc_c != *in_c { continue; } // still can't match, skip this resample
+            if cur_enc_c != *in_c {
+                continue;
+            } // still can't match, skip this resample
             let key = format!("encoder.down_blocks.{i}.resample.1");
             let conv = conv2d(
                 *in_c,
                 *out_c,
                 3,
-                Conv2dConfig { stride: 2, padding: 1, ..Default::default() },
+                Conv2dConfig {
+                    stride: 2,
+                    padding: 1,
+                    ..Default::default()
+                },
                 vb.pp(&key),
             )?;
             enc_downs.push(conv);
@@ -251,7 +275,9 @@ impl QwenImageVaeSimplified {
                 .filter(|(idx, (_k, ain, _aout, _ks))| !used[*idx] && *ain == cur_enc_c)
                 .map(|(idx, (k, ain, aout, ks))| (idx, k, *ain, *aout, *ks))
                 .collect();
-            if candidates.is_empty() { break; }
+            if candidates.is_empty() {
+                break;
+            }
             candidates.sort_by_key(|&(_idx, _k, _ain, aout, _ks)| aout);
             let pick = candidates
                 .iter()
@@ -261,12 +287,28 @@ impl QwenImageVaeSimplified {
                 .or_else(|| candidates.first().copied());
             if let Some((pidx, key, ain, aout, ksz)) = pick {
                 let pad = if ksz == 1 { 0 } else { 1 };
-                let prefix = if key.ends_with(".weight") { &key[..key.len()-7] } else { key.as_str() };
-                let conv = conv2d(ain, aout, ksz, Conv2dConfig { stride: 1, padding: pad, ..Default::default() }, vb.pp(prefix))?;
+                let prefix = if key.ends_with(".weight") {
+                    &key[..key.len() - 7]
+                } else {
+                    key.as_str()
+                };
+                let conv = conv2d(
+                    ain,
+                    aout,
+                    ksz,
+                    Conv2dConfig {
+                        stride: 1,
+                        padding: pad,
+                        ..Default::default()
+                    },
+                    vb.pp(prefix),
+                )?;
                 enc_extra_layers.push(conv);
                 cur_enc_c = aout;
                 used[pidx] = true;
-            } else { break; }
+            } else {
+                break;
+            }
             guard += 1;
         }
 
@@ -274,7 +316,11 @@ impl QwenImageVaeSimplified {
             enc_out_ch.0,
             enc_out_ch.1,
             3,
-            Conv2dConfig { stride: 1, padding: 1, ..Default::default() },
+            Conv2dConfig {
+                stride: 1,
+                padding: 1,
+                ..Default::default()
+            },
             vb.pp("encoder.conv_out"),
         )?;
 
@@ -355,11 +401,15 @@ impl QwenImageVaeSimplified {
             let half = Tensor::new(0.5f32, x.device())?.to_dtype(logvar.dtype())?;
             let std = logvar.broadcast_mul(&half)?.exp()?;
             let mut eps = Tensor::randn(0f32, 1f32, mu.dims(), x.device())?;
-            if eps.dtype() != mu.dtype() { eps = eps.to_dtype(mu.dtype())?; }
+            if eps.dtype() != mu.dtype() {
+                eps = eps.to_dtype(mu.dtype())?;
+            }
             (&mu + std.broadcast_mul(&eps)?)?
         };
         let mut scale = Tensor::new(self.scaling, x.device())?;
-        if scale.dtype() != z.dtype() { scale = scale.to_dtype(z.dtype())?; }
+        if scale.dtype() != z.dtype() {
+            scale = scale.to_dtype(z.dtype())?;
+        }
         z.broadcast_mul(&scale)
     }
 
@@ -368,20 +418,23 @@ impl QwenImageVaeSimplified {
         let mut up = Tensor::zeros((b, c, h * 2, w * 2), x.dtype(), x.device())?;
         for yy in 0..h {
             for xx in 0..w {
-                let patch = x.i((.., .., yy, xx))?; // (b,c)
-                up = up.slice_assign(
-                    &[0..b, 0..c, (yy * 2)..(yy * 2 + 2), (xx * 2)..(xx * 2 + 2)],
-                    &patch.unsqueeze(2)?.unsqueeze(3)?,
-                )?;
+                let unit = x.i((.., .., yy, xx))?.unsqueeze(2)?.unsqueeze(3)?; // (b,c,1,1)
+                // Write to the four 1x1 positions in the 2x2 upsampled block
+                up = up.slice_assign(&[0..b, 0..c, (yy * 2)..(yy * 2 + 1), (xx * 2)..(xx * 2 + 1)], &unit)?;
+                up = up.slice_assign(&[0..b, 0..c, (yy * 2)..(yy * 2 + 1), (xx * 2 + 1)..(xx * 2 + 2)], &unit)?;
+                up = up.slice_assign(&[0..b, 0..c, (yy * 2 + 1)..(yy * 2 + 2), (xx * 2)..(xx * 2 + 1)], &unit)?;
+                up = up.slice_assign(&[0..b, 0..c, (yy * 2 + 1)..(yy * 2 + 2), (xx * 2 + 1)..(xx * 2 + 2)], &unit)?;
             }
         }
         Ok(up)
     }
 
     pub fn decode(&self, z: &Tensor) -> Result<Tensor> {
-    let mut inv = Tensor::new(1.0f32 / self.scaling, z.device())?;
-    if inv.dtype() != z.dtype() { inv = inv.to_dtype(z.dtype())?; }
-    let mut y = z.broadcast_mul(&inv)?; // [B,16,H',W']
+        let mut inv = Tensor::new(1.0f32 / self.scaling, z.device())?;
+        if inv.dtype() != z.dtype() {
+            inv = inv.to_dtype(z.dtype())?;
+        }
+        let mut y = z.broadcast_mul(&inv)?; // [B,16,H',W']
         y = self.dec_in.forward(&y)?; // [B,384,H',W']
         for d in &self.dec_extra {
             y = d.forward(&y)?;

@@ -1,34 +1,36 @@
 pub mod ai_search;
 pub mod candle_llava;
 pub mod clip;
-pub mod joycap;
-pub mod siglip;
-pub mod refine;
-pub mod hf;
-pub mod reranker;
-pub mod model;
-pub mod jina_m0;
-pub mod qwen2_5_vl;
-pub mod vae;
-pub mod qwen_image_transformer;
 pub mod flux_transformer;
+pub mod hf;
+pub mod jina_m0;
+pub mod joycap;
+pub mod model;
+pub mod qwen2_5_vl;
+pub mod qwen_image_transformer;
+pub mod refine;
+pub mod reranker;
+pub mod siglip;
+pub mod vae;
 
 pub use ai_search::*;
+pub use jina_m0::*;
 pub use joycap as joycaption_adapter;
+pub use model::*;
 pub use refine::*;
 pub use reranker::*;
-pub use model::*;
-pub use jina_m0::*;
 
 use crate::database::Thumbnail;
-use crate::ui::status::{CLIP_STATUS, GlobalStatusIndicator, VISION_STATUS, StatusState};
+use crate::ui::status::{CLIP_STATUS, GlobalStatusIndicator, StatusState, VISION_STATUS};
 use once_cell::sync::Lazy;
 pub mod qwen_image_edit;
-// Global lazy AI engine accessor. Initialized on first use. 
+// Global lazy AI engine accessor. Initialized on first use.
 pub static GLOBAL_AI_ENGINE: Lazy<AISearchEngine> = Lazy::new(|| AISearchEngine::new());
 
 pub async fn init_global_ai_engine_async() {
     VISION_STATUS.set_state(StatusState::Initializing, "Starting workers");
+    use crate::ui::status::DeviceKind;
+    VISION_STATUS.set_device(if candle_core::Device::new_cuda(0).is_ok() { DeviceKind::GPU } else { DeviceKind::CPU });
     GLOBAL_AI_ENGINE.ensure_index_worker().await;
     VISION_STATUS.set_state(StatusState::Initializing, "Loading vision model");
     if let Err(e) = crate::ai::joycap::ensure_worker_started().await {

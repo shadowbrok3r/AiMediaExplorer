@@ -80,7 +80,11 @@ impl FlowMatchEulerDiscreteScheduler {
         let end = 0i64;
         let mut out = Vec::with_capacity(steps as usize);
         for i in 0..steps {
-            let frac = if steps == 1 { 0.0 } else { i as f64 / (steps - 1) as f64 };
+            let frac = if steps == 1 {
+                0.0
+            } else {
+                i as f64 / (steps - 1) as f64
+            };
             let t = ((1.0 - frac) * (start as f64) + frac * (end as f64)).round() as i64;
             out.push(t.max(0) as u32);
         }
@@ -98,22 +102,37 @@ impl FlowMatchEulerDiscreteScheduler {
         let end = 0.0f32;
         let mut sigmas = Vec::with_capacity(steps + 1);
         for i in 0..steps {
-            let frac = if steps == 1 { 0.0 } else { i as f32 / (steps as f32 - 1.0) };
+            let frac = if steps == 1 {
+                0.0
+            } else {
+                i as f32 / (steps as f32 - 1.0)
+            };
             let idx_f = (1.0 - frac) * start + frac * end; // descending
             sigmas.push(self.sample_sigma_at(idx_f));
         }
         // Ensure we end at (near) zero to fully denoise
         sigmas.push(0.0);
-        debug!("[flowmatch-euler] inference sigmas(first,last)=({:.6},{:.6}) len={}", sigmas.first().copied().unwrap_or(0.0), sigmas.last().copied().unwrap_or(0.0), sigmas.len());
+        debug!(
+            "[flowmatch-euler] inference sigmas(first,last)=({:.6},{:.6}) len={}",
+            sigmas.first().copied().unwrap_or(0.0),
+            sigmas.last().copied().unwrap_or(0.0),
+            sigmas.len()
+        );
         sigmas
     }
 
     fn sample_sigma_at(&self, idx_f: f32) -> f32 {
         let n = self.sigmas_train.len();
-        if n == 0 { return 0.0; }
-        if idx_f <= 0.0 { return self.sigmas_train[0]; }
+        if n == 0 {
+            return 0.0;
+        }
+        if idx_f <= 0.0 {
+            return self.sigmas_train[0];
+        }
         let max_idx = (n - 1) as f32;
-        if idx_f >= max_idx { return self.sigmas_train[n - 1]; }
+        if idx_f >= max_idx {
+            return self.sigmas_train[n - 1];
+        }
         let i0 = idx_f.floor() as usize;
         let i1 = i0 + 1;
         let t = idx_f - i0 as f32;
@@ -126,7 +145,9 @@ impl FlowMatchEulerDiscreteScheduler {
     // x_in = x / sqrt(sigma^2 + 1)
     pub fn scale_model_input(&self, latents: &mut [f32], sigma: f32) {
         let scale = 1.0f32 / (sigma * sigma + 1.0).sqrt();
-        for v in latents.iter_mut() { *v *= scale; }
+        for v in latents.iter_mut() {
+            *v *= scale;
+        }
     }
 
     // Euler (ancestral-free) discrete step following Karras et al. style solvers:
@@ -143,7 +164,11 @@ impl FlowMatchEulerDiscreteScheduler {
         sigma_from: f32,
         sigma_to: f32,
     ) {
-        assert_eq!(latents.len(), model_output.len(), "latents and model_output must have same length");
+        assert_eq!(
+            latents.len(),
+            model_output.len(),
+            "latents and model_output must have same length"
+        );
         let ds = sigma_to - sigma_from; // note: negative (descending)
         match self.prediction_type.as_str() {
             "epsilon" => {
@@ -160,7 +185,10 @@ impl FlowMatchEulerDiscreteScheduler {
                 }
             }
             other => {
-                warn!("[flowmatch-euler] unsupported prediction_type='{}', treating as 'epsilon'", other);
+                warn!(
+                    "[flowmatch-euler] unsupported prediction_type='{}', treating as 'epsilon'",
+                    other
+                );
                 for (x, &d) in latents.iter_mut().zip(model_output.iter()) {
                     *x += ds * d;
                 }
@@ -196,7 +224,11 @@ mod tests {
         assert_eq!(sigmas.len(), 11);
         // strictly non-increasing
         for i in 1..sigmas.len() {
-            assert!(sigmas[i] <= sigmas[i - 1] + 1e-6, "not non-increasing at {}", i);
+            assert!(
+                sigmas[i] <= sigmas[i - 1] + 1e-6,
+                "not non-increasing at {}",
+                i
+            );
         }
         // last is zero
         assert!(sigmas.last().unwrap().abs() <= 1e-6);
@@ -211,6 +243,8 @@ mod tests {
         let sigma_to = 0.8f32;
         // ds = -0.2, epsilon pred -> x += ds * d
         s.step_euler(&mut x, &d, sigma_from, sigma_to);
-        for &v in &x { assert!((v - 0.3).abs() < 1e-6); }
+        for &v in &x {
+            assert!((v - 0.3).abs() < 1e-6);
+        }
     }
 }

@@ -1,4 +1,5 @@
 use eframe::egui::*;
+use crate::ui::status::GlobalStatusIndicator;
 use base64::Engine as _;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -56,6 +57,7 @@ impl ImageEditPanel {
         if !self.loading_model && !self.model_loaded && !self.model_repo.trim().is_empty() {
             self.loading_model = true;
             self.model_error = None;
+            crate::ui::status::QWEN_EDIT_STATUS.set_state(crate::ui::status::StatusState::Initializing, "Loading model");
             let repo = self.model_repo.clone();
             let slot = self.pipeline.clone();
             // fresh channel for this load
@@ -68,134 +70,93 @@ impl ImageEditPanel {
                 let res = crate::ai::qwen_image_edit::model::QwenImageEditPipeline::load_from_hf(&repo, prefer)
                     .map_err(|e| e.to_string());
                 match res {
-                    Ok(p) => { let mut g = slot.lock().await; *g = Some(p); let _ = tx.send(Ok(())); }
-                    Err(e) => { log::error!("[ImageEdit] model load failed: {e}"); let mut g = slot.lock().await; *g = None; let _ = tx.send(Err(e)); }
+                    Ok(p) => {
+                        let dev = if matches!(p.device, candle_core::Device::Cuda(_)) { crate::ui::status::DeviceKind::GPU } else { crate::ui::status::DeviceKind::CPU };
+                        crate::ui::status::QWEN_EDIT_STATUS.set_device(dev);
+                        crate::ui::status::QWEN_EDIT_STATUS.set_state(crate::ui::status::StatusState::Idle, "Ready");
+                        let mut g = slot.lock().await; *g = Some(p); let _ = tx.send(Ok(()));
+                    }
+                    Err(e) => {
+                        log::error!("[ImageEdit] model load failed: {e}");
+                        crate::ui::status::QWEN_EDIT_STATUS.set_error(format!("Load failed: {e}"));
+                        let mut g = slot.lock().await; *g = None; let _ = tx.send(Err(e));
+                    }
                 }
             });
         }
     }
 
     pub fn ui(&mut self, ui: &mut Ui) {
-        ui.heading("Image Edit");
-        ui.separator();
         if let Some(path) = &self.current_path {
+            // If we have a generated result, show it side-by-side or below
+            let result_key = format!("imageedit::result::{}", path);
+            let has_result = &mut false;
             // Model controls
-            ui.horizontal(|ui| {
-                ui.label("Model repo:");
-                let hint = if self.model_repo.trim().is_empty() { "e.g. Qwen/Qwen-Image-Edit" } else { "" };
-                ui.add_sized([ui.available_width()*0.7, 20.0], TextEdit::singleline(&mut self.model_repo).hint_text(hint));
-                let can_load = !self.loading_model && !self.model_repo.trim().is_empty();
-                if ui.add_enabled(can_load, Button::new(if self.model_loaded { "Reload Model" } else { "Load Model" })).clicked() {
-                    self.loading_model = true;
-                    self.model_error = None;
-                    let repo = self.model_repo.clone();
-                    let slot = self.pipeline.clone();
-                    // create a fresh channel for this load
-                    let (tx, rx) = crossbeam::channel::unbounded();
-                    self.status_tx = tx.clone();
-                    self.status_rx = rx;
-                    tokio::spawn(async move {
-                        crate::ai::unload_heavy_models_except("").await;
-                        let prefer = if candle_core::Device::new_cuda(0).is_ok() { candle_core::DType::F16 } else { candle_core::DType::F32 };
-                        let res = crate::ai::qwen_image_edit::model::QwenImageEditPipeline::load_from_hf(&repo, prefer)
-                            .map_err(|e| e.to_string());
-                        match res {
-                            Ok(p) => { let mut g = slot.lock().await; *g = Some(p); let _ = tx.send(Ok(())); }
-                            Err(e) => { log::error!("[ImageEdit] model load failed: {e}"); let mut g = slot.lock().await; *g = None; let _ = tx.send(Err(e)); }
-                        }
-                    });
-                }
-            });
-            if self.loading_model {
-                ui.horizontal(|ui| { ui.label("Loading model…"); Spinner::new().ui(ui); });
-                // Poll loader status channel for completion or error
-                if let Ok(msg) = self.status_rx.try_recv() {
-                    self.loading_model = false;
-                    match msg {
-                        Ok(()) => { self.model_loaded = true; self.model_error = None; }
-                        Err(e) => { self.model_loaded = false; self.model_error = Some(e); }
-                    }
-                }
-            } else if let Some(err) = &self.model_error { ui.colored_label(Color32::RED, err); }
-
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Source:").underline().strong());
                 ui.monospace(path);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let can_load = !self.loading_model && !self.model_repo.trim().is_empty();
+                    if self.loading_model {
+                        Spinner::new().color(ui.style().visuals.error_fg_color).ui(ui); 
+                        ui.label("Loading model…");
+                        // Poll loader status channel for completion or error
+                        if let Ok(msg) = self.status_rx.try_recv() {
+                            self.loading_model = false;
+                            match msg {
+                                Ok(()) => { self.model_loaded = true; self.model_error = None; }
+                                Err(e) => { self.model_loaded = false; self.model_error = Some(e); }
+                            }
+                        }
+                    } else if let Some(err) = &self.model_error { ui.colored_label(Color32::RED, err); }
+
+                    if ui.add_enabled(can_load, Button::new(if self.model_loaded { "Reload Model" } else { "Load Model" })).clicked() {
+                        self.loading_model = true;
+                        self.model_error = None;
+                        crate::ui::status::QWEN_EDIT_STATUS.set_state(crate::ui::status::StatusState::Initializing, "Loading model");
+                        let repo = self.model_repo.clone();
+                        let slot = self.pipeline.clone();
+                        // create a fresh channel for this load
+                        let (tx, rx) = crossbeam::channel::unbounded();
+                        self.status_tx = tx.clone();
+                        self.status_rx = rx;
+                        tokio::spawn(async move {
+                            crate::ai::unload_heavy_models_except("").await;
+                            let prefer = if candle_core::Device::new_cuda(0).is_ok() { candle_core::DType::F16 } else { candle_core::DType::F32 };
+                            let res = crate::ai::qwen_image_edit::model::QwenImageEditPipeline::load_from_hf(&repo, prefer)
+                                .map_err(|e| e.to_string());
+                            match res {
+                                Ok(p) => {
+                                    let dev = if matches!(p.device, candle_core::Device::Cuda(_)) { crate::ui::status::DeviceKind::GPU } else { crate::ui::status::DeviceKind::CPU };
+                                    crate::ui::status::QWEN_EDIT_STATUS.set_device(dev);
+                                    crate::ui::status::QWEN_EDIT_STATUS.set_state(crate::ui::status::StatusState::Idle, "Ready");
+                                    let mut g = slot.lock().await; *g = Some(p); let _ = tx.send(Ok(()));
+                                }
+                                Err(e) => {
+                                    log::error!("[ImageEdit] model load failed: {e}");
+                                    crate::ui::status::QWEN_EDIT_STATUS.set_error(format!("Load failed: {e}"));
+                                    let mut g = slot.lock().await; *g = None; let _ = tx.send(Err(e));
+                                }
+                            }
+                        });
+                    }
+                    let hint = if self.model_repo.trim().is_empty() { "e.g. Qwen/Qwen-Image-Edit" } else { "" };
+                    TextEdit::singleline(&mut self.model_repo).hint_text(hint).desired_width(250.).ui(ui);
+                    ui.label("Model repo:");
+                });
             });
+            ui.separator();
             ui.add_space(6.0);
 
-            // Preview the source image (high-res preview)
-            let cache_key = format!("imageedit::preview::{},{}", path, 1600);
-            let mut has_img = false;
-            if let Ok(cache) = self.thumb_cache.lock() {
-                if let Some(bytes_arc) = cache.get(&cache_key) {
-                    has_img = true;
-                    let img_src = eframe::egui::ImageSource::Bytes {
-                        uri: std::borrow::Cow::from(format!("bytes://{}", cache_key)),
-                        bytes: eframe::egui::load::Bytes::Shared(bytes_arc.clone()),
-                    };
-                    eframe::egui::Image::new(img_src)
-                        .max_size(ui.available_size()/1.3)
-                        .ui(ui);
-                }
-            }
-            if !has_img {
-                let cache = self.thumb_cache.clone();
-                let path_buf = std::path::PathBuf::from(path);
-                let cache_key_task = cache_key.clone();
-                tokio::spawn(async move {
-                    let png = crate::utilities::thumbs::generate_image_preview_png(&path_buf, 1600)
-                        .or_else(|e| {
-                            log::debug!("[ImageEdit] preview fallback: {}", e);
-                            crate::utilities::thumbs::generate_image_thumb_data(&path_buf)
-                                .and_then(|data_url| {
-                                    let (_, b64) = data_url.split_once("data:image/png;base64,").unwrap_or(("", &data_url));
-                                    base64::engine::general_purpose::STANDARD
-                                        .decode(b64.as_bytes())
-                                        .map_err(|e| e.to_string())
-                                })
-                        })
-                        .unwrap_or_default();
-                    if !png.is_empty() {
-                        if let Ok(mut guard) = cache.lock() {
-                            guard.insert(cache_key_task, Arc::from(png.into_boxed_slice()));
-                        }
-                    }
-                });
-                ui.weak("Loading preview…");
-            }
+            ui.label("Prompt:");
+            TextEdit::singleline(&mut self.prompt).desired_width(400.).ui(ui);
+            ui.label("Negative:");
+            TextEdit::singleline(&mut self.negative_prompt).desired_width(400.).ui(ui);
 
-            // If we have a generated result, show it side-by-side or below
-            let result_key = format!("imageedit::result::{}", path);
-            let mut has_result = false;
-            if let Ok(cache) = self.thumb_cache.lock() {
-                if let Some(bytes_arc) = cache.get(&result_key) {
-                    has_result = true;
-                    ui.separator();
-                    ui.label(RichText::new("Result:").underline().strong());
-                    let img_src = eframe::egui::ImageSource::Bytes {
-                        uri: std::borrow::Cow::from(format!("bytes://{}", result_key)),
-                        bytes: eframe::egui::load::Bytes::Shared(bytes_arc.clone()),
-                    };
-                    eframe::egui::Image::new(img_src)
-                        .max_size(ui.available_size()/1.3)
-                        .ui(ui);
-                }
-            }
-
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.label("Prompt:");
-                ui.add_sized([ui.available_width()*0.7, 20.0], TextEdit::singleline(&mut self.prompt));
-            });
-            ui.horizontal(|ui| {
-                ui.label("Negative:");
-                ui.add_sized([ui.available_width()*0.7, 20.0], TextEdit::singleline(&mut self.negative_prompt));
-            });
-            ui.add(Slider::new(&mut self.guidance_scale, 1.0..=12.0).text("Guidance"));
-            ui.add(Slider::new(&mut self.strength, 0.0..=1.0).text("Strength"));
-            ui.add(Slider::new(&mut self.steps, 1..=75).text("Steps"));
-
+            Slider::new(&mut self.guidance_scale, 1.0..=12.0).text("Guidance").ui(ui);
+            Slider::new(&mut self.strength, 0.0..=1.0).text("Strength").ui(ui);
+            Slider::new(&mut self.steps, 1..=75).text("Steps").ui(ui);
+            
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 let can_run = self.model_loaded && !self.loading_model && self.current_path.is_some();
@@ -204,6 +165,7 @@ impl ImageEditPanel {
                     let slot = self.pipeline.clone();
                     let pth = self.current_path.clone().unwrap_or_default();
                     let cache = self.thumb_cache.clone();
+                    crate::ui::status::QWEN_EDIT_STATUS.set_state(crate::ui::status::StatusState::Running, "Editing image");
                     let opts = crate::ai::qwen_image_edit::EditOptions {
                         prompt: self.prompt.clone(),
                         negative_prompt: if self.negative_prompt.trim().is_empty() { None } else { Some(self.negative_prompt.clone()) },
@@ -215,6 +177,8 @@ impl ImageEditPanel {
                         deterministic_vae: true,
                     };
                     tokio::spawn(async move {
+                        // Release other heavy models for headroom
+                        crate::ai::unload_heavy_models_except("").await;
                         let png = if let Some(pipe) = slot.lock().await.as_ref() {
                             match pipe.run_edit(std::path::Path::new(&pth), &opts) { Ok(b) => b, Err(e) => { log::error!("[ImageEdit] run_edit failed: {e}"); Vec::new() } }
                         } else { Vec::new() };
@@ -222,9 +186,10 @@ impl ImageEditPanel {
                             let key = format!("imageedit::result::{}", &pth);
                             if let Ok(mut guard) = cache.lock() { guard.insert(key, Arc::from(png.into_boxed_slice())); }
                         }
+                        crate::ui::status::QWEN_EDIT_STATUS.set_state(crate::ui::status::StatusState::Idle, "Idle");
                     });
                 }
-                if has_result && ui.button("Save Result As…").clicked() {
+                if *has_result && ui.button("Save Result As…").clicked() {
                     // Offer a save dialog and write PNG bytes from cache
                     if let Some(file) = rfd::FileDialog::new()
                         .set_title("Save edited image as PNG")
@@ -243,6 +208,69 @@ impl ImageEditPanel {
                     if let Some(pb) = std::path::Path::new(path).parent() { let _ = open::that(pb); }
                 }
                 if ui.button("Open Source File").clicked() { let _ = open::that(path); }
+            });
+            ui.separator();
+            ui.columns(2, |ui| {
+                ui[0].vertical_centered(|ui| {
+                    // Preview the source image (high-res preview)
+                    let cache_key = format!("imageedit::preview::{},{}", path, 1600);
+                    let mut has_img = false;
+                    if let Ok(cache) = self.thumb_cache.lock() {
+                        if let Some(bytes_arc) = cache.get(&cache_key) {
+                            has_img = true;
+                            let img_src = eframe::egui::ImageSource::Bytes {
+                                uri: std::borrow::Cow::from(format!("bytes://{}", cache_key)),
+                                bytes: eframe::egui::load::Bytes::Shared(bytes_arc.clone()),
+                            };
+                            eframe::egui::Image::new(img_src)
+                                .max_size(ui.available_size()/1.3)
+                                .ui(ui);
+                        }
+                    }
+                    if !has_img {
+                        let cache = self.thumb_cache.clone();
+                        let path_buf = std::path::PathBuf::from(path);
+                        let cache_key_task = cache_key.clone();
+                        tokio::spawn(async move {
+                            let png = crate::utilities::thumbs::generate_image_preview_png(&path_buf, 1600)
+                                .or_else(|e| {
+                                    log::debug!("[ImageEdit] preview fallback: {}", e);
+                                    crate::utilities::thumbs::generate_image_thumb_data(&path_buf)
+                                        .and_then(|data_url| {
+                                            let (_, b64) = data_url.split_once("data:image/png;base64,").unwrap_or(("", &data_url));
+                                            base64::engine::general_purpose::STANDARD
+                                                .decode(b64.as_bytes())
+                                                .map_err(|e| e.to_string())
+                                        })
+                                })
+                                .unwrap_or_default();
+                            if !png.is_empty() {
+                                if let Ok(mut guard) = cache.lock() {
+                                    guard.insert(cache_key_task, Arc::from(png.into_boxed_slice()));
+                                }
+                            }
+                        });
+                        ui.weak("Loading preview…");
+                    }
+
+                });
+                ui[1].vertical_centered(|ui| {
+
+                    if let Ok(cache) = self.thumb_cache.lock() {
+                        if let Some(bytes_arc) = cache.get(&result_key) {
+                            *has_result = true;
+                            ui.separator();
+                            ui.label(RichText::new("Result:").underline().strong());
+                            let img_src = eframe::egui::ImageSource::Bytes {
+                                uri: std::borrow::Cow::from(format!("bytes://{}", result_key)),
+                                bytes: eframe::egui::load::Bytes::Shared(bytes_arc.clone()),
+                            };
+                            eframe::egui::Image::new(img_src)
+                                .max_size(ui.available_size()/1.3)
+                                .ui(ui);
+                        }
+                    }
+                });
             });
         } else {
             ui.weak("No image selected.");

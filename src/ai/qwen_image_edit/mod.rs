@@ -1,5 +1,5 @@
-pub mod model;
 pub mod config;
+pub mod model;
 pub mod scheduler;
 
 // Minimal VAE placeholder; will implement encode/decode later
@@ -11,7 +11,10 @@ pub struct VaeConfig {
 
 impl Default for VaeConfig {
     fn default() -> Self {
-        Self { latent_channels: 4, scale_factor: 0.18215 }
+        Self {
+            latent_channels: 4,
+            scale_factor: 0.18215,
+        }
     }
 }
 
@@ -49,7 +52,11 @@ use candle_core::DType;
 impl crate::ai::model::HFAiModel for crate::ai::qwen_image_edit::model::QwenImageEditPipeline {
     fn load_from_hub(model_key: &str) -> Result<Self> {
         // Prefer fp16 on CUDA hardware
-        let prefer = if candle_core::Device::new_cuda(0).is_ok() { DType::F16 } else { DType::F32 };
+        let prefer = if candle_core::Device::new_cuda(0).is_ok() {
+            DType::F16
+        } else {
+            DType::F32
+        };
         let pipe = Self::load_from_hf(model_key, prefer)?;
         pipe.info();
         Ok(pipe)

@@ -32,6 +32,8 @@ pub struct StatusMeta {
     pub model: Option<&'static str>,
     pub detail: String,
     pub state: StatusState,
+    // Device where the model is running.
+    pub device: Option<DeviceKind>,
     pub started_at_ms: u64,
     pub progress_current: u64,
     pub progress_total: u64,
@@ -46,6 +48,7 @@ impl Default for StatusMeta {
             model: None,
             detail: String::new(),
             state: StatusState::Idle,
+            device: None,
             started_at_ms: 0,
             progress_current: 0,
             progress_total: 0,
@@ -67,6 +70,8 @@ pub trait GlobalStatusIndicator {
     /// Set or update the model string shown in the hover card.
     /// Note: stored as a leaked &'static str to match StatusMeta's lifetime.
     fn set_model(&self, model: &str);
+    /// Set device where this model is running.
+    fn set_device(&self, device: DeviceKind);
     /// Set an error message and mark state as Error (displayed in hover card).
     fn set_error(&self, err: impl Into<String>);
     /// Clear any existing error message (does not change state).
@@ -104,6 +109,7 @@ impl RegisteredStatus {
             meta: StatusMeta {
                 name,
                 model,
+                device: None,
                 ..Default::default()
             },
         });
@@ -145,6 +151,11 @@ impl GlobalStatusIndicator for RegisteredStatus {
             inner.meta.model = Some(leaked);
         }
     }
+    fn set_device(&self, device: DeviceKind) {
+        if let Some(inner) = STATUSES.write().unwrap().get_mut(self.key) {
+            inner.meta.device = Some(device);
+        }
+    }
     fn set_error(&self, err: impl Into<String>) {
         if let Some(inner) = STATUSES.write().unwrap().get_mut(self.key) {
             inner.meta.error = Some(err.into());
@@ -175,6 +186,11 @@ pub fn all_snapshots() -> Vec<StatusMeta> {
 }
 
 /// Convenience registration for core components.
+
+/// Coarse device classification for display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceKind { CPU, GPU }
+
 pub static DB_STATUS: Lazy<RegisteredStatus> = Lazy::new(|| RegisteredStatus::register("DB", None));
 pub static VISION_STATUS: Lazy<RegisteredStatus> =
     Lazy::new(|| RegisteredStatus::register("VISION", None));
@@ -182,6 +198,8 @@ pub static CLIP_STATUS: Lazy<RegisteredStatus> =
     Lazy::new(|| RegisteredStatus::register("CLIP", None));
 pub static RERANK_STATUS: Lazy<RegisteredStatus> =
     Lazy::new(|| RegisteredStatus::register("RERANK", None));
+pub static QWEN_EDIT_STATUS: Lazy<RegisteredStatus> =
+    Lazy::new(|| RegisteredStatus::register("QWEN-EDIT", None));
 
 /// Token-progress tracker for generation (vision description) from anywhere.
 pub static VISION_TOKENS: Lazy<AtomicUsize> = Lazy::new(|| AtomicUsize::new(0));
@@ -263,6 +281,16 @@ fn indicator_small(ui: &mut Ui, meta: &StatusMeta) {
                 ui.label(format!("{:?}", meta.state));
             });
         });
+
+        if let Some(dev) = meta.device {
+            ui.horizontal(|ui| {
+                ui.colored_label(ui.style().visuals.warn_fg_color, RichText::new("Device").underline());
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let txt = match dev { DeviceKind::CPU => "CPU", DeviceKind::GPU => "GPU" };
+                    ui.label(txt);
+                });
+            });
+        }
 
         if !meta.detail.is_empty() {
             ui.horizontal(|ui| {
