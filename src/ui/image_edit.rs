@@ -22,6 +22,15 @@ pub struct ImageEditPanel {
     // Loader status channel (background -> UI)
     status_tx: crossbeam::channel::Sender<Result<(), String>>,
     status_rx: crossbeam::channel::Receiver<Result<(), String>>,
+    // GGUF controls/state
+    gguf_repo: String,
+    gguf_file: String,
+    gguf_fetching: bool,
+    gguf_status: Option<String>,
+    gguf_resolved_path: Option<String>,
+    gguf_tx: crossbeam::channel::Sender<Result<String, String>>,
+    gguf_rx: crossbeam::channel::Receiver<Result<String, String>>,
+    gguf_prefer: bool,
 }
 
 impl Default for ImageEditPanel {
@@ -46,6 +55,20 @@ impl Default for ImageEditPanel {
             status_rx: {
                 let (_tx, rx) = crossbeam::channel::unbounded(); rx
             },
+            // GGUF defaults: QuantStack/Qwen-Image-Edit-GGUF and default file
+            gguf_repo: "QuantStack/Qwen-Image-Edit-GGUF".to_string(),
+            // Default to a broadly compatible GGUF build (F16 preferred with CUDA / quantized var builder)
+            gguf_file: "Qwen_Image_Edit-F16.gguf".to_string(),
+            gguf_fetching: false,
+            gguf_status: None,
+            gguf_resolved_path: None,
+            gguf_tx: {
+                let (tx, _rx) = crossbeam::channel::unbounded(); tx
+            },
+            gguf_rx: {
+                let (_tx, rx) = crossbeam::channel::unbounded(); rx
+            },
+            gguf_prefer: true,
         }
     }
 }
@@ -53,37 +76,6 @@ impl Default for ImageEditPanel {
 impl ImageEditPanel {
     pub fn open_with_path(&mut self, path: &str) {
         self.current_path = Some(path.to_string());
-        // Auto-load model as soon as user opens Image Edit with a path.
-        if !self.loading_model && !self.model_loaded && !self.model_repo.trim().is_empty() {
-            self.loading_model = true;
-            self.model_error = None;
-            crate::ui::status::QWEN_EDIT_STATUS.set_state(crate::ui::status::StatusState::Initializing, "Loading model");
-            let repo = self.model_repo.clone();
-            let slot = self.pipeline.clone();
-            // fresh channel for this load
-            let (tx, rx) = crossbeam::channel::unbounded();
-            self.status_tx = tx.clone();
-            self.status_rx = rx;
-            tokio::spawn(async move {
-                crate::ai::unload_heavy_models_except("").await;
-                let prefer = if candle_core::Device::new_cuda(0).is_ok() { candle_core::DType::F16 } else { candle_core::DType::F32 };
-                let res = crate::ai::qwen_image_edit::model::QwenImageEditPipeline::load_from_hf(&repo, prefer)
-                    .map_err(|e| e.to_string());
-                match res {
-                    Ok(p) => {
-                        let dev = if matches!(p.device, candle_core::Device::Cuda(_)) { crate::ui::status::DeviceKind::GPU } else { crate::ui::status::DeviceKind::CPU };
-                        crate::ui::status::QWEN_EDIT_STATUS.set_device(dev);
-                        crate::ui::status::QWEN_EDIT_STATUS.set_state(crate::ui::status::StatusState::Idle, "Ready");
-                        let mut g = slot.lock().await; *g = Some(p); let _ = tx.send(Ok(()));
-                    }
-                    Err(e) => {
-                        log::error!("[ImageEdit] model load failed: {e}");
-                        crate::ui::status::QWEN_EDIT_STATUS.set_error(format!("Load failed: {e}"));
-                        let mut g = slot.lock().await; *g = None; let _ = tx.send(Err(e));
-                    }
-                }
-            });
-        }
     }
 
     pub fn ui(&mut self, ui: &mut Ui) {
@@ -120,10 +112,16 @@ impl ImageEditPanel {
                         let (tx, rx) = crossbeam::channel::unbounded();
                         self.status_tx = tx.clone();
                         self.status_rx = rx;
+                        let gguf_override = if self.gguf_prefer { self.gguf_resolved_path.clone() } else { None };
                         tokio::spawn(async move {
                             crate::ai::unload_heavy_models_except("").await;
                             let prefer = if candle_core::Device::new_cuda(0).is_ok() { candle_core::DType::F16 } else { candle_core::DType::F32 };
-                            let res = crate::ai::qwen_image_edit::model::QwenImageEditPipeline::load_from_hf(&repo, prefer)
+                            let res = if let Some(p) = gguf_override.filter(|s| !s.is_empty()) {
+                                crate::ai::qwen_image_edit::model::QwenImageEditPipeline::load_from_hf_with_overrides(
+                                    &repo, prefer, Some(std::path::PathBuf::from(p)), None, None)
+                            } else {
+                                crate::ai::qwen_image_edit::model::QwenImageEditPipeline::load_from_hf(&repo, prefer)
+                            }
                                 .map_err(|e| e.to_string());
                             match res {
                                 Ok(p) => {
@@ -145,6 +143,54 @@ impl ImageEditPanel {
                     ui.label("Model repo:");
                 });
             });
+            // GGUF controls row
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("GGUF from repo:").underline());
+                TextEdit::singleline(&mut self.gguf_repo)
+                    .hint_text("e.g. QuantStack/Qwen-Image-Edit-GGUF")
+                    .desired_width(260.)
+                    .ui(ui);
+                TextEdit::singleline(&mut self.gguf_file)
+                    .hint_text("e.g. Qwen_Image_Edit-Q2_K.gguf")
+                    .desired_width(220.)
+                    .ui(ui);
+                let can_fetch = !self.gguf_fetching && !self.gguf_repo.trim().is_empty() && !self.gguf_file.trim().is_empty();
+                if ui.add_enabled(can_fetch, Button::new("Fetch GGUF")).clicked() {
+                    self.gguf_fetching = true;
+                    self.gguf_status = Some("Downloading…".to_string());
+                    let repo = self.gguf_repo.clone();
+                    let fname = self.gguf_file.clone();
+                    let (tx, rx) = crossbeam::channel::unbounded();
+                    self.gguf_tx = tx.clone();
+                    self.gguf_rx = rx;
+                    tokio::spawn(async move {
+                        // Use existing HF helper to ensure the file is present locally
+                        let res: Result<std::path::PathBuf, String> = (|| {
+                            let repo = crate::ai::hf::hf_model(&repo).map_err(|e| e.to_string())?;
+                            let p = crate::ai::hf::hf_get_file(&repo, &fname).map_err(|e| e.to_string())?;
+                            Ok(p)
+                        })();
+                        let _ = tx.send(res.map(|pb| pb.to_string_lossy().to_string()));
+                    });
+                }
+                if self.gguf_fetching {
+                    if let Ok(msg) = self.gguf_rx.try_recv() {
+                        self.gguf_fetching = false;
+                        match msg {
+                            Ok(path) => {
+                                self.gguf_resolved_path = Some(path.clone());
+                                self.gguf_status = Some(format!("Ready: {}", path));
+                            }
+                            Err(e) => {
+                                self.gguf_status = Some(format!("Error: {e}"));
+                            }
+                        }
+                    }
+                }
+                if let Some(msg) = &self.gguf_status { ui.label(msg); }
+                ui.separator();
+                ui.checkbox(&mut self.gguf_prefer, "Prefer GGUF when running");
+            });
             ui.separator();
             ui.add_space(6.0);
 
@@ -159,35 +205,105 @@ impl ImageEditPanel {
             
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                let can_run = self.model_loaded && !self.loading_model && self.current_path.is_some();
-                if ui.add_enabled(can_run, Button::new("Run Edit")).clicked() {
-                    // Run the real edit pipeline and capture output PNG bytes
-                    let slot = self.pipeline.clone();
-                    let pth = self.current_path.clone().unwrap_or_default();
-                    let cache = self.thumb_cache.clone();
-                    crate::ui::status::QWEN_EDIT_STATUS.set_state(crate::ui::status::StatusState::Running, "Editing image");
-                    let opts = crate::ai::qwen_image_edit::EditOptions {
-                        prompt: self.prompt.clone(),
-                        negative_prompt: if self.negative_prompt.trim().is_empty() { None } else { Some(self.negative_prompt.clone()) },
-                        guidance_scale: self.guidance_scale,
-                        num_inference_steps: self.steps,
-                        strength: self.strength,
-                        scheduler: Some("flow_match_euler".into()),
-                        seed: None,
-                        deterministic_vae: true,
-                    };
-                    tokio::spawn(async move {
-                        // Release other heavy models for headroom
-                        crate::ai::unload_heavy_models_except("").await;
-                        let png = if let Some(pipe) = slot.lock().await.as_ref() {
-                            match pipe.run_edit(std::path::Path::new(&pth), &opts) { Ok(b) => b, Err(e) => { log::error!("[ImageEdit] run_edit failed: {e}"); Vec::new() } }
-                        } else { Vec::new() };
-                        if !png.is_empty() {
-                            let key = format!("imageedit::result::{}", &pth);
-                            if let Ok(mut guard) = cache.lock() { guard.insert(key, Arc::from(png.into_boxed_slice())); }
-                        }
-                        crate::ui::status::QWEN_EDIT_STATUS.set_state(crate::ui::status::StatusState::Idle, "Idle");
-                    });
+                if ui.add_enabled(!self.loading_model && self.current_path.is_some(), Button::new("Run Edit")).clicked() {
+                    // Lazily load the model if not loaded yet, preferring GGUF override if present
+                    if !self.model_loaded {
+                        self.loading_model = true;
+                        self.model_error = None;
+                        crate::ui::status::QWEN_EDIT_STATUS.set_state(crate::ui::status::StatusState::Initializing, "Loading model");
+                        let repo = self.model_repo.clone();
+                        let slot = self.pipeline.clone();
+                        let (tx, rx) = crossbeam::channel::unbounded();
+                        self.status_tx = tx.clone();
+                        self.status_rx = rx;
+                        let gguf_override = self.gguf_resolved_path.clone();
+                        // capture intended run params so we continue immediately after load
+                        let pth = self.current_path.clone().unwrap_or_default();
+                        let cache = self.thumb_cache.clone();
+                        let opts = crate::ai::qwen_image_edit::EditOptions {
+                            prompt: self.prompt.clone(),
+                            negative_prompt: if self.negative_prompt.trim().is_empty() { None } else { Some(self.negative_prompt.clone()) },
+                            guidance_scale: self.guidance_scale,
+                            num_inference_steps: self.steps,
+                            strength: self.strength,
+                            scheduler: Some("flow_match_euler".into()),
+                            seed: None,
+                            deterministic_vae: true,
+                        };
+                        crate::ui::status::QWEN_EDIT_STATUS.set_state(crate::ui::status::StatusState::Running, "Editing image");
+                        tokio::spawn(async move {
+                            crate::ai::unload_heavy_models_except("").await;
+                            let prefer = if candle_core::Device::new_cuda(0).is_ok() { candle_core::DType::F16 } else { candle_core::DType::F32 };
+                            let res = if let Some(p) = gguf_override.filter(|s| !s.is_empty()) {
+                                match crate::ai::qwen_image_edit::model::QwenImageEditPipeline::load_from_hf_with_overrides(
+                                    &repo, prefer, Some(std::path::PathBuf::from(p.clone())), None, None) {
+                                    Ok(pipe) => Ok(pipe),
+                                    Err(e) => {
+                                        let es = e.to_string();
+                                        let mut hint = String::new();
+                                        if es.contains("unknown dtype") || es.contains("unsupported quant") || p.to_ascii_lowercase().contains("-q") {
+                                            hint = " Hint: This GGUF looks quantized (e.g., Q2_K/Q4_K), which isn’t supported by the current loader. Try an F16 GGUF (e.g., *-F16.gguf).".to_string();
+                                        }
+                                        log::warn!("[ImageEdit] GGUF load failed ({}), retrying with safetensors", es);
+                                        crate::ui::status::QWEN_EDIT_STATUS.set_error(format!("GGUF load failed: {}. Falling back to safetensors…{}", es, hint));
+                                        crate::ai::qwen_image_edit::model::QwenImageEditPipeline::load_from_hf(&repo, prefer)
+                                    }
+                                }
+                            } else {
+                                crate::ai::qwen_image_edit::model::QwenImageEditPipeline::load_from_hf(&repo, prefer)
+                            }.map_err(|e| e.to_string());
+                            match res {
+                                Ok(p) => {
+                                    let dev = if matches!(p.device, candle_core::Device::Cuda(_)) { crate::ui::status::DeviceKind::GPU } else { crate::ui::status::DeviceKind::CPU };
+                                    crate::ui::status::QWEN_EDIT_STATUS.set_device(dev);
+                                    crate::ui::status::QWEN_EDIT_STATUS.set_state(crate::ui::status::StatusState::Idle, "Ready");
+                                    let mut g = slot.lock().await; *g = Some(p); let _ = tx.send(Ok(()));
+                                    // Now run the edit
+                                    let out = if let Some(pipe) = slot.lock().await.as_ref() {
+                                        match pipe.run_edit(std::path::Path::new(&pth), &opts) { Ok(b) => b, Err(e) => { log::error!("[ImageEdit] run_edit failed after load: {e}"); Vec::new() } }
+                                    } else { Vec::new() };
+                                    if !out.is_empty() {
+                                        let key = format!("imageedit::result::{}", &pth);
+                                        if let Ok(mut guard) = cache.lock() { guard.insert(key, Arc::from(out.into_boxed_slice())); }
+                                    }
+                                    crate::ui::status::QWEN_EDIT_STATUS.set_state(crate::ui::status::StatusState::Idle, "Idle");
+                                }
+                                Err(e) => {
+                                    log::error!("[ImageEdit] model load failed: {e}");
+                                    crate::ui::status::QWEN_EDIT_STATUS.set_error(format!("Load failed: {e}"));
+                                    let mut g = slot.lock().await; *g = None; let _ = tx.send(Err(e));
+                                }
+                            }
+                        });
+                    } else {
+                        // Run the real edit pipeline and capture output PNG bytes
+                        let slot = self.pipeline.clone();
+                        let pth = self.current_path.clone().unwrap_or_default();
+                        let cache = self.thumb_cache.clone();
+                        crate::ui::status::QWEN_EDIT_STATUS.set_state(crate::ui::status::StatusState::Running, "Editing image");
+                        let opts = crate::ai::qwen_image_edit::EditOptions {
+                            prompt: self.prompt.clone(),
+                            negative_prompt: if self.negative_prompt.trim().is_empty() { None } else { Some(self.negative_prompt.clone()) },
+                            guidance_scale: self.guidance_scale,
+                            num_inference_steps: self.steps,
+                            strength: self.strength,
+                            scheduler: Some("flow_match_euler".into()),
+                            seed: None,
+                            deterministic_vae: true,
+                        };
+                        tokio::spawn(async move {
+                            // Release other heavy models for headroom
+                            crate::ai::unload_heavy_models_except("").await;
+                            let png = if let Some(pipe) = slot.lock().await.as_ref() {
+                                match pipe.run_edit(std::path::Path::new(&pth), &opts) { Ok(b) => b, Err(e) => { log::error!("[ImageEdit] run_edit failed: {e}"); Vec::new() } }
+                            } else { Vec::new() };
+                            if !png.is_empty() {
+                                let key = format!("imageedit::result::{}", &pth);
+                                if let Ok(mut guard) = cache.lock() { guard.insert(key, Arc::from(png.into_boxed_slice())); }
+                            }
+                            crate::ui::status::QWEN_EDIT_STATUS.set_state(crate::ui::status::StatusState::Idle, "Idle");
+                        });
+                    }
                 }
                 if *has_result && ui.button("Save Result As…").clicked() {
                     // Offer a save dialog and write PNG bytes from cache

@@ -2,6 +2,138 @@ use candle_core::{D, Device, Module, Result, Tensor};
 use candle_nn::{Conv2d, Conv2dConfig, LayerNorm, VarBuilder, conv2d};
 use candle_transformers::models::with_tracing::{Linear, linear_no_bias};
 
+// Lightweight ops to support building from GGUF without candle_nn::VarBuilder
+#[derive(Debug, Clone)]
+struct SimpleLinear {
+    // Weight: [out, in]
+    w: Tensor,
+}
+
+impl SimpleLinear {
+    fn new_from_vb(vb: VarBuilder, path: &str, in_dim: usize, out_dim: usize) -> Result<Self> {
+        let w = vb.pp(path).get((out_dim, in_dim), "weight")?;
+        Ok(Self { w })
+    }
+    fn new_from_qvb(
+        vb: &candle_transformers::quantized_var_builder::VarBuilder,
+        prefix: &str,
+        path: &str,
+        in_dim: usize,
+        out_dim: usize,
+        device: &Device,
+    ) -> Result<Self> {
+        let full = if prefix.is_empty() {
+            path.to_string()
+        } else {
+            format!("{prefix}.{path}")
+        };
+        let qw = vb.pp("").pp(&full).get((out_dim, in_dim), "weight")?;
+        let w = qw.dequantize(device)?;
+        Ok(Self { w })
+    }
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        // x: [..., in], w: [out,in] => y: [..., out]
+        let wt = self.w.transpose(0, 1)?; // [in,out]
+        x.matmul(&wt)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SimpleLayerNorm {
+    weight: Tensor, // [dim]
+    bias: Tensor,   // [dim]
+    eps: f64,
+}
+
+impl SimpleLayerNorm {
+    fn new_from_vb(vb: VarBuilder, path: &str, dim: usize, eps: f64) -> Result<Self> {
+        let vb = vb.pp(path);
+        let weight = vb.get(dim, "weight")?;
+        let bias = vb.get(dim, "bias")?;
+        Ok(Self { weight, bias, eps })
+    }
+    fn new_from_qvb(
+        vb: &candle_transformers::quantized_var_builder::VarBuilder,
+        prefix: &str,
+        path: &str,
+        dim: usize,
+        eps: f64,
+        device: &Device,
+    ) -> Result<Self> {
+        let full = if prefix.is_empty() {
+            path.to_string()
+        } else {
+            format!("{prefix}.{path}")
+        };
+        let qweight = vb.pp("").pp(&full).get(dim, "weight")?;
+        let weight = qweight.dequantize(device)?;
+        let qbias = vb.pp("").pp(&full).get(dim, "bias")?;
+        let bias = qbias.dequantize(device)?;
+        Ok(Self { weight, bias, eps })
+    }
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        // Normalize over last dim
+        let x_dtype = x.dtype();
+        let x32 = x.to_dtype(candle_core::DType::F32)?;
+        let mean = x32.mean_keepdim(D::Minus1)?; // [...,1]
+        let xv = (&x32 - &mean)?;
+        let var = xv.sqr()?.mean_keepdim(D::Minus1)?;
+        let eps_t = Tensor::new(self.eps as f32, x.device())?;
+        let xhat = xv.broadcast_div(&((var + &eps_t)?.sqrt()?))?; // [...,dim]
+        let mut y = xhat.to_dtype(x_dtype)?;
+        let mut w = self.weight.clone();
+        if w.dtype() != y.dtype() { w = w.to_dtype(y.dtype())?; }
+        let mut b = self.bias.clone();
+        if b.dtype() != y.dtype() { b = b.to_dtype(y.dtype())?; }
+        y = y.broadcast_mul(&w)?;
+        y = y.broadcast_add(&b)?;
+        Ok(y)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SimpleConv1x1 {
+    // Weight as [out, in]
+    w: Tensor,
+}
+
+impl SimpleConv1x1 {
+    fn new_from_vb(vb: VarBuilder, path: &str, in_ch: usize, out_ch: usize) -> Result<Self> {
+        // Stored as [out,in,1,1]
+        let w4 = vb.pp(path).get((out_ch, in_ch, 1, 1), "weight")?;
+        let w2 = w4.reshape((out_ch, in_ch))?;
+        Ok(Self { w: w2 })
+    }
+    fn new_from_qvb(
+        vb: &candle_transformers::quantized_var_builder::VarBuilder,
+        prefix: &str,
+        path: &str,
+        in_ch: usize,
+        out_ch: usize,
+        device: &Device,
+    ) -> Result<Self> {
+        let full = if prefix.is_empty() {
+            path.to_string()
+        } else {
+            format!("{prefix}.{path}")
+        };
+        let qw4 = vb.pp("").pp(&full).get((out_ch, in_ch, 1, 1), "weight")?;
+        let w4 = qw4.dequantize(device)?;
+        let w2 = w4.reshape((out_ch, in_ch))?;
+        Ok(Self { w: w2 })
+    }
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        // x: [B,Cin,H,W]
+        let (b, _cin, h, w) = x.dims4()?;
+        let x_flat = x.flatten_from(2)?; // [B,Cin,N]
+        let x_bt = x_flat.transpose(1, 2)?; // [B,N,Cin]
+        let y = x_bt.matmul(&self.w.transpose(0, 1)?)?; // [B,N,Cout]
+        let y = y.transpose(1, 2)?; // [B,Cout,N]
+        let y = y.reshape((b, self.w.dim(0)?, h, w))?;
+        Ok(y)
+    }
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct QwenImageTransformerConfig {
     pub in_channels: usize,
@@ -26,14 +158,29 @@ struct Block {
 }
 
 #[derive(Debug, Clone)]
+struct SimpleBlock {
+    ln1: SimpleLayerNorm,
+    q_proj: SimpleLinear,
+    k_proj: SimpleLinear,
+    v_proj: SimpleLinear,
+    o_proj: SimpleLinear,
+    ln2: SimpleLayerNorm,
+    fc1: SimpleLinear,
+    fc2: SimpleLinear,
+}
+
+#[derive(Debug, Clone)]
 pub struct QwenImageTransformer2DModel {
     pub config: QwenImageTransformerConfig,
     pub device: Device,
     // In/out 1x1 convs
-    proj_in: Conv2d,
-    proj_out: Conv2d,
+    proj_in: Option<Conv2d>,
+    proj_out: Option<Conv2d>,
+    proj_in_simple: Option<SimpleConv1x1>,
+    proj_out_simple: Option<SimpleConv1x1>,
     // Repeated blocks
     blocks: Vec<Block>,
+    blocks_simple: Option<Vec<SimpleBlock>>,
 }
 
 impl QwenImageTransformer2DModel {
@@ -102,22 +249,140 @@ impl QwenImageTransformer2DModel {
         Ok(Self {
             config: config.clone(),
             device: vb.device().clone(),
-            proj_in,
-            proj_out,
+            proj_in: Some(proj_in),
+            proj_out: Some(proj_out),
+            proj_in_simple: None,
+            proj_out_simple: None,
             blocks,
+            blocks_simple: None,
         })
+    }
+
+    // GGUF constructor: builds using dequantized weights from a GGUF file.
+    // Note: gated by the optional cfg(feature = "gguf-support"). If the feature is not set, this will not compile.
+    pub fn new_from_gguf(
+        config: &QwenImageTransformerConfig,
+        gguf_path: &std::path::Path,
+        device: &Device,
+    ) -> Result<Self> {
+        use candle_transformers::quantized_var_builder::VarBuilder as QVarBuilder;
+        let qvb = QVarBuilder::from_gguf(gguf_path, device)?;
+        log::info!("[qwen-image-edit] GGUF opened: {}", gguf_path.display());
+        // Try common prefixes for the transformer scope inside GGUF
+        let prefixes = ["", "transformer", "model", "diffusion_model", "net", "module", "transformer_model"];
+        let model_dim = config.num_attention_heads * config.attention_head_dim;
+
+        // Build proj_in/proj_out using simple 1x1 convs
+        let mut last_err: Option<anyhow::Error> = None;
+        for pfx in prefixes.iter() {
+            let proj_in = match SimpleConv1x1::new_from_qvb(&qvb, pfx, "proj_in", config.in_channels, model_dim, device) {
+                Ok(v) => v,
+                Err(e) => { last_err = Some(e.into()); continue; }
+            };
+            let proj_out = match SimpleConv1x1::new_from_qvb(&qvb, pfx, "proj_out", model_dim, config.out_channels, device) {
+                Ok(v) => v,
+                Err(e) => { last_err = Some(e.into()); continue; }
+            };
+
+            // Build blocks
+            let mut sblocks: Vec<SimpleBlock> = Vec::with_capacity(config.num_layers);
+            for i in 0..config.num_layers {
+                let ln1 = SimpleLayerNorm::new_from_qvb(&qvb, pfx, &format!("layers.{i}.ln1"), model_dim, 1e-6, device)?;
+                let q_proj = SimpleLinear::new_from_qvb(&qvb, pfx, &format!("layers.{i}.attn.q_proj"), model_dim, model_dim, device)?;
+                let k_proj = SimpleLinear::new_from_qvb(&qvb, pfx, &format!("layers.{i}.attn.k_proj"), config.joint_attention_dim, model_dim, device)?;
+                let v_proj = SimpleLinear::new_from_qvb(&qvb, pfx, &format!("layers.{i}.attn.v_proj"), config.joint_attention_dim, model_dim, device)?;
+                let o_proj = SimpleLinear::new_from_qvb(&qvb, pfx, &format!("layers.{i}.attn.o_proj"), model_dim, model_dim, device)?;
+                let ln2 = SimpleLayerNorm::new_from_qvb(&qvb, pfx, &format!("layers.{i}.ln2"), model_dim, 1e-6, device)?;
+                let mlp_dim = (model_dim as f64 * 4.0) as usize;
+                let fc1 = SimpleLinear::new_from_qvb(&qvb, pfx, &format!("layers.{i}.mlp.fc1"), model_dim, mlp_dim, device)?;
+                let fc2 = SimpleLinear::new_from_qvb(&qvb, pfx, &format!("layers.{i}.mlp.fc2"), mlp_dim, model_dim, device)?;
+                sblocks.push(SimpleBlock { ln1, q_proj, k_proj, v_proj, o_proj, ln2, fc1, fc2 });
+            }
+            return Ok(Self {
+                config: config.clone(),
+                device: device.clone(),
+                proj_in: None,
+                proj_out: None,
+                proj_in_simple: Some(proj_in),
+                proj_out_simple: Some(proj_out),
+                blocks: Vec::new(),
+                blocks_simple: Some(sblocks),
+            });
+        }
+        if let Some(e) = last_err { Err(candle_core::Error::Msg(format!("{}", e))) } else { Err(candle_core::Error::Msg("Failed to build Qwen transformer from GGUF: no matching prefixes".to_string())) }
     }
 
     // Forward over latent tensor with text embeddings conditioning
     // x: [B, C_in, H, W], text: [B, T, D_text], returns [B, C_out, H, W]
     pub fn forward(&self, x: &Tensor, text: &Tensor) -> Result<Tensor> {
+        if let (Some(proj_in_s), Some(proj_out_s), Some(sblocks)) = (
+            &self.proj_in_simple,
+            &self.proj_out_simple,
+            &self.blocks_simple,
+        ) {
+            // GGUF simple path
+            let (b, _c, h, w) = x.dims4()?;
+            let model_dim = self.config.num_attention_heads * self.config.attention_head_dim;
+            let heads = self.config.num_attention_heads;
+            let head_dim = self.config.attention_head_dim;
+
+            // In-proj using 1x1 conv equivalent
+            let mut y = proj_in_s.forward(x)?; // [B, D, H, W]
+            let n = h * w;
+            y = y.flatten_from(2)?; // [B, D, N]
+            y = y.transpose(1, 2)?; // [B, N, D]
+
+            let (bt, tlen, td) = text.dims3()?;
+            assert_eq!(bt, b, "batch mismatch");
+            assert_eq!(td, self.config.joint_attention_dim, "text dim mismatch");
+            let scale = (head_dim as f64).sqrt();
+            for blk in sblocks.iter() {
+                let residual = y.clone();
+                let y_ln = blk.ln1.forward(&y)?; // [B,N,D]
+                let q = blk
+                    .q_proj
+                    .forward(&y_ln)? // [B,N,D]
+                    .reshape((b, n, heads, head_dim))? // [B,N,H,Hd]
+                    .transpose(1, 2)?; // [B,H,N,Hd]
+                let k = blk
+                    .k_proj
+                    .forward(text)? // [B,T,D]
+                    .reshape((b, tlen, heads, head_dim))?
+                    .transpose(1, 2)?; // [B,H,T,Hd]
+                let v = blk
+                    .v_proj
+                    .forward(text)?
+                    .reshape((b, tlen, heads, head_dim))?
+                    .transpose(1, 2)?; // [B,H,T,Hd]
+                let q = q.contiguous()?;
+                let k_t = k.transpose(D::Minus1, D::Minus2)?.contiguous()?;
+                let attn = (q.matmul(&k_t)? / scale)?;
+                let attn = candle_nn::ops::softmax_last_dim(&attn)?.contiguous()?;
+                let v = v.contiguous()?;
+                let ctx = attn.matmul(&v)?; // [B,H,N,Hd]
+                let ctx = ctx.transpose(1, 2)?.reshape((b, n, model_dim))?; // [B,N,D]
+                let y_new = blk.o_proj.forward(&ctx)?; // [B,N,D]
+                let y_res = (y_new + &residual)?;
+
+                let residual2 = y_res.clone();
+                let y_ln2 = blk.ln2.forward(&y_res)?;
+                let y_m = blk.fc1.forward(&y_ln2)?.gelu()?;
+                let y_m = blk.fc2.forward(&y_m)?;
+                y = (y_m + residual2)?;
+            }
+
+            // Restore spatial and out-proj
+            let y = y.transpose(1, 2)?.reshape((b, model_dim, h, w))?;
+            let y = proj_out_s.forward(&y)?; // [B,C_out,H,W]
+            return Ok(y);
+        }
         let (b, _c, h, w) = x.dims4()?;
         let model_dim = self.config.num_attention_heads * self.config.attention_head_dim;
         let heads = self.config.num_attention_heads;
         let head_dim = self.config.attention_head_dim;
 
         // In-proj and flatten spatial to tokens [B, N, D]
-        let mut y = self.proj_in.forward(x)?; // [B, D, H, W]
+    let mut y = self.proj_in.as_ref().expect("proj_in").forward(x)?; // [B, D, H, W]
         let n = h * w;
         y = y.flatten_from(2)?; // [B, D, N]
         y = y.transpose(1, 2)?; // [B, N, D]
@@ -172,7 +437,7 @@ impl QwenImageTransformer2DModel {
         let y = y
             .transpose(1, 2)? // [B,D,N]
             .reshape((b, model_dim, h, w))?; // [B,D,H,W]
-        let y = self.proj_out.forward(&y)?; // [B,C_out,H,W]
+        let y = self.proj_out.as_ref().expect("proj_out").forward(&y)?; // [B,C_out,H,W]
         Ok(y)
     }
 }

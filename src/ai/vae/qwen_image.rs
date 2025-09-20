@@ -466,6 +466,7 @@ impl QwenImageVaeSimplified {
         y = y.slice_assign(&[0..b, 0..c, 0..h, 0..w], x)?;
         Ok((y, h, w, h_pad, w_pad))
     }
+    
     pub fn encode_with_auto_pad(
         &self,
         x: &Tensor,
@@ -476,6 +477,7 @@ impl QwenImageVaeSimplified {
         let z = self.encode(&x_pad, !sample)?; // deterministic toggle aligns with caller semantics
         Ok((z, h, w, hp, wp))
     }
+
     pub fn decode_to_original(&self, z: &Tensor, orig_h: usize, orig_w: usize) -> Result<Tensor> {
         let levels = self.enc_downs.len().max(1);
         let zh = z.dim(2)?;

@@ -15,6 +15,7 @@ use crate::ai::vae::{
     build_vae_from_files_with_5d_squeeze,
 };
 use safetensors::SafeTensors;
+use std::path::PathBuf;
 use std::collections::HashSet;
 use tokenizers::Tokenizer;
 use crate::ui::status::{QWEN_EDIT_STATUS, GlobalStatusIndicator, StatusState};
@@ -44,6 +45,10 @@ pub struct QwenImageEditPaths {
     pub transformer_files: Vec<std::path::PathBuf>,
     pub vae_files: Vec<std::path::PathBuf>,
     pub scheduler_json: std::path::PathBuf,
+    // Optional GGUF alternatives
+    pub transformer_gguf: Option<std::path::PathBuf>,
+    pub text_encoder_gguf: Option<std::path::PathBuf>,
+    pub mmproj_gguf: Option<std::path::PathBuf>,
     // Optional configs
     pub processor_preprocessor_config: Option<std::path::PathBuf>,
     pub processor_tokenizer_config: Option<std::path::PathBuf>,
@@ -180,7 +185,16 @@ impl QwenImageEditPipeline {
             }
         }
     }
-    pub fn load_from_hf(repo_id: &str, prefer_dtype: DType) -> Result<Self> {
+    fn load_from_hf_inner(
+        repo_id: &str,
+        prefer_dtype: DType,
+        gguf_overrides: (Option<PathBuf>, Option<PathBuf>, Option<PathBuf>),
+    ) -> Result<Self> {
+        let (transformer_gguf, text_encoder_gguf, mmproj_gguf) = gguf_overrides;
+        log::info!(
+            "[qwen-image-edit] load_from_hf: repo={} prefer_dtype={:?} overrides: transformer_gguf={:?} text_encoder_gguf={:?} mmproj_gguf={:?}",
+            repo_id, prefer_dtype, transformer_gguf.as_ref().map(|p| p.display().to_string()), text_encoder_gguf.as_ref().map(|p| p.display().to_string()), mmproj_gguf.as_ref().map(|p| p.display().to_string())
+        );
         // Discover and download files described in the prompt (model_index.json, safetensors for transformer/vae, tokenizer.json, scheduler config)
         let repo = hf_model(repo_id)?;
         let model_index_json = hf_get_file(&repo, "model_index.json")?;
@@ -308,7 +322,7 @@ impl QwenImageEditPipeline {
             .get("scheduler/scheduler_config.json")
             .or_else(|_| repo.get("scheduler_config.json"))?;
 
-        let device = pick_device_cuda0_or_cpu();
+    let device = pick_device_cuda0_or_cpu();
         let mut dtype = prefer_dtype;
         // Prefer F16 on CUDA; BF16 is unsupported on older GPUs (e.g., Turing/2070S) and can cause missing CUDA symbols.
         if matches!(device, candle_core::Device::Cuda(_)) {
@@ -327,6 +341,8 @@ impl QwenImageEditPipeline {
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
         let scheduler = Some(FlowMatchEulerDiscreteScheduler::from_config(&scheduler_cfg));
+
+        // (GGUF attempt happens after configs are parsed; see below.)
 
         // Parse component configs
         let text_encoder_config_json = if let Some(p) = &text_encoder_config {
@@ -402,7 +418,31 @@ impl QwenImageEditPipeline {
         };
 
         // Build transformer strictly from weights; prefer Flux-style when class matches and keys indicate transformer_blocks.*.
-        let transformer_model = if let Some(tr_json) = &transformer_config_json {
+        // Try GGUF transformer first if requested; fall back to safetensors
+        let mut transformer_model: Option<QwenImageTransformer2DModel> = None;
+        if transformer_model.is_none() {
+            if let Some(p) = &transformer_gguf {
+                if let Some(tr_json) = &transformer_config_json {
+                    if let Ok(cfg) = serde_json::from_value::<QwenImageTransformerConfig>(tr_json.clone()) {
+                        log::info!(
+                            "[qwen-image-edit] Attempting GGUF transformer: path={} (in_ch={}, out_ch={}, heads={}, head_dim={}, layers={}, joint_dim={}) on {:?}",
+                            p.display(), cfg.in_channels, cfg.out_channels, cfg.num_attention_heads, cfg.attention_head_dim, cfg.num_layers, cfg.joint_attention_dim, device
+                        );
+                        match QwenImageTransformer2DModel::new_from_gguf(&cfg, p.as_path(), &device) {
+                            Ok(m) => {
+                                transformer_model = Some(m);
+                                log::info!("[qwen-image-edit] GGUF transformer loaded successfully from {}", p.display());
+                            }
+                            Err(e) => {
+                                log::warn!("[qwen-image-edit] GGUF transformer load failed: {}. Will try safetensors next.", e);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if transformer_model.is_none() {
+            transformer_model = if let Some(tr_json) = &transformer_config_json {
             match serde_json::from_value::<QwenImageTransformerConfig>(tr_json.clone()) {
                 Ok(cfg) => {
                     // Try safetensors first
@@ -429,38 +469,7 @@ impl QwenImageEditPipeline {
                                     "layers.0.attn.o_proj.weight",
                                 ],
                             );
-                            return Ok(Self {
-                                device,
-                                dtype,
-                                paths: QwenImageEditPaths {
-                                    repo_id: repo_id.to_string(),
-                                    model_index_json,
-                                    tokenizer_json,
-                                    text_encoder_files,
-                                    transformer_files,
-                                    vae_files,
-                                    scheduler_json,
-                                    processor_preprocessor_config,
-                                    processor_tokenizer_config,
-                                    processor_tokenizer_json,
-                                    tokenizer_config,
-                                    text_encoder_config,
-                                    transformer_config,
-                                    vae_config,
-                                },
-                                model_index,
-                                scheduler,
-                                tokenizer,
-                                text_encoder_config_json,
-                                transformer_config_json,
-                                vae_config_json,
-                                text_encoder_class,
-                                transformer_class,
-                                has_text_encoder,
-                                vae,
-                                transformer_model: None,
-                                transformer_flux: None,
-                            });
+                            anyhow::bail!("Failed to map transformer safetensors; see logs for missing keys and consider using GGUF");
                         }
                     };
                     // Try common root prefixes used by HF repos for the previous QwenImageTransformer2DModel implementation
@@ -475,6 +484,7 @@ impl QwenImageEditPipeline {
                     ];
                     let mut built = None;
                     for r in roots.iter() {
+                        log::info!("[qwen-image-edit] Trying transformer safetensors with prefix '{}'", r);
                         let vb_try = if r.is_empty() {
                             vb_root.clone()
                         } else {
@@ -483,6 +493,7 @@ impl QwenImageEditPipeline {
                         match QwenImageTransformer2DModel::new(&cfg, vb_try) {
                             Ok(m) => {
                                 built = Some(m);
+                                log::info!("[qwen-image-edit] Transformer built from safetensors using prefix '{}'", r);
                                 break;
                             }
                             Err(e) => {
@@ -523,6 +534,7 @@ impl QwenImageEditPipeline {
         } else {
             None
         };
+        }
 
         // Flux-style transformer path using transformer_blocks.* keys when class is QwenImageTransformer2DModel
         let transformer_flux = if let Some(tr_json) = &transformer_config_json {
@@ -567,6 +579,11 @@ impl QwenImageEditPipeline {
             None
         };
 
+        // If no transformer was constructed (neither GGUF nor safetensors/Flux), surface an error early.
+        if transformer_model.is_none() && transformer_flux.is_none() {
+            anyhow::bail!("No compatible transformer found (GGUF or safetensors). Check logs above for key name mismatches.");
+        }
+
         Ok(Self {
             device,
             dtype,
@@ -578,6 +595,9 @@ impl QwenImageEditPipeline {
                 transformer_files,
                 vae_files,
                 scheduler_json,
+                transformer_gguf,
+                text_encoder_gguf,
+                mmproj_gguf,
                 processor_preprocessor_config,
                 processor_tokenizer_config,
                 processor_tokenizer_json,
@@ -601,6 +621,24 @@ impl QwenImageEditPipeline {
         })
     }
 
+    pub fn load_from_hf(repo_id: &str, prefer_dtype: DType) -> Result<Self> {
+        Self::load_from_hf_inner(repo_id, prefer_dtype, (None, None, None))
+    }
+
+    pub fn load_from_hf_with_overrides(
+        repo_id: &str,
+        prefer_dtype: DType,
+        transformer_gguf: Option<PathBuf>,
+        text_encoder_gguf: Option<PathBuf>,
+        mmproj_gguf: Option<PathBuf>,
+    ) -> Result<Self> {
+        Self::load_from_hf_inner(
+            repo_id,
+            prefer_dtype,
+            (transformer_gguf, text_encoder_gguf, mmproj_gguf),
+        )
+    }
+
     pub fn info(&self) {
         log::info!(
             "[qwen-image-edit] repo={} dtype={:?} device={:?}",
@@ -622,6 +660,10 @@ impl QwenImageEditPipeline {
                 log::info!("  {}: {}", label, p.display());
             }
         };
+        // GGUF optional components
+        opt("gguf.transformer", &self.paths.transformer_gguf);
+        opt("gguf.text_encoder", &self.paths.text_encoder_gguf);
+        opt("gguf.mmproj", &self.paths.mmproj_gguf);
         opt(
             "processor.preprocessor_config",
             &self.paths.processor_preprocessor_config,
@@ -813,9 +855,11 @@ impl QwenImageEditPipeline {
             }
         };
         // Text encoder is external; we'll build minimal embeddings from weights if available.
-        // Prefer Flux transformer when available
+        // Selection: if a GGUF transformer was chosen (paths.transformer_gguf is Some), prefer the Qwen transformer
+        // over Flux even if a Flux-style mapping is possible from safetensors. Otherwise prefer Flux when available.
         let tr_flux_opt = self.transformer_flux.as_ref();
         let tr_qwen_opt = self.transformer_model.as_ref();
+        let prefer_qwen = self.paths.transformer_gguf.is_some();
         if tr_flux_opt.is_none() && tr_qwen_opt.is_none() {
             bail!("Transformer not loaded");
         }
@@ -855,6 +899,11 @@ impl QwenImageEditPipeline {
         if x.dtype() != self.dtype {
             x = x.to_dtype(self.dtype)?;
         }
+
+        // Overall progress covers: encode (1), denoise (N steps), decode (1), save (1)
+        let total_overall: u64 = (opts.num_inference_steps.max(1) as u64) + 3;
+        QWEN_EDIT_STATUS.set_state(StatusState::Running, "Encoding");
+        QWEN_EDIT_STATUS.set_progress(0, total_overall);
 
         // Encode with auto pad, with runtime CPU fallback if CUDA named symbol is missing
         let mut vae_cpu_fallback: Option<Box<dyn crate::ai::vae::VaeLike>> = None;
@@ -905,6 +954,9 @@ impl QwenImageEditPipeline {
         if z.device().is_cuda() != self.device.is_cuda() {
             z = z.to_device(&self.device)?;
         }
+
+        // Mark encode done in overall progress
+        QWEN_EDIT_STATUS.set_progress(1, total_overall);
 
         // Build embeddings for cond and uncond
         let (text_cond, text_uncond) = if self.tokenizer.is_some() && self.has_text_encoder {
@@ -1067,9 +1119,8 @@ impl QwenImageEditPipeline {
 
         // CFG mix (structure ready). If guidance_scale=1.0, falls back to conditional only.
         let guidance = opts.guidance_scale;
-        // Initialize UI progress for the denoise loop
+        // Initialize UI for the denoise loop using overall progress
         QWEN_EDIT_STATUS.set_state(StatusState::Running, "Denoising");
-        QWEN_EDIT_STATUS.set_progress(0, steps as u64);
         QWEN_EDIT_STATUS.set_detail(format!("Step {}/{}", 0, steps));
         // Reuse guidance scalar tensor across steps to reduce allocations
         let g_scale = if guidance > 1.0 {
@@ -1077,21 +1128,37 @@ impl QwenImageEditPipeline {
             if g.dtype() != z.dtype() { g = g.to_dtype(z.dtype())?; }
             Some(g)
         } else { None };
+        // If using Qwen/GGUF transformer, log a similar start line for visibility
+        if prefer_qwen && tr_qwen_opt.is_some() {
+            let (b, c, zh, zw) = z.dims4()?;
+            let model = tr_qwen_opt.unwrap();
+            let n_tokens = zh * zw; // tokens == spatial locations
+            log::info!(
+                "[qwen-image-edit] Starting denoise (Qwen): latent=({b},{c},{zh},{zw}), tokens={n_tokens}, heads={}, head_dim={}",
+                model.config.num_attention_heads,
+                model.config.attention_head_dim
+            );
+        }
+
         for i in 0..steps {
             let _sigma_from = sigmas[i];
             let _sigma_to = sigmas[i + 1];
-            // Update progress at the start of the iteration
-            QWEN_EDIT_STATUS.set_progress((i as u64) + 1, steps as u64);
+            // Update overall progress at the start of the iteration
+            QWEN_EDIT_STATUS.set_progress(1 + (i as u64) + 1, total_overall);
             QWEN_EDIT_STATUS.set_detail(format!("Step {}/{}", i + 1, steps));
             if guidance > 1.0 {
                 // Scope temporaries to ensure prompt freeing of GPU buffers each iteration
                 let z_new = {
-                    let zu = if let Some(tf) = tr_flux_opt {
+                    let zu = if prefer_qwen && tr_qwen_opt.is_some() {
+                        tr_qwen_opt.unwrap().forward(&z, &text_uncond)?
+                    } else if let Some(tf) = tr_flux_opt {
                         tf.forward(&z, &text_uncond)?
                     } else {
                         tr_qwen_opt.unwrap().forward(&z, &text_uncond)?
                     };
-                    let zc = if let Some(tf) = tr_flux_opt {
+                    let zc = if prefer_qwen && tr_qwen_opt.is_some() {
+                        tr_qwen_opt.unwrap().forward(&z, &text_cond)?
+                    } else if let Some(tf) = tr_flux_opt {
                         tf.forward(&z, &text_cond)?
                     } else {
                         tr_qwen_opt.unwrap().forward(&z, &text_cond)?
@@ -1102,7 +1169,9 @@ impl QwenImageEditPipeline {
                 };
                 z = z_new;
             } else {
-                z = if let Some(tf) = tr_flux_opt {
+                z = if prefer_qwen && tr_qwen_opt.is_some() {
+                    tr_qwen_opt.unwrap().forward(&z, &text_cond)?
+                } else if let Some(tf) = tr_flux_opt {
                     tf.forward(&z, &text_cond)?
                 } else {
                     tr_qwen_opt.unwrap().forward(&z, &text_cond)?
@@ -1112,6 +1181,29 @@ impl QwenImageEditPipeline {
 
         // Decode back to original size
         QWEN_EDIT_STATUS.set_detail("Decoding");
+        QWEN_EDIT_STATUS.set_progress(1 + (steps as u64), total_overall);
+        // Watchdog to surface long-running decode: update detail with elapsed time every second
+        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+        use std::time::{Duration, Instant};
+        let decoding_flag = Arc::new(AtomicBool::new(true));
+        let decoding_flag_w = decoding_flag.clone();
+        let z_info = format!(
+            "z: dtype={:?} device={:?} shape={:?}; vae on {:?}",
+            z.dtype(), z.device(), z.dims(), self.device
+        );
+        log::info!("[qwen-image-edit] Starting VAE decode_to_original: {} -> target=({}, {})", z_info, oh, ow);
+        std::thread::spawn(move || {
+            let start = Instant::now();
+            let mut secs = 0u64;
+            while decoding_flag_w.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_secs(1));
+                secs += 1;
+                // Avoid spamming logs; update UI detail only
+                QWEN_EDIT_STATUS.set_detail(format!("Decoding… {}s", secs));
+            }
+            let total = start.elapsed().as_secs();
+            if total > 0 { log::info!("[qwen-image-edit] VAE decode finished (watchdog): {}s", total); }
+        });
         // Decode with CPU fallback if we used a CPU VAE for encode, or CUDA decode fails similarly
         let mut x_out = if let Some(ref vcpu) = vae_cpu_fallback {
             let mut z_cpu = z.to_device(&candle_core::Device::Cpu)?;
@@ -1158,10 +1250,14 @@ impl QwenImageEditPipeline {
                 }
             }
         };
+        // Stop watchdog thread
+        decoding_flag.store(false, Ordering::Relaxed);
         if x_out.dtype() != self.dtype {
             x_out = x_out.to_dtype(self.dtype)?;
         }
         // To PNG efficiently: move to CPU, HWC layout, flatten, and encode
+        QWEN_EDIT_STATUS.set_detail("Saving");
+        QWEN_EDIT_STATUS.set_progress(1 + (steps as u64) + 1, total_overall);
         let x32 = x_out.to_dtype(candle_core::DType::F32)?;
         let x32 = x32.clamp(0f32, 1f32)?;
         let scale = candle_core::Tensor::new(255.0f32, &self.device)?;
@@ -1180,9 +1276,11 @@ impl QwenImageEditPipeline {
             let mut out_bytes = Vec::new();
             let mut cur = std::io::Cursor::new(&mut out_bytes);
             image::DynamicImage::ImageRgb8(img).write_to(&mut cur, image::ImageFormat::Png)?;
-            // Reset status to idle when finished
+            // Mark complete then reset to idle
+            QWEN_EDIT_STATUS.set_progress(total_overall, total_overall);
+            QWEN_EDIT_STATUS.set_state(StatusState::Idle, "Done");
+            // Optionally clear progress bar after completion
             QWEN_EDIT_STATUS.set_progress(0, 0);
-            QWEN_EDIT_STATUS.set_state(StatusState::Idle, "Idle");
             Ok(out_bytes)
         } else {
             anyhow::bail!("Failed to construct image buffer: invalid dimensions")
