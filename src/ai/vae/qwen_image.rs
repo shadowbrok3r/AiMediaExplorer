@@ -189,62 +189,86 @@ impl QwenImageVaeSimplified {
             },
             vb.pp("encoder.conv_in"),
         )?;
+        // Build encoder downs integrating adapters to reach each resample's input channels.
         let mut enc_downs = Vec::new();
+        let mut enc_extra_layers = Vec::new();
         let mut cur_enc_c = enc_in_ch.1;
-        for (i, in_c, out_c) in enc_down_shapes.iter() {
-            let key = format!("encoder.down_blocks.{i}.resample.1");
-            // Only include if it matches the current channel count
-            if *in_c == cur_enc_c {
-                let conv = conv2d(
-                    *in_c,
-                    *out_c,
-                    3,
-                    Conv2dConfig {
-                        stride: 2,
-                        padding: 1,
-                        ..Default::default()
-                    },
-                    vb.pp(&key),
-                )?;
-                enc_downs.push(conv);
-                cur_enc_c = *out_c;
-            }
-        }
-            let mut enc_extra_layers = Vec::new();
-            let target_enc_in = enc_out_ch.0;
-            let mut enc_extra_sorted = enc_extra.to_vec();
-            enc_extra_sorted.sort_by_key(|(k, _, _, _)| k.clone());
-            let mut used = vec![false; enc_extra_sorted.len()];
+        let mut enc_extra_sorted = enc_extra.to_vec();
+        enc_extra_sorted.sort_by_key(|(k, _, _, _)| k.clone());
+        let mut used = vec![false; enc_extra_sorted.len()];
+        // Go through resample layers in ascending block index
+        let mut downs_sorted = enc_down_shapes.to_vec();
+        downs_sorted.sort_by_key(|x| x.0);
+        for (i, in_c, out_c) in downs_sorted.iter() {
+            // Bridge current channels up to required in_c using available adapters.
+            let target = *in_c;
             let mut guard = 0usize;
-            while cur_enc_c != target_enc_in && guard < enc_extra_sorted.len() {
-                // Collect candidates matching current in_c and not used
+            while cur_enc_c != target && guard < enc_extra_sorted.len() {
+                // Choose an adapter mapping cur_enc_c -> next channels, prefer increasing to <= target
                 let mut candidates: Vec<(usize, &String, usize, usize, usize)> = enc_extra_sorted
                     .iter()
                     .enumerate()
-                    .filter(|(idx, (_key, in_c, _out_c, _k))| !used[*idx] && *in_c == cur_enc_c)
-                    .map(|(idx, (key, in_c, out_c, k))| (idx, key, *in_c, *out_c, *k))
+                    .filter(|(idx, (_k, ain, _aout, _ks))| !used[*idx] && *ain == cur_enc_c)
+                    .map(|(idx, (k, ain, aout, ks))| (idx, k, *ain, *aout, *ks))
                     .collect();
                 if candidates.is_empty() { break; }
-                // Prefer adapters that increase channels (out_c > in_c), choose the one with largest out_c not exceeding target when possible
-                candidates.sort_by_key(|&(_idx, _k, _in_c, out_c, _ksize)| out_c);
-                let picked: Option<(usize, &String, usize, usize, usize)> =
-                    if let Some(best) = candidates.iter().rev().find(|&&(_i, _k, in_c, out_c, _ks)| out_c > in_c && out_c <= target_enc_in) {
-                        Some(*best)
-                    } else {
-                        Some(candidates[0])
-                    };
-                if let Some((pidx, key, in_c, out_c, ksize)) = picked {
-                    let pad = if ksize == 1 { 0 } else { 1 };
+                candidates.sort_by_key(|&(_idx, _k, _ain, aout, _ks)| aout);
+                let pick = candidates
+                    .iter()
+                    .rev()
+                    .find(|&&(_i2, _k2, ain2, aout2, _ks2)| aout2 > ain2 && aout2 <= target)
+                    .copied()
+                    .or_else(|| candidates.first().copied());
+                if let Some((pidx, key, ain, aout, ksz)) = pick {
+                    let pad = if ksz == 1 { 0 } else { 1 };
                     let prefix = if key.ends_with(".weight") { &key[..key.len()-7] } else { key.as_str() };
-                    let conv = conv2d(in_c, out_c, ksize, Conv2dConfig { stride: 1, padding: pad, ..Default::default() }, vb.pp(prefix))?;
+                    let conv = conv2d(ain, aout, ksz, Conv2dConfig { stride: 1, padding: pad, ..Default::default() }, vb.pp(prefix))?;
                     enc_extra_layers.push(conv);
-                    cur_enc_c = out_c;
+                    cur_enc_c = aout;
                     used[pidx] = true;
-                    guard += 1;
-                } else {
-                    break;
-                }
+                } else { break; }
+                guard += 1;
             }
+            if cur_enc_c != *in_c { continue; } // still can't match, skip this resample
+            let key = format!("encoder.down_blocks.{i}.resample.1");
+            let conv = conv2d(
+                *in_c,
+                *out_c,
+                3,
+                Conv2dConfig { stride: 2, padding: 1, ..Default::default() },
+                vb.pp(&key),
+            )?;
+            enc_downs.push(conv);
+            cur_enc_c = *out_c;
+        }
+        // Finally, adapt to encoder.conv_out input channels if needed
+        let target_enc_in = enc_out_ch.0;
+        let mut guard = 0usize;
+        while cur_enc_c != target_enc_in && guard < enc_extra_sorted.len() {
+            let mut candidates: Vec<(usize, &String, usize, usize, usize)> = enc_extra_sorted
+                .iter()
+                .enumerate()
+                .filter(|(idx, (_k, ain, _aout, _ks))| !used[*idx] && *ain == cur_enc_c)
+                .map(|(idx, (k, ain, aout, ks))| (idx, k, *ain, *aout, *ks))
+                .collect();
+            if candidates.is_empty() { break; }
+            candidates.sort_by_key(|&(_idx, _k, _ain, aout, _ks)| aout);
+            let pick = candidates
+                .iter()
+                .rev()
+                .find(|&&(_i2, _k2, ain2, aout2, _ks2)| aout2 > ain2 && aout2 <= target_enc_in)
+                .copied()
+                .or_else(|| candidates.first().copied());
+            if let Some((pidx, key, ain, aout, ksz)) = pick {
+                let pad = if ksz == 1 { 0 } else { 1 };
+                let prefix = if key.ends_with(".weight") { &key[..key.len()-7] } else { key.as_str() };
+                let conv = conv2d(ain, aout, ksz, Conv2dConfig { stride: 1, padding: pad, ..Default::default() }, vb.pp(prefix))?;
+                enc_extra_layers.push(conv);
+                cur_enc_c = aout;
+                used[pidx] = true;
+            } else { break; }
+            guard += 1;
+        }
 
         let enc_out = conv2d(
             enc_out_ch.0,
