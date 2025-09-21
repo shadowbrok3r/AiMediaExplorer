@@ -736,58 +736,97 @@ impl QwenImageEditPipeline {
                                 log::info!("[qwen-image-edit] GGUF transformer loaded successfully from {}", p.display());
                             }
                             Err(e) => {
-                                // Try alternative GGUF quant files in the same directory (prefer Q8_0, then Q5_K_M)
+                                // Try alternative GGUF quant files in the same directory.
+                                // Preference order (avoid K-quant first due to Candle 0.9 parser limits):
+                                //   Q5_0 -> Q4_0 -> Q8_0 -> Q5_K_M -> Q6_K
+                                // Also: never retry the same file we already attempted.
                                 let mut tried_alt = false;
                                 if let Some(dir) = p.parent() {
                                     if let Ok(read) = std::fs::read_dir(dir) {
-                                        let mut q8: Option<std::path::PathBuf> = None;
-                                        let mut q5km: Option<std::path::PathBuf> = None;
+                                        let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+                                        let mut q5_0: Option<std::path::PathBuf> = None;
+                                        let mut q4_0: Option<std::path::PathBuf> = None;
+                                        let mut q8_0: Option<std::path::PathBuf> = None;
+                                        let mut q5_km: Option<std::path::PathBuf> = None;
+                                        let mut q6_k: Option<std::path::PathBuf> = None;
                                         for ent in read.flatten() {
                                             let path = ent.path();
                                             if !path.is_file() { continue; }
                                             if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
                                                 if !ext.eq_ignore_ascii_case("gguf") { continue; }
                                             } else { continue; }
+                                            if path == *p { continue; }
                                             let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("").to_ascii_uppercase();
-                                            if name.contains("Q8_0") { q8 = Some(path.clone()); }
-                                            if name.contains("Q5_K_M") { q5km = Some(path.clone()); }
+                                            if name.contains("Q5_0") { q5_0 = Some(path.clone()); }
+                                            if name.contains("Q4_0") { q4_0 = Some(path.clone()); }
+                                            if name.contains("Q8_0") { q8_0 = Some(path.clone()); }
+                                            if name.contains("Q5_K_M") { q5_km = Some(path.clone()); }
+                                            if name.contains("Q6_K") { q6_k = Some(path.clone()); }
                                         }
-                                        let alt = q8.or(q5km);
-                                        if let Some(altp) = alt {
-                                            log::warn!("[qwen-image-edit] GGUF VarBuilder failed for {}. Trying sibling quant: {}", p.display(), altp.display());
-                                            if let Ok(m2) = QwenImageTransformer2DModel::new_from_gguf(&cfg, altp.as_path(), &device) {
-                                                transformer_model = Some(m2);
-                                                log::info!("[qwen-image-edit] GGUF transformer loaded successfully from sibling quant {}", altp.display());
-                                                tried_alt = true;
+                                        // Push in preference order
+                                        for opt in [q5_0, q4_0, q8_0, q5_km, q6_k] {
+                                            if let Some(pth) = opt { candidates.push(pth); }
+                                        }
+                                        for altp in candidates {
+                                            log::warn!(
+                                                "[qwen-image-edit] GGUF build failed for {}. Trying sibling quant: {}",
+                                                p.display(),
+                                                altp.display()
+                                            );
+                                            match QwenImageTransformer2DModel::new_from_gguf(&cfg, altp.as_path(), &device) {
+                                                Ok(m2) => {
+                                                    transformer_model = Some(m2);
+                                                    log::info!("[qwen-image-edit] GGUF transformer loaded successfully from sibling quant {}", altp.display());
+                                                    tried_alt = true;
+                                                    break;
+                                                }
+                                                Err(err_alt) => {
+                                                    log::warn!("[qwen-image-edit] Sibling quant {} also failed: {}", altp.display(), err_alt);
+                                                    continue;
+                                                }
                                             }
                                         }
                                     }
                                 }
                                 if !tried_alt {
-                                // Try fetching an alternative quant from the GGUF repo (Q8_0 preferred, then Q5_K_M)
-                                let mut fetched_alt: Option<std::path::PathBuf> = None;
-                                if let Ok(gg_repo) = hf_model("QuantStack/Qwen-Image-Edit-GGUF") {
-                                    for fname in [
-                                        "Qwen_Image_Edit-Q8_0.gguf",
-                                        "Qwen_Image_Edit-Q5_K_M.gguf",
-                                    ] {
-                                        if let Ok(pp) = gg_repo.get(fname) {
-                                            fetched_alt = Some(pp);
-                                            log::warn!(
-                                                "[qwen-image-edit] Downloaded alternative GGUF quant {} from QuantStack/Qwen-Image-Edit-GGUF",
-                                                fname
-                                            );
-                                            break;
+                                    // Try fetching alternative quants from the GGUF repo.
+                                    // Preference: Q5_0 -> Q4_0 -> Q8_0 -> Q5_K_M -> Q6_K
+                                    let mut fetched_alt: Option<std::path::PathBuf> = None;
+                                    if let Ok(gg_repo) = hf_model("QuantStack/Qwen-Image-Edit-GGUF") {
+                                        let preferred = [
+                                            "Qwen_Image_Edit-Q5_0.gguf",
+                                            "Qwen_Image_Edit-Q4_0.gguf",
+                                            "Qwen_Image_Edit-Q8_0.gguf",
+                                            "Qwen_Image_Edit-Q5_K_M.gguf",
+                                            "Qwen_Image_Edit-Q6_K.gguf",
+                                        ];
+                                        for fname in preferred {
+                                            // Avoid fetching the same variant as the one that already failed
+                                            if let Some(orig) = p.file_name().and_then(|s| s.to_str()) {
+                                                if orig.eq_ignore_ascii_case(fname) { continue; }
+                                            }
+                                            if let Ok(pp) = gg_repo.get(fname) {
+                                                fetched_alt = Some(pp);
+                                                log::warn!(
+                                                    "[qwen-image-edit] Downloaded alternative GGUF quant {} from QuantStack/Qwen-Image-Edit-GGUF",
+                                                    fname
+                                                );
+                                                break;
+                                            }
                                         }
                                     }
-                                }
-                                if let Some(altp) = fetched_alt {
-                                    if let Ok(m3) = QwenImageTransformer2DModel::new_from_gguf(&cfg, altp.as_path(), &device) {
-                                        transformer_model = Some(m3);
-                                        log::info!("[qwen-image-edit] GGUF transformer loaded successfully from fetched alternative {}", altp.display());
-                                        tried_alt = true;
+                                    if let Some(altp) = fetched_alt {
+                                        match QwenImageTransformer2DModel::new_from_gguf(&cfg, altp.as_path(), &device) {
+                                            Ok(m3) => {
+                                                transformer_model = Some(m3);
+                                                log::info!("[qwen-image-edit] GGUF transformer loaded successfully from fetched alternative {}", altp.display());
+                                                tried_alt = true;
+                                            }
+                                            Err(err_alt) => {
+                                                log::warn!("[qwen-image-edit] Fetched alternative {} also failed: {}", altp.display(), err_alt);
+                                            }
+                                        }
                                     }
-                                }
                                 }
                                 if !tried_alt {
                                 // Enrich the error for unknown dtype cases (common with K-quant, e.g., Q6_K)
@@ -831,7 +870,7 @@ impl QwenImageEditPipeline {
                                 ));
                                 // Suggestions
                                 extra.push_str(
-                                    "\n  • Suggestions: try a supported GGUF quant (e.g., Q8_0 or Q5_K_M), or update Candle crates. Falling back to safetensors next."
+                                    "\n  • Suggestions: try a non-K GGUF quant (Q5_0 or Q4_0 preferred) or update Candle crates.\n    Note: Candle 0.9 fails parsing GGUF if the file contains any unknown quant dtypes anywhere, even if unused by us.\n    Falling back to safetensors next."
                                 );
                                 log::error!(
                                     "[qwen-image-edit] GGUF transformer load failed for {}:\n  {}{}",

@@ -26,7 +26,7 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let prefer = if candle_core::Device::new_cuda(0).is_ok() { candle_core::DType::F16 } else { candle_core::DType::F32 };
+    let prefer = if candle_core::Device::new_cuda(0).is_ok() {  candle_core::DType::F32 } else { candle_core::DType::F32 };
     let pipe = if let Some(gguf) = transformer_gguf.clone() {
         log::info!("[qwen-image-edit-e2e] Using GGUF transformer: {}", gguf.display());
         smart_media::ai::qwen_image_edit::model::QwenImageEditPipeline::load_from_hf_with_overrides(

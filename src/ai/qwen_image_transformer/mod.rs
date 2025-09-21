@@ -342,6 +342,7 @@ impl QwenImageTransformer2DModel {
             let info = content.tensor_infos.get(name).ok_or_else(|| {
                 candle_core::Error::Msg(format!("gguf missing tensor: {}", name))
             })?;
+            log::info!("Info: {info:?}");
             // Read and dequantize
             let qt = content
                 .tensor(&mut f, name, device)
