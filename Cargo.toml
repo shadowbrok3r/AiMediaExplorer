@@ -48,7 +48,7 @@ flate2 = { version = "1", features = ["zlib"] }
 bzip2 = "0.6"
 xz2 = "0.1"
 fastembed = { version = "5.2"}
-sevenz-rust2 = { version = "0.19.0" }
+sevenz-rust2 = { version = "0.19" }
 widestring = "1"
 rawkit = "0.1"
 tempfile = "3"

@@ -268,8 +268,18 @@ impl QwenImageTransformer2DModel {
         device: &Device,
     ) -> Result<Self> {
         use candle_transformers::quantized_var_builder::VarBuilder as QVarBuilder;
-        let qvb = QVarBuilder::from_gguf(gguf_path, device)?;
-        log::info!("[qwen-image-edit] GGUF opened: {}", gguf_path.display());
+        // First attempt: use quantized VarBuilder (fast path)
+        let qvb = match QVarBuilder::from_gguf(gguf_path, device) {
+            Ok(vb) => {
+                log::info!("[qwen-image-edit] GGUF opened via VarBuilder: {}", gguf_path.display());
+                vb
+            }
+            Err(e) => {
+                log::warn!("[qwen-image-edit] GGUF VarBuilder failed: {}. Trying direct GGUF reader fallback.", e);
+                // Fallback: try a direct GGUF read and manual dequantization for required tensors (tolerates K-quant)
+                return Self::new_from_gguf_direct(config, gguf_path, device);
+            }
+        };
         // Try common prefixes for the transformer scope inside GGUF
         let prefixes = ["", "transformer", "model", "diffusion_model", "net", "module", "transformer_model"];
         let model_dim = config.num_attention_heads * config.attention_head_dim;
@@ -312,6 +322,88 @@ impl QwenImageTransformer2DModel {
             });
         }
         if let Some(e) = last_err { Err(candle_core::Error::Msg(format!("{}", e))) } else { Err(candle_core::Error::Msg("Failed to build Qwen transformer from GGUF: no matching prefixes".to_string())) }
+    }
+
+    // Direct GGUF reader fallback tolerant to K-quant: read only the tensors we need and dequantize them.
+    fn new_from_gguf_direct(
+        config: &QwenImageTransformerConfig,
+        gguf_path: &std::path::Path,
+        device: &Device,
+    ) -> Result<Self> {
+    use candle_core::quantized::gguf_file;
+        log::info!("[qwen-image-edit] GGUF direct reader: {}", gguf_path.display());
+        let mut f = std::fs::File::open(gguf_path)
+            .map_err(|e| candle_core::Error::Msg(format!("open gguf failed: {}", e)))?;
+        let content = gguf_file::Content::read(&mut f)
+            .map_err(|e| candle_core::Error::Msg(format!("read gguf failed: {}", e)))?;
+        // Helper to fetch and dequantize a weight tensor by key, reshaping as needed.
+        let mut load_q = |name: &str, shape: &[usize]| -> Result<Tensor> {
+            // Locate tensor info
+            let info = content.tensor_infos.get(name).ok_or_else(|| {
+                candle_core::Error::Msg(format!("gguf missing tensor: {}", name))
+            })?;
+            // Read and dequantize
+            let qt = content
+                .tensor(&mut f, name, device)
+                .map_err(|e| candle_core::Error::Msg(format!("read tensor {} failed: {}", name, e)))?;
+            let t = qt.dequantize(device)?;
+            let t = if !shape.is_empty() { t.reshape(shape)? } else { t };
+            Ok(t)
+        };
+
+        // Try common prefixes and assemble the minimal set of tensors we need.
+        let prefixes = [
+            "",
+            "transformer",
+            "model",
+            "diffusion_model",
+            "net",
+            "module",
+            "transformer_model",
+        ];
+        let model_dim = config.num_attention_heads * config.attention_head_dim;
+        for pfx in prefixes.iter() {
+            let k = |base: &str| if pfx.is_empty() { base.to_string() } else { format!("{}.{}", pfx, base) };
+            // proj_in: [model_dim, in_ch, 1,1] in file, reshape to [out,in]
+            let w_in = load_q(&k("proj_in.weight"), &[model_dim, config.in_channels, 1, 1]);
+            let w_out = load_q(&k("proj_out.weight"), &[config.out_channels, model_dim, 1, 1]);
+            if w_in.is_err() || w_out.is_err() { continue; }
+            let w_in = w_in?; let w_out = w_out?;
+            let proj_in_simple = SimpleConv1x1 { w: w_in.reshape((model_dim, config.in_channels))? };
+            let proj_out_simple = SimpleConv1x1 { w: w_out.reshape((config.out_channels, model_dim))? };
+
+            // Blocks
+            let mut sblocks: Vec<SimpleBlock> = Vec::with_capacity(config.num_layers);
+            for i in 0..config.num_layers {
+                let ln1_w = load_q(&k(&format!("layers.{i}.ln1.weight")), &[model_dim])?;
+                let ln1_b = load_q(&k(&format!("layers.{i}.ln1.bias")), &[model_dim])?;
+                let ln1 = SimpleLayerNorm { weight: ln1_w, bias: ln1_b, eps: 1e-6 };
+                let q_proj = SimpleLinear { w: load_q(&k(&format!("layers.{i}.attn.q_proj.weight")), &[model_dim, model_dim])? };
+                let k_proj = SimpleLinear { w: load_q(&k(&format!("layers.{i}.attn.k_proj.weight")), &[model_dim, config.joint_attention_dim])? };
+                let v_proj = SimpleLinear { w: load_q(&k(&format!("layers.{i}.attn.v_proj.weight")), &[model_dim, config.joint_attention_dim])? };
+                let o_proj = SimpleLinear { w: load_q(&k(&format!("layers.{i}.attn.o_proj.weight")), &[model_dim, model_dim])? };
+                let ln2_w = load_q(&k(&format!("layers.{i}.ln2.weight")), &[model_dim])?;
+                let ln2_b = load_q(&k(&format!("layers.{i}.ln2.bias")), &[model_dim])?;
+                let ln2 = SimpleLayerNorm { weight: ln2_w, bias: ln2_b, eps: 1e-6 };
+                let mlp_dim = (model_dim as f64 * 4.0) as usize;
+                let fc1 = SimpleLinear { w: load_q(&k(&format!("layers.{i}.mlp.fc1.weight")), &[mlp_dim, model_dim])? };
+                let fc2 = SimpleLinear { w: load_q(&k(&format!("layers.{i}.mlp.fc2.weight")), &[model_dim, mlp_dim])? };
+                sblocks.push(SimpleBlock { ln1, q_proj, k_proj, v_proj, o_proj, ln2, fc1, fc2 });
+            }
+
+            log::info!("[qwen-image-edit] GGUF direct reader built transformer using prefix '{}'", pfx);
+            return Ok(Self {
+                config: config.clone(),
+                device: device.clone(),
+                proj_in: None,
+                proj_out: None,
+                proj_in_simple: Some(proj_in_simple),
+                proj_out_simple: Some(proj_out_simple),
+                blocks: Vec::new(),
+                blocks_simple: Some(sblocks),
+            });
+        }
+        Err(candle_core::Error::Msg("Direct GGUF build failed across known prefixes".to_string()))
     }
 
     // Forward over latent tensor with text embeddings conditioning

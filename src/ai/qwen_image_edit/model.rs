@@ -3,13 +3,13 @@ use candle_core::IndexOp;
 use candle_core::Module;
 use candle_core::{DType, Device};
 use candle_nn::{Embedding, VarBuilder};
-
+// use image::{GenericImageView, ImageBuffer, Rgb, imageops::FilterType};
 use super::config::{ComponentSpec, ModelIndex, SchedulerConfig};
 use super::scheduler::FlowMatchEulerDiscreteScheduler;
 use crate::ai::hf::{hf_get_file, hf_model, pick_device_cuda0_or_cpu, with_mmap_varbuilder_multi};
-// use image::{GenericImageView, ImageBuffer, Rgb, imageops::FilterType};
 use crate::ai::flux_transformer::{FluxTransformer2DModel, FluxTransformerConfig};
 use crate::ai::qwen_image_transformer::{QwenImageTransformer2DModel, QwenImageTransformerConfig};
+use regex::Regex;
 use crate::ai::vae::{
     VaeConfig as AEKLConfig, VaeLike, build_vae_from_files,
     build_vae_from_files_with_5d_squeeze, build_qwen_vae_from_files_strict,
@@ -19,7 +19,6 @@ use std::path::{Path, PathBuf};
 use std::collections::HashSet;
 use tokenizers::Tokenizer;
 use crate::ui::status::{QWEN_EDIT_STATUS, GlobalStatusIndicator, StatusState};
-
 #[derive(Debug, Clone)]
 pub enum TransformerClass {
     UNet2DConditionModel,
@@ -629,13 +628,9 @@ impl QwenImageEditPipeline {
             for root in &candidate_roots {
                 let vae_dir = root.join("vae");
                 if vae_dir.exists() {
-                    let candidates = [
-                        vae_dir.join("model.safetensors"),
-                        vae_dir.join("diffusion_pytorch_model.safetensors"),
-                    ];
-                    for f in candidates.iter() {
-                        if f.exists() { picked_vae = Some(f.clone()); break; }
-                    }
+                    // Only accept the exact filename supplied by the GGUF repo
+                    let f = vae_dir.join("Qwen_Image-VAE.safetensors");
+                    if f.exists() { picked_vae = Some(f); }
                     let cfg_path = vae_dir.join("config.json");
                     if cfg_path.exists() { picked_vae_cfg = Some(cfg_path); }
                     if picked_vae.is_some() { break; }
@@ -653,28 +648,56 @@ impl QwenImageEditPipeline {
                 }
             }
 
-            // Prefer mmproj discovered next to GGUF (either .gguf or .safetensors)
+            // Prefer mmproj discovered next to GGUF (exact file name)
             if mmproj_gguf.is_none() {
                 let mut found_mmproj: Option<PathBuf> = None;
                 for root in &candidate_roots {
                     let mm_dir = root.join("mmproj");
                     if mm_dir.exists() {
-                        if let Ok(rd) = std::fs::read_dir(&mm_dir) {
-                            for e in rd.flatten() {
-                                let p = e.path();
-                                let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
-                                if ext.eq_ignore_ascii_case("gguf") || ext.eq_ignore_ascii_case("safetensors") {
-                                    found_mmproj = Some(p);
-                                    break;
-                                }
-                            }
-                        }
+                        let p = mm_dir.join("Qwen2.5-VL-7B-Instruct-mmproj-BF16.gguf");
+                        if p.exists() { found_mmproj = Some(p); }
                     }
                     if found_mmproj.is_some() { break; }
                 }
                 if let Some(mp) = found_mmproj {
                     log::info!("[qwen-image-edit] Found mmproj near GGUF: {}", mp.display());
                     mmproj_gguf = Some(mp);
+                }
+            }
+
+            // HF fallback: if VAE or its config or mmproj were not found locally next to GGUF, try fetching from the GGUF repo
+            let need_vae = vae_files.is_empty();
+            let need_vae_cfg = vae_config_json.is_none();
+            let need_mmproj = mmproj_gguf.is_none();
+            if need_vae || need_vae_cfg || need_mmproj {
+                // Known repo carrying GGUF + companions
+                let gg_repo = match hf_model("QuantStack/Qwen-Image-Edit-GGUF") {
+                    Ok(r) => r,
+                    Err(e) => { log::warn!("[qwen-image-edit] GGUF HF repo unavailable: {}", e); hf_model(repo_id)? }
+                };
+                // Attempt VAE fetch
+                if need_vae {
+                    let name = "vae/Qwen_Image-VAE.safetensors";
+                    if let Ok(p) = gg_repo.get(name) {
+                        log::info!("[qwen-image-edit] Downloaded VAE from GGUF repo: {}", p.display());
+                        vae_files.clear();
+                        vae_files.push(p);
+                    }
+                }
+                if need_vae_cfg {
+                    if let Ok(cfgp) = gg_repo.get("vae/config.json") {
+                        if let Ok(s) = std::fs::read_to_string(&cfgp) {
+                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) { vae_config_json = Some(v); vae_config = Some(cfgp); }
+                        }
+                    }
+                }
+                // Attempt mmproj fetch (prefer BF16 GGUF name the user cited)
+                if need_mmproj {
+                    let name = "mmproj/Qwen2.5-VL-7B-Instruct-mmproj-BF16.gguf";
+                    if let Ok(p) = gg_repo.get(name) {
+                        log::info!("[qwen-image-edit] Downloaded mmproj from GGUF repo: {}", p.display());
+                        mmproj_gguf = Some(p);
+                    }
                 }
             }
         }
@@ -713,7 +736,110 @@ impl QwenImageEditPipeline {
                                 log::info!("[qwen-image-edit] GGUF transformer loaded successfully from {}", p.display());
                             }
                             Err(e) => {
-                                log::warn!("[qwen-image-edit] GGUF transformer load failed: {}. Will try safetensors next.", e);
+                                // Try alternative GGUF quant files in the same directory (prefer Q8_0, then Q5_K_M)
+                                let mut tried_alt = false;
+                                if let Some(dir) = p.parent() {
+                                    if let Ok(read) = std::fs::read_dir(dir) {
+                                        let mut q8: Option<std::path::PathBuf> = None;
+                                        let mut q5km: Option<std::path::PathBuf> = None;
+                                        for ent in read.flatten() {
+                                            let path = ent.path();
+                                            if !path.is_file() { continue; }
+                                            if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
+                                                if !ext.eq_ignore_ascii_case("gguf") { continue; }
+                                            } else { continue; }
+                                            let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("").to_ascii_uppercase();
+                                            if name.contains("Q8_0") { q8 = Some(path.clone()); }
+                                            if name.contains("Q5_K_M") { q5km = Some(path.clone()); }
+                                        }
+                                        let alt = q8.or(q5km);
+                                        if let Some(altp) = alt {
+                                            log::warn!("[qwen-image-edit] GGUF VarBuilder failed for {}. Trying sibling quant: {}", p.display(), altp.display());
+                                            if let Ok(m2) = QwenImageTransformer2DModel::new_from_gguf(&cfg, altp.as_path(), &device) {
+                                                transformer_model = Some(m2);
+                                                log::info!("[qwen-image-edit] GGUF transformer loaded successfully from sibling quant {}", altp.display());
+                                                tried_alt = true;
+                                            }
+                                        }
+                                    }
+                                }
+                                if !tried_alt {
+                                // Try fetching an alternative quant from the GGUF repo (Q8_0 preferred, then Q5_K_M)
+                                let mut fetched_alt: Option<std::path::PathBuf> = None;
+                                if let Ok(gg_repo) = hf_model("QuantStack/Qwen-Image-Edit-GGUF") {
+                                    for fname in [
+                                        "Qwen_Image_Edit-Q8_0.gguf",
+                                        "Qwen_Image_Edit-Q5_K_M.gguf",
+                                    ] {
+                                        if let Ok(pp) = gg_repo.get(fname) {
+                                            fetched_alt = Some(pp);
+                                            log::warn!(
+                                                "[qwen-image-edit] Downloaded alternative GGUF quant {} from QuantStack/Qwen-Image-Edit-GGUF",
+                                                fname
+                                            );
+                                            break;
+                                        }
+                                    }
+                                }
+                                if let Some(altp) = fetched_alt {
+                                    if let Ok(m3) = QwenImageTransformer2DModel::new_from_gguf(&cfg, altp.as_path(), &device) {
+                                        transformer_model = Some(m3);
+                                        log::info!("[qwen-image-edit] GGUF transformer loaded successfully from fetched alternative {}", altp.display());
+                                        tried_alt = true;
+                                    }
+                                }
+                                }
+                                if !tried_alt {
+                                // Enrich the error for unknown dtype cases (common with K-quant, e.g., Q6_K)
+                                let err_s = format!("{}", e);
+                                let file_name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                                let mut extra = String::new();
+                                // Try to extract a numeric dtype code from the error message
+                                if let Ok(re) = Regex::new(r"unknown dtype for tensor\s+(\d+)") {
+                                    if let Some(cap) = re.captures(&err_s) {
+                                        if let Some(m) = cap.get(1) {
+                                            let code_str = m.as_str();
+                                            // Map a few well-known ggml/gguf codes to user-friendly names when possible.
+                                            // Note: exact mappings can differ by build; provide best-effort hints.
+                                            let hint = match code_str {
+                                                "30" => "This looks like a K-quant GGUF (often Q6_K).",
+                                                "28" => "This may be a K-quant GGUF (often Q5_K_M).",
+                                                "26" => "This may be a K-quant GGUF (often Q4_K_M).",
+                                                _ => "This GGUF uses a quantization type not recognized by the current GGUF reader.",
+                                            };
+                                            extra.push_str(&format!(
+                                                "\n  • DType code: {} → {}",
+                                                code_str, hint
+                                            ));
+                                        }
+                                    }
+                                }
+                                // Add filename-derived quant hint
+                                if file_name.to_ascii_uppercase().contains("Q6_K") {
+                                    extra.push_str("\n  • File hint: name contains Q6_K (K-quant). Consider using Q8_0 or Q5_K_M if this build lacks Q6_K.");
+                                } else if file_name.to_ascii_uppercase().contains("Q5_K") {
+                                    extra.push_str("\n  • File hint: name contains Q5_K (K-quant). If unsupported, try Q8_0 or a different K variant.");
+                                }
+                                // Include file size if available
+                                if let Ok(meta) = std::fs::metadata(p) {
+                                    extra.push_str(&format!("\n  • File size: {} bytes", meta.len()));
+                                }
+                                // Device/dtype context
+                                extra.push_str(&format!(
+                                    "\n  • Target device: {:?}, preferred dtype: {:?}",
+                                    device, dtype
+                                ));
+                                // Suggestions
+                                extra.push_str(
+                                    "\n  • Suggestions: try a supported GGUF quant (e.g., Q8_0 or Q5_K_M), or update Candle crates. Falling back to safetensors next."
+                                );
+                                log::error!(
+                                    "[qwen-image-edit] GGUF transformer load failed for {}:\n  {}{}",
+                                    p.display(),
+                                    err_s,
+                                    extra
+                                );
+                                }
                             }
                         }
                     }
@@ -1500,11 +1626,24 @@ impl QwenImageEditPipeline {
         // Noise schedule
         let steps = opts.num_inference_steps.max(1);
         let sigmas = sched.inference_sigmas(steps);
+        log::info!(
+            "[qwen-image-edit] schedule prepared: steps={} (sigmas.len={})",
+            steps,
+            sigmas.len()
+        );
 
         // Proper img2img init: mix encoded latents with noise based on strength
         // Compute start step index based on strength (1.0 -> start at highest noise; 0.0 -> start at near zero noise)
         let start_idx = ((steps as f32 - 1.0) * opts.strength.clamp(0.0, 1.0)).floor() as usize;
         let start_idx = start_idx.min(steps.saturating_sub(1));
+        log::info!(
+            "[qwen-image-edit] schedule: start_idx={} sigma0={:.6} z(before-noise) dims={:?} dtype={:?} device={:?}",
+            start_idx,
+            sigmas[start_idx].max(1e-6),
+            z.dims(),
+            z.dtype(),
+            z.device()
+        );
         let mut z = {
             // Bring z to f32 for noise math then cast back
             let z32 = z.to_dtype(candle_core::DType::F32)?;
@@ -1542,6 +1681,8 @@ impl QwenImageEditPipeline {
 
         // If using Flux-style transformer, precompute text projections once for cond/uncond reuse
         let (pre_text_cond, pre_text_uncond) = if let Some(tf) = tr_flux_opt {
+            let t0 = std::time::Instant::now();
+            log::info!("[qwen-image-edit] precompute_text start");
             // Ensure text tensors are on the same device/dtype as transformer
             let mut tc = text_cond.clone();
             let mut tu = text_uncond.clone();
@@ -1549,19 +1690,24 @@ impl QwenImageEditPipeline {
             if !tu.device().same_device(&tf.device) { tu = tu.to_device(&tf.device)?; }
             if tc.dtype() != self.dtype { tc = tc.to_dtype(self.dtype)?; }
             if tu.dtype() != self.dtype { tu = tu.to_dtype(self.dtype)?; }
-            (Some(tf.precompute_text(&tc).map_err(|e| anyhow::anyhow!(
+            let outc = tf.precompute_text(&tc).map_err(|e| anyhow::anyhow!(
                 "Flux precompute_text(cond) failed: text shape={:?} dtype={:?} device={:?} | {}",
                 tc.dims(), tc.dtype(), tc.device(), e
-            ))?), Some(tf.precompute_text(&tu).map_err(|e| anyhow::anyhow!(
+            ))?;
+            let outu = tf.precompute_text(&tu).map_err(|e| anyhow::anyhow!(
                 "Flux precompute_text(uncond) failed: text shape={:?} dtype={:?} device={:?} | {}",
                 tu.dims(), tu.dtype(), tu.device(), e
-            ))?))
+            ))?;
+            log::info!("[qwen-image-edit] precompute_text done in {:?}", t0.elapsed());
+            (Some(outc), Some(outu))
         } else { (None, None) };
         for i in start_idx..steps {
+            let step_t0 = std::time::Instant::now();
             // Respect cancel flag
             if let Some(flag) = &opts.cancel { if flag.load(std::sync::atomic::Ordering::Relaxed) { log::warn!("[qwen-image-edit] Run canceled at step {}/{}", i, steps); break; } }
             let sigma_from = sigmas[i];
             let sigma_to = sigmas[i + 1];
+            log::info!("[qwen-image-edit] step {} begin: sigma_from={:.6} -> sigma_to={:.6}", i + 1, sigma_from, sigma_to);
             // Update overall progress at the start of the iteration
             QWEN_EDIT_STATUS.set_progress(1 + (i as u64) + 1, total_overall);
             QWEN_EDIT_STATUS.set_detail(format!("Step {}/{} (start {})", i + 1, steps, start_idx + 1));
@@ -1576,6 +1722,7 @@ impl QwenImageEditPipeline {
             if guidance > 1.0 {
                 // Scope temporaries to ensure prompt freeing of GPU buffers each iteration
                 let (zu, zc) = {
+                    log::info!("[qwen-image-edit] step {}: uncond forward start", i + 1);
                     let zu = if prefer_qwen && tr_qwen_opt.is_some() {
                         tr_qwen_opt.unwrap().forward(&z_in, &text_uncond)?
                     } else if let Some(tf) = tr_flux_opt {
@@ -1616,6 +1763,8 @@ impl QwenImageEditPipeline {
                     } else {
                         tr_qwen_opt.unwrap().forward(&z_in, &text_uncond)?
                     };
+                    log::info!("[qwen-image-edit] step {}: uncond forward done (+{:?})", i + 1, step_t0.elapsed());
+                    log::info!("[qwen-image-edit] step {}: cond forward start", i + 1);
                     let zc = if prefer_qwen && tr_qwen_opt.is_some() {
                         tr_qwen_opt.unwrap().forward(&z_in, &text_cond)?
                     } else if let Some(tf) = tr_flux_opt {
@@ -1653,6 +1802,7 @@ impl QwenImageEditPipeline {
                     } else {
                         tr_qwen_opt.unwrap().forward(&z_in, &text_cond)?
                     };
+                    log::info!("[qwen-image-edit] step {}: cond forward done (+{:?})", i + 1, step_t0.elapsed());
                     (zu, zc)
                 };
                 let diff = (zc - &zu)?;
