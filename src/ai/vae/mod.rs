@@ -901,6 +901,194 @@ pub fn build_qwen_vae_simplified_from_files(
     }
 }
 
+// Strict builder: same as simplified collector, but NO dtype/device fallbacks. Uses only provided weights and fails otherwise.
+pub fn build_qwen_vae_from_files_strict(
+    files: &[std::path::PathBuf],
+    dtype: DType,
+    device: &Device,
+    scaling: f32,
+) -> anyhow::Result<QwenImageVaeSimplified> {
+    use safetensors::SafeTensors;
+    use safetensors::tensor::{TensorView, serialize};
+    let mut collected: Vec<(String, safetensors::tensor::Dtype, Vec<usize>, Vec<u8>)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Hints to build accurate channels
+    let mut enc_in_ch: Option<(usize, usize)> = None;    // (in,out)
+    let mut enc_out_ch: Option<(usize, usize)> = None;   // (in,out)
+    let mut dec_in_ch: Option<(usize, usize)> = None;    // (in,out)
+    let mut dec_out_ch: Option<(usize, usize)> = None;   // (in,out)
+    let mut enc_down_shapes: Vec<(usize, usize, usize)> = Vec::new(); // (block_idx,in,out)
+    let mut dec_up_shapes: Vec<(usize, usize, usize)> = Vec::new();   // (block_idx,in,out)
+    let mut enc_extra: Vec<(String, usize, usize, usize)> = Vec::new(); // (key,in,out,k)
+    let wanted_prefixes = [
+        "encoder.conv_in",
+        "encoder.down_blocks.",
+        "encoder.conv_out",
+        "decoder.conv_in",
+        "decoder.up_blocks.",
+        "decoder.conv_out",
+    ];
+    for f in files {
+        let Ok(bytes) = std::fs::read(f) else { continue; };
+        let Ok(st) = SafeTensors::deserialize(&bytes) else { continue; };
+        for name in st.names() {
+            if seen.contains(name) { continue; }
+            if !wanted_prefixes.iter().any(|p| name.starts_with(p)) { continue; }
+            if let Ok(t) = st.tensor(name) {
+                let dt = t.dtype();
+                let shape: Vec<usize> = t.shape().into();
+                let data = t.data();
+                let elem_size = match dt {
+                    safetensors::tensor::Dtype::F16 => 2,
+                    safetensors::tensor::Dtype::BF16 => 2,
+                    safetensors::tensor::Dtype::F32 => 4,
+                    safetensors::tensor::Dtype::F64 => 8,
+                    safetensors::tensor::Dtype::I64 => 8,
+                    safetensors::tensor::Dtype::I32 => 4,
+                    safetensors::tensor::Dtype::I16 => 2,
+                    safetensors::tensor::Dtype::I8 => 1,
+                    safetensors::tensor::Dtype::U8 => 1,
+                    _ => 4,
+                };
+                if shape.len() == 5 {
+                if name == "encoder.conv_in.weight" && (shape.len() == 4 || shape.len() == 5) {
+                    // [out,in,kh,kw] or [out,in,t,kh,kw]
+                    enc_in_ch = Some((shape[1], shape[0]));
+                } else if name == "encoder.conv_out.weight" && (shape.len() == 4 || shape.len() == 5) {
+                    enc_out_ch = Some((shape[1], shape[0]));
+                } else if name == "decoder.conv_in.weight" && (shape.len() == 4 || shape.len() == 5) {
+                    dec_in_ch = Some((shape[1], shape[0]));
+                } else if name == "decoder.conv_out.weight" && (shape.len() == 4 || shape.len() == 5) {
+                    dec_out_ch = Some((shape[1], shape[0]));
+                } else if name.contains("encoder.down_blocks.") && name.ends_with(".resample.1.weight") && shape.len() == 4 {
+                    // encoder.down_blocks.{i}.resample.1.weight -> [out,in,k,k]
+                    if let Some(idx_str) = name.split('.').nth(2) {
+                        if let Ok(idx) = idx_str.parse::<usize>() {
+                            enc_down_shapes.push((idx, shape[1], shape[0]));
+                        }
+                    }
+                } else if name.contains("decoder.up_blocks.") && name.ends_with(".upsamplers.0.resample.1.weight") && shape.len() == 4 {
+                    if let Some(idx_str) = name.split('.').nth(2) {
+                        if let Ok(idx) = idx_str.parse::<usize>() {
+                            dec_up_shapes.push((idx, shape[1], shape[0]));
+                        }
+                    }
+                } else if (name.contains("encoder.down_blocks.") || name.contains("decoder.up_blocks."))
+                    && (name.contains("conv1.weight") || name.contains("conv2.weight") || name.contains("conv_shortcut.weight") || name.contains("time_conv.weight"))
+                {
+                    // Adapter candidates; if 5D they will be squeezed below
+                    let k = shape.get(shape.len().saturating_sub(1)).copied().unwrap_or(3);
+                    let base = if name.ends_with(".weight") { name.trim_end_matches(".weight").to_string() } else { name.to_string() };
+                    if shape.len() >= 4 {
+                        // After squeeze, interpret as [out,in,kh,kw]
+                        let (out_c, in_c) = if shape.len() == 5 { (shape[0], shape[1]) } else { (shape[0], shape[1]) };
+                        enc_extra.push((base, in_c, out_c, k));
+                    }
+                }
+                    let (o,i,t,kh,kw) = (shape[0], shape[1], shape[2], shape[3], shape[4]);
+                    let tm = t / 2;
+                    let mut out = vec![0u8; o * i * kh * kw * elem_size];
+                    let mut dst = 0usize;
+                    for oo in 0..o { for ii in 0..i { for hh in 0..kh { for ww in 0..kw {
+                        let src_index = ((((oo*i+ii)*t+tm)*kh+hh)*kw+ww)*elem_size;
+                        out[dst..dst+elem_size].copy_from_slice(&data[src_index..src_index+elem_size]);
+                        dst += elem_size;
+                    }}}}
+                    collected.push((name.to_string(), dt, vec![o,i,kh,kw], out));
+                    seen.insert(name.to_string());
+                } else {
+                    collected.push((name.to_string(), dt, shape.clone(), data.to_vec()));
+                    seen.insert(name.to_string());
+                }
+            }
+        }
+    }
+    if collected.is_empty() {
+        anyhow::bail!("Qwen VAE strict: no matching weights found under provided files");
+    }
+    let mut ordered: Vec<(&str, TensorView)> = Vec::with_capacity(collected.len());
+    for (name, dt, shape, buf) in collected.iter() {
+        let tv = TensorView::new(*dt, shape.clone(), buf.as_slice()).map_err(anyhow::Error::msg)?;
+        ordered.push((name.as_str(), tv));
+    }
+    let bin = serialize(ordered.into_iter(), None).map_err(anyhow::Error::msg)?;
+    let tmp = tempfile::NamedTempFile::new()?;
+    std::fs::write(tmp.path(), &bin)?;
+    let tmp_path = tmp.into_temp_path();
+    let tmp_path_buf = std::path::PathBuf::from(tmp_path.as_ref() as &std::path::Path);
+    // If we have channel hints, use the hints variant for accurate wiring; otherwise fall back to default
+    let enc_in_ch_f = enc_in_ch;
+    let enc_out_ch_f = enc_out_ch;
+    let dec_in_ch_f = dec_in_ch;
+    let dec_out_ch_f = dec_out_ch;
+    let enc_down_shapes_f = enc_down_shapes.clone();
+    let dec_up_shapes_f = dec_up_shapes.clone();
+    let enc_extra_f = enc_extra.clone();
+    unsafe {
+        crate::ai::hf::with_mmap_varbuilder_multi(
+            std::slice::from_ref(&tmp_path_buf),
+            dtype,
+            device,
+            move |vb| {
+                if let (Some(ein), Some(eout), Some(din), Some(dout)) = (enc_in_ch_f, enc_out_ch_f, dec_in_ch_f, dec_out_ch_f) {
+                    QwenImageVaeSimplified::new_with_hints(
+                        vb,
+                        scaling,
+                        ein,
+                        &enc_down_shapes_f,
+                        eout,
+                        din,
+                        &dec_up_shapes_f,
+                        dout,
+                        &enc_extra_f,
+                    )
+                    .map_err(anyhow::Error::from)
+                } else {
+                    QwenImageVaeSimplified::new(vb, scaling).map_err(anyhow::Error::from)
+                }
+            },
+        )
+    }
+}
+
+// Lightweight detection: does the provided VAE safetensors set include any 5D conv kernels [O,I,T,KH,KW]?
+// This helps us pick the correct strict builder path without an expected first failure.
+pub fn vae_has_5d_conv(files: &[std::path::PathBuf]) -> bool {
+    use safetensors::SafeTensors;
+    for f in files {
+        if let Ok(bytes) = std::fs::read(f) {
+            if let Ok(st) = SafeTensors::deserialize(&bytes) {
+                for name in st.names() {
+                    if let Ok(t) = st.tensor(name) {
+                        let shape: Vec<usize> = t.shape().into();
+                        if shape.len() == 5 {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+// Lightweight detection: does the safetensors set appear to use Qwen naming (e.g., encoder.down_blocks.)?
+pub fn vae_looks_like_qwen(files: &[std::path::PathBuf]) -> bool {
+    use safetensors::SafeTensors;
+    for f in files {
+        if let Ok(bytes) = std::fs::read(f) {
+            if let Ok(st) = SafeTensors::deserialize(&bytes) {
+                for name in st.names() {
+                    if name.starts_with("encoder.down_blocks.") || name.starts_with("decoder.up_blocks.") {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
 impl VaeConfigCompatQwen {
     pub fn to_internal(&self) -> VaeConfig {
         // Map base_dim and dim_mult to block_out_channels

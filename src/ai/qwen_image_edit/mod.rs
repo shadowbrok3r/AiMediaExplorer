@@ -28,6 +28,10 @@ pub struct EditOptions {
     pub scheduler: Option<String>,
     pub seed: Option<u64>,
     pub deterministic_vae: bool,
+    // Live previews & cancelation
+    pub preview_every_n: Option<usize>,
+    pub preview_tx: Option<crossbeam::channel::Sender<Vec<u8>>>,
+    pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl Default for EditOptions {
@@ -42,6 +46,9 @@ impl Default for EditOptions {
             scheduler: Some("flow_match_euler".into()),
             seed: None,
             deterministic_vae: true,
+            preview_every_n: None,
+            preview_tx: None,
+            cancel: None,
         }
     }
 }
@@ -62,3 +69,8 @@ impl crate::ai::model::HFAiModel for crate::ai::qwen_image_edit::model::QwenImag
         Ok(pipe)
     }
 }
+
+// Unit tests live inside the crate's module tree so they don't require a lib target.
+// They can be run with `cargo test -- --nocapture` and will write logs to output.log.
+#[cfg(test)]
+mod tests;

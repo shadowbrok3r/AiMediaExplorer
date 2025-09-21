@@ -1,0 +1,103 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "cargo test qwen e2e",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"test",
+				"--",
+				"--nocapture",
+				"qwen_image_edit_e2e_internal"
+			],
+			"problemMatcher": [
+				"$rustc"
+			]
+		},
+		{
+			"label": "cargo test qwen e2e (retry)",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"test",
+				"--",
+				"--nocapture",
+				"qwen_image_edit_e2e_internal"
+			],
+			"problemMatcher": [
+				"$rustc"
+			]
+		},
+		{
+			"label": "cargo test qwen e2e (retry 2)",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"test",
+				"--",
+				"--nocapture",
+				"qwen_image_edit_e2e_internal"
+			],
+			"problemMatcher": [
+				"$rustc"
+			]
+		},
+		{
+			"label": "cargo test qwen e2e (retry 3)",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"test",
+				"-q",
+				"qwen_image_edit_e2e_internal",
+				"--",
+				"--nocapture"
+			],
+			"problemMatcher": [
+				"$rustc"
+			]
+		},
+		{
+			"label": "cargo build (prepare headless run)",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"build",
+				"-q"
+			],
+			"problemMatcher": [
+				"$rustc"
+			]
+		},
+		{
+			"label": "cargo build bin qwen_e2e",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"build",
+				"--bin",
+				"qwen_e2e",
+				"-q"
+			],
+			"problemMatcher": [
+				"$rustc"
+			]
+		},
+		{
+			"label": "cargo build release qwen_e2e",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"build",
+				"--bin",
+				"qwen_e2e",
+				"--release",
+				"-q"
+			],
+			"problemMatcher": [
+				"$rustc"
+			]
+		}
+	]
+}

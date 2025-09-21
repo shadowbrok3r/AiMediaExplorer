@@ -38,10 +38,38 @@ pub struct FluxTransformer2DModel {
     out_proj: Option<Linear>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PrecomputedText {
+    // One entry per block
+    pub blocks: Vec<PreBlock>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreBlock {
+    // If add_{k,v}_proj exist: cached K,V with shape (b,H,Lkv,h)
+    pub k: Option<Tensor>,
+    pub v: Option<Tensor>,
+    // If add_q_proj exists: cached bias vector (b,D) before expand
+    pub q_bias: Option<Tensor>,
+}
+
 impl FluxTransformer2DModel {
     pub fn new(config: &FluxTransformerConfig, vb: VarBuilder) -> Result<Self> {
         let model_dim = config.num_attention_heads * config.attention_head_dim; // e.g., 3072
         // Patch embedding linear expected as 'img_in': [model_dim, out_channels*ps^2]
+        // Preflight: ensure the weight exists to provide a precise diagnostic if missing.
+        let needed_in = config.out_channels * (config.patch_size * config.patch_size);
+        if vb
+            .pp("img_in")
+            .get((model_dim, needed_in), "weight")
+            .is_err()
+        {
+            candle_core::bail!(
+                "Flux transformer missing required 'img_in.weight' with shape [{}, {}] (out, in). Snapshot likely lacks patch-embed weights; cannot build strictly.",
+                model_dim,
+                needed_in
+            );
+        }
         let img_in = linear_no_bias(
             config.out_channels * (config.patch_size * config.patch_size),
             model_dim,
@@ -145,9 +173,46 @@ impl FluxTransformer2DModel {
         })
     }
 
-    // x: [B, C_in, H, W] with C_in expected = out_channels or in_channels?
-    // We follow config.in_channels as base before patchify; if x has C != in_channels, try to lift it by space-to-depth first when possible.
-    pub fn forward(&self, x: &Tensor, text: &Tensor) -> Result<Tensor> {
+    // Precompute per-block text projections K,V and q-bias (when the corresponding add_* layers exist)
+    pub fn precompute_text(&self, text: &Tensor) -> Result<PrecomputedText> {
+        let (b, tlen, _td) = text.dims3()?;
+        let heads = self.config.num_attention_heads;
+        let head_dim = self.config.attention_head_dim;
+        let mut v: Vec<PreBlock> = Vec::with_capacity(self.blocks.len());
+        for blk in &self.blocks {
+            // Precompute K,V from text when add_* exists
+            let (k, v_proj) = if let (Some(kp), Some(vp)) = (&blk.add_k_proj, &blk.add_v_proj) {
+                let k = kp
+                    .forward(text)?
+                    .reshape((b, tlen, heads, head_dim))?
+                    .transpose(1, 2)?;
+                let v = vp
+                    .forward(text)?
+                    .reshape((b, tlen, heads, head_dim))?
+                    .transpose(1, 2)?;
+                (Some(k), Some(v))
+            } else {
+                (None, None)
+            };
+            // Precompute q-bias vector if available (pool last dim)
+            let q_bias = if let Some(qp) = &blk.add_q_proj {
+                let txt_pooled = text.mean(D::Minus2)?; // (b, joint_attention_dim)
+                Some(qp.forward(&txt_pooled)?) // (b,D)
+            } else {
+                None
+            };
+            v.push(PreBlock { k, v: v_proj, q_bias });
+        }
+        Ok(PrecomputedText { blocks: v })
+    }
+
+    pub fn forward_with_precomputed(
+        &self,
+        x: &Tensor,
+        text: &Tensor,
+        pre: Option<&PrecomputedText>,
+        attn_chunk_override: Option<usize>,
+    ) -> Result<Tensor> {
         let (b, c, h, w) = x.dims4()?;
         let ps = self.config.patch_size;
         let model_dim = self.config.num_attention_heads * self.config.attention_head_dim;
@@ -193,20 +258,32 @@ impl FluxTransformer2DModel {
         assert_eq!(bt, b, "batch mismatch");
 
         // Main blocks
-        for blk in &self.blocks {
+        for (bi, blk) in self.blocks.iter().enumerate() {
             // Image tokens already at model_dim
             let img = tokens.clone(); // (b,n,D)
-            // Build K,V from text via add_* if available; else fall back to projecting img for K/V (self-attention)
-            let (k, v) = if let (Some(kp), Some(vp)) = (&blk.add_k_proj, &blk.add_v_proj) {
-                let k = kp
-                    .forward(text)? // (b, t, D)
-                    .reshape((b, tlen, heads, head_dim))?
-                    .transpose(1, 2)?; // (b,H,t,h)
-                let v = vp
-                    .forward(text)?
-                    .reshape((b, tlen, heads, head_dim))?
-                    .transpose(1, 2)?; // (b,H,t,h)
-                (k, v)
+
+            // K,V from text via add_* if available, using precomputed when provided
+            let (k, v) = if let (Some(_kp), Some(_vp)) = (&blk.add_k_proj, &blk.add_v_proj) {
+                if let Some(pre) = pre {
+                    let pb = &pre.blocks[bi];
+                    (pb.k.as_ref().cloned().expect("pre.k missing"), pb.v.as_ref().cloned().expect("pre.v missing"))
+                } else {
+                    let k = blk
+                        .add_k_proj
+                        .as_ref()
+                        .unwrap()
+                        .forward(text)?
+                        .reshape((b, tlen, heads, head_dim))?
+                        .transpose(1, 2)?; // (b,H,t,h)
+                    let v = blk
+                        .add_v_proj
+                        .as_ref()
+                        .unwrap()
+                        .forward(text)?
+                        .reshape((b, tlen, heads, head_dim))?
+                        .transpose(1, 2)?; // (b,H,t,h)
+                    (k, v)
+                }
             } else {
                 let k = blk
                     .to_k
@@ -224,18 +301,24 @@ impl FluxTransformer2DModel {
             let v = v.contiguous()?; // (b,H,Lkv,h)
             let scale = (head_dim as f64).sqrt();
 
-            // Prepare Q input, optionally biased by pooled text through add_q_proj
+            // Prepare Q input, optionally biased by pooled text through add_q_proj; use precomputed bias when available
             let mut q_proj_in = img.clone(); // (b,n,D)
-            if let Some(qp) = &blk.add_q_proj {
-                // Pool text across sequence to avoid shape mismatch and broadcast to tokens
-                let txt_pooled = text.mean(D::Minus2)?; // (b, joint_attention_dim)
-                let txt_bias = qp.forward(&txt_pooled)?; // (b, D)
-                let txt_bias = txt_bias.unsqueeze(1)?.expand((b, n, model_dim))?; // (b,n,D)
-                q_proj_in = (&q_proj_in + &txt_bias)?;
+            if blk.add_q_proj.is_some() {
+                if let Some(pre) = pre {
+                    if let Some(bias_vec) = &pre.blocks[bi].q_bias {
+                        let bias = bias_vec.unsqueeze(1)?.expand((b, n, model_dim))?; // (b,n,D)
+                        q_proj_in = (&q_proj_in + &bias)?;
+                    }
+                } else if let Some(qp) = &blk.add_q_proj {
+                    let txt_pooled = text.mean(D::Minus2)?; // (b, joint_attention_dim)
+                    let txt_bias = qp.forward(&txt_pooled)?; // (b, D)
+                    let txt_bias = txt_bias.unsqueeze(1)?.expand((b, n, model_dim))?; // (b,n,D)
+                    q_proj_in = (&q_proj_in + &txt_bias)?;
+                }
             }
 
-            // Chunk along token dimension to cap peak memory
-            let chunk = self.config.attn_chunk_size.unwrap_or(2048).min(n);
+            // Determine chunk size: override > config > none = no chunking
+            let chunk = if let Some(ov) = attn_chunk_override { ov.min(n) } else if let Some(cs) = self.config.attn_chunk_size { cs.min(n) } else { n };
             if chunk >= n {
                 // Fast path: original behavior
                 let q_lin = blk.to_q.forward(&q_proj_in)?; // (b,n,D)
@@ -243,8 +326,13 @@ impl FluxTransformer2DModel {
                     .reshape((b, n, heads, head_dim))? // (b,n,H,h)
                     .transpose(1, 2)? // (b,H,n,h)
                     .contiguous()?;
+                // Ensure q and k_t are contiguous before matmul to avoid CUDA invalid-argument on some drivers
+                let q = q.contiguous()?;
+                let k_t = k_t.contiguous()?;
                 let attn = (q.matmul(&k_t)? / scale)?; // (b,H,n,Lkv)
                 let attn = candle_nn::ops::softmax_last_dim(&attn)?.contiguous()?;
+                // Ensure v is contiguous as well
+                let v = v.contiguous()?;
                 let ctx = attn
                     .matmul(&v)? // (b,H,n,h)
                     .transpose(1, 2)? // (b,n,H,h)
@@ -252,17 +340,21 @@ impl FluxTransformer2DModel {
                 let out = blk.to_out0.forward(&ctx)?; // (b,n,D)
                 tokens = (img + out)?;
             } else {
-                // Chunked path
-                let q_lin_full = blk.to_q.forward(&q_proj_in)?; // (b,n,D)
+                // Chunked path (memory efficient): compute to_q per-chunk to avoid allocating (b,n,D)
                 let mut acc = Tensor::zeros((b, n, model_dim), img.dtype(), img.device())?;
+                // Reuse contiguous K^T and V buffers
+                let k_t = k_t.contiguous()?;
+                let v = v.contiguous()?;
                 let mut start = 0;
                 while start < n {
                     let end = (start + chunk).min(n);
-                    let q_lin_chunk = q_lin_full.i((.., start..end, ..))?; // (b,chunk,D)
+                    let q_proj_chunk = q_proj_in.i((.., start..end, ..))?; // (b,chunk,D)
+                    let q_lin_chunk = blk.to_q.forward(&q_proj_chunk)?; // (b,chunk,D)
                     let q = q_lin_chunk
                         .reshape((b, end - start, heads, head_dim))?
                         .transpose(1, 2)?
                         .contiguous()?; // (b,H,chunk,h)
+                    let q = q.contiguous()?;
                     let attn = (q.matmul(&k_t)? / scale)?; // (b,H,chunk,Lkv)
                     let attn = candle_nn::ops::softmax_last_dim(&attn)?.contiguous()?;
                     let ctx = attn
@@ -306,5 +398,11 @@ impl FluxTransformer2DModel {
         // Reduce in_channels to out_channels if necessary by channel slicing
         let out = up.i((.., 0..self.config.out_channels, .., ..))?;
         Ok(out)
+    }
+
+    // x: [B, C_in, H, W] with C_in expected = out_channels or in_channels?
+    // We follow config.in_channels as base before patchify; if x has C != in_channels, try to lift it by space-to-depth first when possible.
+    pub fn forward(&self, x: &Tensor, text: &Tensor) -> Result<Tensor> {
+        self.forward_with_precomputed(x, text, None, None)
     }
 }

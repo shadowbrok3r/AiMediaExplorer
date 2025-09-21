@@ -414,19 +414,14 @@ impl QwenImageVaeSimplified {
     }
 
     fn upsample_nearest(&self, x: &Tensor) -> Result<Tensor> {
+        // Vectorized 2x nearest-neighbor upsample using expand + reshape
         let (b, c, h, w) = x.dims4()?;
-        let mut up = Tensor::zeros((b, c, h * 2, w * 2), x.dtype(), x.device())?;
-        for yy in 0..h {
-            for xx in 0..w {
-                let unit = x.i((.., .., yy, xx))?.unsqueeze(2)?.unsqueeze(3)?; // (b,c,1,1)
-                // Write to the four 1x1 positions in the 2x2 upsampled block
-                up = up.slice_assign(&[0..b, 0..c, (yy * 2)..(yy * 2 + 1), (xx * 2)..(xx * 2 + 1)], &unit)?;
-                up = up.slice_assign(&[0..b, 0..c, (yy * 2)..(yy * 2 + 1), (xx * 2 + 1)..(xx * 2 + 2)], &unit)?;
-                up = up.slice_assign(&[0..b, 0..c, (yy * 2 + 1)..(yy * 2 + 2), (xx * 2)..(xx * 2 + 1)], &unit)?;
-                up = up.slice_assign(&[0..b, 0..c, (yy * 2 + 1)..(yy * 2 + 2), (xx * 2 + 1)..(xx * 2 + 2)], &unit)?;
-            }
-        }
-        Ok(up)
+        // Repeat along width: (b,c,h,w,1) -> expand to 2 -> (b,c,h,2w)
+        // Insert singleton at the END so shape is (b,c,h,w,1), not before w.
+        let xw = x.unsqueeze(4)?.expand((b, c, h, w, 2))?.reshape((b, c, h, w * 2))?;
+        // Repeat along height: (b,c,1,h,2w) -> expand to 2 -> (b,c,2h,2w)
+        let xh = xw.unsqueeze(2)?.expand((b, c, 2, h, w * 2))?.reshape((b, c, h * 2, w * 2))?;
+        Ok(xh)
     }
 
     pub fn decode(&self, z: &Tensor) -> Result<Tensor> {

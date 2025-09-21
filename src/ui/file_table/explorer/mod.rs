@@ -113,6 +113,13 @@ impl crate::ui::file_table::FileExplorer {
         // Reset similarity view when changing directory
         self.viewer.showing_similarity = false;
         self.viewer.similar_scores.clear();
+        // Shallow directory populate should not carry over recursive scan caches
+        self.recursive_scan = false;
+        self.scan_done = false;
+        self.file_scan_progress = 0.0;
+        self.last_scan_rows.clear();
+        self.last_scan_paths.clear();
+        self.last_scan_root = Some(self.current_path.clone());
             self.table.clear();
             self.table_index.clear();
         self.files.clear();

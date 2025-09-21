@@ -125,10 +125,16 @@ async fn main() -> eframe::Result<()> {
         }
     }
 
-    egui_logger::builder()
-        .max_level(log::LevelFilter::Info) // defaults to Debug
-        .init()
-        .unwrap();
+    simplelog::WriteLogger::init(
+        log::LevelFilter::Trace,
+        simplelog::Config::default(),
+        std::fs::File::create("output.log").unwrap()
+    ).unwrap();
+
+    // egui_logger::builder()
+    //     .max_level(log::LevelFilter::Info) // defaults to Debug
+    //     .init()
+    //     .unwrap();
 
     let _ = eframe::run_native(
         format!("Smart Media {}", env!("CARGO_PKG_VERSION")).as_str(),

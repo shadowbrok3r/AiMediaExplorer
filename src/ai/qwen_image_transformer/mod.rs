@@ -78,8 +78,10 @@ impl SimpleLayerNorm {
         let mean = x32.mean_keepdim(D::Minus1)?; // [...,1]
         let xv = (&x32 - &mean)?;
         let var = xv.sqr()?.mean_keepdim(D::Minus1)?;
-        let eps_t = Tensor::new(self.eps as f32, x.device())?;
-        let xhat = xv.broadcast_div(&((var + &eps_t)?.sqrt()?))?; // [...,dim]
+    let eps_t = Tensor::new(self.eps as f32, x.device())?;
+    // Add epsilon with explicit broadcasting to handle shapes like [...,1]
+    let denom = var.broadcast_add(&eps_t)?.sqrt()?;
+    let xhat = xv.broadcast_div(&denom)?; // [...,dim]
         let mut y = xhat.to_dtype(x_dtype)?;
         let mut w = self.weight.clone();
         if w.dtype() != y.dtype() { w = w.to_dtype(y.dtype())?; }

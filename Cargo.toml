@@ -7,9 +7,8 @@ build = "build.rs"
 [dependencies]
 eframe = { version="0.32", features=["persistence", "serde",  "default_fonts", "glow", "x11"], default-features=false }
 egui_extras = { version = "0.32", features = ["datepicker", "syntect", "serde", "image", "all_loaders" ]}
-# egui-data-table = { path = "G:\\Users\\Owner\\Documents\\1-MyStuff\\TechStuff\\GitHub\\egui-data-table", features = ["persistency"]}
-egui-data-table = { path = "C:\\Users\\Owner\\Desktop\\egui-data-table", features = ["persistency"]}
-
+egui-data-table = { path = "G:\\Users\\Owner\\Documents\\1-MyStuff\\TechStuff\\GitHub\\egui-data-table", features = ["persistency"]}
+# egui-data-table = { path = "C:\\Users\\Owner\\Desktop\\egui-data-table", features = ["persistency"]}
 # egui-data-table = { git = "https://github.com/shadowbrok3r/egui-data-table", branch = "master", features = ["persistency"]}
 egui_dock = { version = "0.17.0", features = ["serde"] }
 egui_logger = "0.8"
@@ -31,6 +30,7 @@ log = "0.4"
 surrealdb = { version = "2", features = ["kv-mem", "kv-surrealkv"] }
 # surrealdb-alpha = { version = "3", features = ["kv-mem", "kv-surrealkv"] }
 anyhow = {  version = "1" }
+simplelog = "0.12"
 regex = "1.11"
 # kalosm = { git = "https://github.com/floneum/floneum", branch = "main", features = ["language", "vision", "openai", "surrealdb"] }
 time = { version = "0.3", features = ["macros", "parsing", "formatting"] }
