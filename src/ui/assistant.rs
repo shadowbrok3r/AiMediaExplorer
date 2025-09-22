@@ -1,4 +1,5 @@
 use eframe::egui::*;
+use crate::ui::status::GlobalStatusIndicator;
 
 #[derive(Default)]
 pub struct AssistantPanel {
@@ -38,45 +39,119 @@ impl AssistantPanel {
                 let prompt = self.prompt.clone();
                 let maybe_path = if self.attach_current_image { Some(explorer.current_thumb.path.clone()) } else { None };
                 let tx_updates = explorer.viewer.ai_update_tx.clone();
-                // Stream via joycap (LLaVA). If an image is provided, attach it; else do text-only behavior.
-                if let Some(path) = maybe_path {
-                    if std::path::Path::new(&path).is_file() {
-                        let instruction = prompt.clone();
-                        tokio::spawn(async move {
-                            match tokio::fs::read(&path).await {
-                                Ok(bytes) => {
-                                    let _ = crate::ai::joycap::ensure_worker_started().await;
-                                    let _ = crate::ai::joycap::stream_describe_bytes_with_callback(bytes, &instruction, |tok| {
-                                        let _ = tx_updates.try_send(crate::ui::file_table::AIUpdate::Interim { path: path.clone(), text: tok.to_string() });
-                                    }).await;
-                                }
-                                Err(e) => log::error!("read image failed: {e}"),
-                            }
-                        });
-                    }
-                } else {
-                    // Text-only: use CLIP text embedding to find candidates similar to the instruction
-                    let query = prompt.clone();
+                // Decide provider: if a cloud/custom provider is selected, route to OpenAI-compatible adapter; else use local JoyCaption for multimodal, and CLIP for text-only.
+                let settings = crate::database::settings::load_settings().unwrap_or_default();
+                let provider = settings.ai_chat_provider.clone().unwrap_or_else(|| "local-joycaption".into());
+                let use_cloud = provider != "local-joycaption";
+                // Set ASSIST status indicator to Running for this request
+                crate::ui::status::ASSIST_STATUS.set_state(crate::ui::status::StatusState::Running, if use_cloud { "Cloud request" } else { "Local request" });
+                crate::ui::status::ASSIST_STATUS.set_model(&provider);
+                if use_cloud {
+                    let model = settings.openai_default_model.clone().unwrap_or_else(|| "gpt-4o-mini".into());
+                    let (api_key, base_url, org) = match provider.as_str() {
+                        "openai" => (settings.openai_api_key.clone(), settings.openai_base_url.clone(), settings.openai_organization.clone()),
+                        "grok" => (settings.grok_api_key.clone(), settings.openai_base_url.clone(), None),
+                        "gemini" => (settings.gemini_api_key.clone(), settings.openai_base_url.clone(), None),
+                        "groq" => (settings.groq_api_key.clone(), settings.openai_base_url.clone(), None),
+                        "openrouter" => (settings.openrouter_api_key.clone(), settings.openai_base_url.clone(), None),
+                        _ => (settings.openai_api_key.clone(), settings.openai_base_url.clone(), None),
+                    };
+                    let txu = tx_updates.clone();
+                    let path_for_updates = maybe_path.clone().unwrap_or_default();
+                    let provider_clone = provider.clone();
                     tokio::spawn(async move {
-                        let _ = crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await;
-                        let mut results: Vec<crate::ui::file_table::SimilarResult> = Vec::new();
-                        let q_vec_opt = {
-                            let mut guard = crate::ai::GLOBAL_AI_ENGINE.clip_engine.lock().await;
-                            if let Some(engine) = guard.as_mut() { engine.embed_text(&query).ok() } else { None }
+                        // Load image bytes if requested and available
+                        let image_bytes = if let Some(p) = maybe_path.as_ref() {
+                            match tokio::fs::read(p).await { Ok(b) => Some(b), Err(_) => None }
+                        } else { None };
+                        let cfg = crate::ai::openai_compat::ProviderConfig {
+                            provider: provider_clone,
+                            api_key,
+                            base_url,
+                            model,
+                            organization: org,
                         };
-                        if let Some(q) = q_vec_opt {
-                            match crate::database::ClipEmbeddingRow::find_similar_by_embedding(&q, 64, 128).await {
-                                Ok(hits) => {
-                                    for hit in hits.into_iter() {
-                                        let thumb = if let Some(t) = hit.thumb_ref { t } else { crate::Thumbnail::get_thumbnail_by_path(&hit.path).await.unwrap_or(None).unwrap_or_default() };
-                                        results.push(crate::ui::file_table::SimilarResult { thumb, created: None, updated: None, similarity_score: None, clip_similarity_score: Some(hit.dist) });
+                        let mut interim_acc = String::new();
+                        let stream_res = crate::ai::openai_compat::stream_multimodal_reply(
+                            cfg,
+                            &prompt,
+                            image_bytes.as_deref(),
+                            |tok| {
+                                interim_acc.push_str(tok);
+                                let _ = txu.try_send(crate::ui::file_table::AIUpdate::Interim { path: path_for_updates.clone(), text: interim_acc.clone() });
+                            }
+                        ).await;
+                        match stream_res {
+                            Ok(full) => {
+                                // Try to parse structured JSON {description, caption, tags[], category}
+                                let (mut description, mut caption, mut category, mut tags) = (String::new(), String::new(), String::new(), Vec::<String>::new());
+                                // Heuristic: extract JSON object substring between first '{' and last '}'
+                                if let Some(v) = crate::ai::joycap::extract_json_vision(&full) {
+                                    if let Some(d) = v.get("description").and_then(|x| x.as_str()) { description = d.to_string(); }
+                                    if let Some(c) = v.get("caption").and_then(|x| x.as_str()) { caption = c.to_string(); }
+                                    if let Some(cat) = v.get("category").and_then(|x| x.as_str()) { category = cat.to_string(); }
+                                    if let Some(arr) = v.get("tags").and_then(|x| x.as_array()) {
+                                        tags = arr.iter().filter_map(|t| t.as_str().map(|s| s.to_string())).collect();
                                     }
                                 }
-                                Err(e) => log::error!("text search knn failed: {e}"),
+                                if description.is_empty() {
+                                    description = full.clone();
+                                }
+                                let _ = txu.try_send(crate::ui::file_table::AIUpdate::Final {
+                                    path: path_for_updates,
+                                    description,
+                                    caption: if caption.is_empty() { None } else { Some(caption) },
+                                    category: if category.is_empty() { None } else { Some(category) },
+                                    tags,
+                                });
+                                crate::ui::status::ASSIST_STATUS.set_state(crate::ui::status::StatusState::Idle, "Idle");
                             }
+                            Err(e) => { log::error!("cloud assistant error: {e}"); crate::ui::status::ASSIST_STATUS.set_error(format!("{e}")); },
                         }
-                        let _ = tx_updates.try_send(crate::ui::file_table::AIUpdate::SimilarResults { origin_path: format!("query:{query}"), results });
                     });
+                } else {
+                    // Local path: JoyCaption for multimodal; CLIP similarity for text-only
+                    if let Some(path) = maybe_path {
+                        if std::path::Path::new(&path).is_file() {
+                            let instruction = prompt.clone();
+                            tokio::spawn(async move {
+                                match tokio::fs::read(&path).await {
+                                    Ok(bytes) => {
+                                        let _ = crate::ai::joycap::ensure_worker_started().await;
+                                        let _ = crate::ai::joycap::stream_describe_bytes_with_callback(bytes, &instruction, |tok| {
+                                            let _ = tx_updates.try_send(crate::ui::file_table::AIUpdate::Interim { path: path.clone(), text: tok.to_string() });
+                                        }).await;
+                                        crate::ui::status::ASSIST_STATUS.set_state(crate::ui::status::StatusState::Idle, "Idle");
+                                    }
+                                    Err(e) => { log::error!("read image failed: {e}"); crate::ui::status::ASSIST_STATUS.set_error(format!("{e}")); },
+                                }
+                            });
+                        }
+                    } else {
+                        // Text-only: CLIP similarity search
+                        let query = prompt.clone();
+                        tokio::spawn(async move {
+                            let _ = crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await;
+                            let mut results: Vec<crate::ui::file_table::SimilarResult> = Vec::new();
+                            let q_vec_opt = {
+                                let mut guard = crate::ai::GLOBAL_AI_ENGINE.clip_engine.lock().await;
+                                if let Some(engine) = guard.as_mut() { engine.embed_text(&query).ok() } else { None }
+                            };
+                            if let Some(q) = q_vec_opt {
+                                match crate::database::ClipEmbeddingRow::find_similar_by_embedding(&q, 64, 128).await {
+                                    Ok(hits) => {
+                                        for hit in hits.into_iter() {
+                                            let thumb = if let Some(t) = hit.thumb_ref { t } else { crate::Thumbnail::get_thumbnail_by_path(&hit.path).await.unwrap_or(None).unwrap_or_default() };
+                                            results.push(crate::ui::file_table::SimilarResult { thumb, created: None, updated: None, similarity_score: None, clip_similarity_score: Some(hit.dist) });
+                                        }
+                                    }
+                                    Err(e) => log::error!("text search knn failed: {e}"),
+                                }
+                            }
+                            let _ = tx_updates.try_send(crate::ui::file_table::AIUpdate::SimilarResults { origin_path: format!("query:{query}"), results });
+                            crate::ui::status::ASSIST_STATUS.set_state(crate::ui::status::StatusState::Idle, "Idle");
+                        });
+                    }
                 }
             }
             if ui.button("Find by Text").on_hover_text("Use CLIP/SigLIP to search images by this prompt").clicked() {

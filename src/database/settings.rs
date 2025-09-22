@@ -51,6 +51,23 @@ pub struct UiSettings {
     pub jina_enable_multimodal: Option<bool>,
     // Batch size for sending FoundBatch messages during scans
     pub scan_found_batch_max: Option<usize>,
+    // ---------------- AI Assistant (OpenAI-compatible) ----------------
+    // Which provider to use for the Assistant when not using local JoyCaption.
+    // One of: "local-joycaption" | "openai" | "grok" | "gemini" | "groq" | "openrouter" | "custom"
+    pub ai_chat_provider: Option<String>,
+    // API keys per provider (stored locally). Optional, only used when provider selected.
+    pub openai_api_key: Option<String>,
+    pub grok_api_key: Option<String>,
+    pub gemini_api_key: Option<String>,
+    pub groq_api_key: Option<String>,
+    pub openrouter_api_key: Option<String>,
+    // OpenAI-compatible endpoint overrides (for OpenWebUI/LocalAI/vLLM/etc.)
+    // Example: http://hostname:port/v1
+    pub openai_base_url: Option<String>,
+    // Default model name to use with OpenAI(-compatible) endpoints
+    pub openai_default_model: Option<String>,
+    // Optional OpenAI organization header
+    pub openai_organization: Option<String>,
     pub egui_preferences: Options
 }
 
@@ -84,6 +101,15 @@ impl Default for UiSettings {
             jina_query_type: Some("text".into()),
             jina_enable_multimodal: Some(false),
             scan_found_batch_max: Some(128),
+            ai_chat_provider: Some("local-joycaption".into()),
+            openai_api_key: None,
+            grok_api_key: None,
+            gemini_api_key: None,
+            groq_api_key: None,
+            openrouter_api_key: None,
+            openai_base_url: None,
+            openai_default_model: Some("gpt-4o-mini".into()),
+            openai_organization: None,
             egui_preferences: Options::default()
 
         }

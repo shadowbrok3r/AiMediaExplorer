@@ -200,6 +200,8 @@ pub static RERANK_STATUS: Lazy<RegisteredStatus> =
     Lazy::new(|| RegisteredStatus::register("RERANK", None));
 pub static QWEN_EDIT_STATUS: Lazy<RegisteredStatus> =
     Lazy::new(|| RegisteredStatus::register("QWEN-EDIT", None));
+pub static ASSIST_STATUS: Lazy<RegisteredStatus> =
+    Lazy::new(|| RegisteredStatus::register("ASSIST", None));
 
 /// Token-progress tracker for generation (vision description) from anywhere.
 pub static VISION_TOKENS: Lazy<AtomicUsize> = Lazy::new(|| AtomicUsize::new(0));

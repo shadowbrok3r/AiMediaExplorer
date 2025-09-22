@@ -1,10 +1,9 @@
 use egui_dock::{NodeIndex, SurfaceIndex, tab_viewer::OnCloseResponse};
 use eframe::egui::*;
 
-pub const TABS: [&str; 4] = [
+pub const TABS: [&str; 3] = [
     "File Explorer",
     "Logs",
-    "AI Assistant",
     "AI Refinements",
 ];
 
@@ -20,7 +19,7 @@ impl egui_dock::TabViewer for crate::app::SmartMediaContext {
         self.active_tab_title = Some(tab.clone());
         match tab.as_str() {
             "File Explorer" => self.file_explorer.ui(ui),
-            "AI Assistant" => self.assistant.ui(ui, &mut self.file_explorer),
+            // AI Assistant moved to a separate viewport window (see app::SmartMediaApp::update)
             "AI Refinements" => self.refinements.ui(ui),
             "Image Edit" => self.image_edit.ui(ui),
             "Logs" => egui_logger::logger_ui()

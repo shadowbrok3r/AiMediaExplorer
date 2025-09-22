@@ -194,6 +194,145 @@ impl crate::app::SmartMediaContext {
                             );
                         }
                     });
+
+                    ui.separator();
+                    ui.label("Assistant Provider (OpenAI-compatible)");
+                    // Provider dropdown
+                    let mut provider = d
+                        .ai_chat_provider
+                        .clone()
+                        .unwrap_or_else(|| "local-joycaption".to_string());
+                    let prov_before = provider.clone();
+                    egui::ComboBox::new("ai-chat-provider", "Provider")
+                        .selected_text(match provider.as_str() {
+                            "local-joycaption" => "Local (JoyCaption/LLaVA)",
+                            "openai" => "OpenAI",
+                            "grok" => "Grok (xAI)",
+                            "gemini" => "Google Gemini",
+                            "groq" => "Groq",
+                            "openrouter" => "OpenRouter",
+                            "custom" => "Custom (OpenAI-compatible)",
+                            _ => provider.as_str(),
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut provider, "local-joycaption".into(), "Local (JoyCaption/LLaVA)");
+                            ui.separator();
+                            ui.selectable_value(&mut provider, "openai".into(), "OpenAI");
+                            ui.selectable_value(&mut provider, "grok".into(), "Grok (xAI)");
+                            ui.selectable_value(&mut provider, "gemini".into(), "Google Gemini");
+                            ui.selectable_value(&mut provider, "groq".into(), "Groq");
+                            ui.selectable_value(&mut provider, "openrouter".into(), "OpenRouter");
+                            ui.separator();
+                            ui.selectable_value(&mut provider, "custom".into(), "Custom (OpenAI-compatible)");
+                        });
+                    if provider != prov_before { d.ai_chat_provider = Some(provider.clone()); }
+
+                    // Render per-provider fields
+                    match provider.as_str() {
+                        "openai" => {
+                            ui.horizontal(|ui| {
+                                ui.label("OpenAI API Key");
+                                let mut v = d.openai_api_key.clone().unwrap_or_default();
+                                let before = v.clone();
+                                let resp = ui.add(eframe::egui::TextEdit::singleline(&mut v).password(true).desired_width(260.));
+                                if resp.changed() && v != before { d.openai_api_key = if v.trim().is_empty() { None } else { Some(v) }; }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Organization (optional)");
+                                let mut v = d.openai_organization.clone().unwrap_or_default();
+                                let before = v.clone();
+                                if ui.text_edit_singleline(&mut v).changed() && v != before { d.openai_organization = if v.trim().is_empty() { None } else { Some(v) }; }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Model");
+                                let mut v = d.openai_default_model.clone().unwrap_or_else(|| "gpt-4o-mini".into());
+                                let before = v.clone();
+                                if ui.text_edit_singleline(&mut v).changed() && v != before { d.openai_default_model = if v.trim().is_empty() { None } else { Some(v) }; }
+                            });
+                        }
+                        "grok" => {
+                            ui.horizontal(|ui| {
+                                ui.label("Grok (xAI) API Key");
+                                let mut v = d.grok_api_key.clone().unwrap_or_default();
+                                let before = v.clone();
+                                let resp = ui.add(eframe::egui::TextEdit::singleline(&mut v).password(true).desired_width(260.));
+                                if resp.changed() && v != before { d.grok_api_key = if v.trim().is_empty() { None } else { Some(v) }; }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Model");
+                                let mut v = d.openai_default_model.clone().unwrap_or_else(|| "grok-2-latest".into());
+                                let before = v.clone();
+                                if ui.text_edit_singleline(&mut v).changed() && v != before { d.openai_default_model = if v.trim().is_empty() { None } else { Some(v) }; }
+                            });
+                        }
+                        "gemini" => {
+                            ui.horizontal(|ui| {
+                                ui.label("Gemini API Key");
+                                let mut v = d.gemini_api_key.clone().unwrap_or_default();
+                                let before = v.clone();
+                                let resp = ui.add(eframe::egui::TextEdit::singleline(&mut v).password(true).desired_width(260.));
+                                if resp.changed() && v != before { d.gemini_api_key = if v.trim().is_empty() { None } else { Some(v) }; }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Model");
+                                let mut v = d.openai_default_model.clone().unwrap_or_else(|| "gemini-1.5-flash".into());
+                                let before = v.clone();
+                                if ui.text_edit_singleline(&mut v).changed() && v != before { d.openai_default_model = if v.trim().is_empty() { None } else { Some(v) }; }
+                            });
+                        }
+                        "groq" => {
+                            ui.horizontal(|ui| {
+                                ui.label("Groq API Key");
+                                let mut v = d.groq_api_key.clone().unwrap_or_default();
+                                let before = v.clone();
+                                let resp = ui.add(eframe::egui::TextEdit::singleline(&mut v).password(true).desired_width(260.));
+                                if resp.changed() && v != before { d.groq_api_key = if v.trim().is_empty() { None } else { Some(v) }; }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Model");
+                                let mut v = d.openai_default_model.clone().unwrap_or_else(|| "llama-3.1-70b-versatile".into());
+                                let before = v.clone();
+                                if ui.text_edit_singleline(&mut v).changed() && v != before { d.openai_default_model = if v.trim().is_empty() { None } else { Some(v) }; }
+                            });
+                        }
+                        "openrouter" => {
+                            ui.horizontal(|ui| {
+                                ui.label("OpenRouter API Key");
+                                let mut v = d.openrouter_api_key.clone().unwrap_or_default();
+                                let before = v.clone();
+                                let resp = ui.add(eframe::egui::TextEdit::singleline(&mut v).password(true).desired_width(260.));
+                                if resp.changed() && v != before { d.openrouter_api_key = if v.trim().is_empty() { None } else { Some(v) }; }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Model");
+                                let mut v = d.openai_default_model.clone().unwrap_or_else(|| "meta-llama/llama-3.1-70b-instruct".into());
+                                let before = v.clone();
+                                if ui.text_edit_singleline(&mut v).changed() && v != before { d.openai_default_model = if v.trim().is_empty() { None } else { Some(v) }; }
+                            });
+                        }
+                        "custom" => {
+                            ui.horizontal(|ui| {
+                                ui.label("Base URL").on_hover_text("OpenAI-compatible endpoint, e.g., http://host:port/v1 (OpenWebUI/LocalAI/vLLM)");
+                                let mut v = d.openai_base_url.clone().unwrap_or_else(|| "http://localhost:11434/v1".into());
+                                let before = v.clone();
+                                if ui.text_edit_singleline(&mut v).changed() && v != before { d.openai_base_url = if v.trim().is_empty() { None } else { Some(v) }; }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("API Key (optional)");
+                                let mut v = d.openai_api_key.clone().unwrap_or_default();
+                                let before = v.clone();
+                                let resp = ui.add(eframe::egui::TextEdit::singleline(&mut v).password(true).desired_width(260.));
+                                if resp.changed() && v != before { d.openai_api_key = if v.trim().is_empty() { None } else { Some(v) }; }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Model");
+                                let mut v = d.openai_default_model.clone().unwrap_or_else(|| "llama3.1".into());
+                                let before = v.clone();
+                                if ui.text_edit_singleline(&mut v).changed() && v != before { d.openai_default_model = if v.trim().is_empty() { None } else { Some(v) }; }
+                            });
+                        }
+                        _ => { /* local-joycaption: nothing extra */ }
+                    }
                     ui.separator();
                     ui.label("Reranker (HF) Model Repo:").on_hover_text("Hugging Face repo id for reranker model, e.g., jinaai/jina-reranker-m0");
                     ui.horizontal(|ui| {

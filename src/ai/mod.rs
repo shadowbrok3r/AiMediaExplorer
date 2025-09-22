@@ -12,6 +12,7 @@ pub mod refine;
 pub mod reranker;
 pub mod siglip;
 pub mod vae;
+pub mod openai_compat;
 
 pub use ai_search::*;
 pub use jina_m0::*;
