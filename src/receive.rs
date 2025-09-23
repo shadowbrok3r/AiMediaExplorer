@@ -232,7 +232,7 @@ impl crate::app::SmartMediaContext {
                         "openai" => {
                             ui.horizontal(|ui| {
                                 ui.label("OpenAI API Key");
-                                let mut v = d.openai_api_key.clone().unwrap_or_default();
+                                let mut v = d.openai_api_key.clone().or_else(|| std::env::var("OPENAI_API_KEY").ok()).unwrap_or_default();
                                 let before = v.clone();
                                 let resp = ui.add(eframe::egui::TextEdit::singleline(&mut v).password(true).desired_width(260.));
                                 if resp.changed() && v != before { d.openai_api_key = if v.trim().is_empty() { None } else { Some(v) }; }
@@ -245,7 +245,7 @@ impl crate::app::SmartMediaContext {
                             });
                             ui.horizontal(|ui| {
                                 ui.label("Model");
-                                let mut v = d.openai_default_model.clone().unwrap_or_else(|| "gpt-4o-mini".into());
+                                let mut v = d.openai_default_model.clone().unwrap_or_else(|| "gpt-5-mini".into());
                                 let before = v.clone();
                                 if ui.text_edit_singleline(&mut v).changed() && v != before { d.openai_default_model = if v.trim().is_empty() { None } else { Some(v) }; }
                             });
@@ -253,14 +253,14 @@ impl crate::app::SmartMediaContext {
                         "grok" => {
                             ui.horizontal(|ui| {
                                 ui.label("Grok (xAI) API Key");
-                                let mut v = d.grok_api_key.clone().unwrap_or_default();
+                                let mut v = d.grok_api_key.clone().or_else(|| std::env::var("GROK_API_KEY").ok()).unwrap_or_default();
                                 let before = v.clone();
                                 let resp = ui.add(eframe::egui::TextEdit::singleline(&mut v).password(true).desired_width(260.));
                                 if resp.changed() && v != before { d.grok_api_key = if v.trim().is_empty() { None } else { Some(v) }; }
                             });
                             ui.horizontal(|ui| {
                                 ui.label("Model");
-                                let mut v = d.openai_default_model.clone().unwrap_or_else(|| "grok-2-latest".into());
+                                let mut v = d.openai_default_model.clone().unwrap_or_else(|| "grok-4-fast-non-reasoning".into());
                                 let before = v.clone();
                                 if ui.text_edit_singleline(&mut v).changed() && v != before { d.openai_default_model = if v.trim().is_empty() { None } else { Some(v) }; }
                             });
@@ -268,14 +268,14 @@ impl crate::app::SmartMediaContext {
                         "gemini" => {
                             ui.horizontal(|ui| {
                                 ui.label("Gemini API Key");
-                                let mut v = d.gemini_api_key.clone().unwrap_or_default();
+                                let mut v = d.gemini_api_key.clone().or_else(|| std::env::var("GEMINI_API_KEY").ok()).unwrap_or_default();
                                 let before = v.clone();
                                 let resp = ui.add(eframe::egui::TextEdit::singleline(&mut v).password(true).desired_width(260.));
                                 if resp.changed() && v != before { d.gemini_api_key = if v.trim().is_empty() { None } else { Some(v) }; }
                             });
                             ui.horizontal(|ui| {
                                 ui.label("Model");
-                                let mut v = d.openai_default_model.clone().unwrap_or_else(|| "gemini-1.5-flash".into());
+                                let mut v = d.openai_default_model.clone().unwrap_or_else(|| "gemma-3-27b-it".into());
                                 let before = v.clone();
                                 if ui.text_edit_singleline(&mut v).changed() && v != before { d.openai_default_model = if v.trim().is_empty() { None } else { Some(v) }; }
                             });
@@ -283,7 +283,7 @@ impl crate::app::SmartMediaContext {
                         "groq" => {
                             ui.horizontal(|ui| {
                                 ui.label("Groq API Key");
-                                let mut v = d.groq_api_key.clone().unwrap_or_default();
+                                let mut v = d.groq_api_key.clone().or_else(|| std::env::var("GROQ_API_KEY").ok()).unwrap_or_default();
                                 let before = v.clone();
                                 let resp = ui.add(eframe::egui::TextEdit::singleline(&mut v).password(true).desired_width(260.));
                                 if resp.changed() && v != before { d.groq_api_key = if v.trim().is_empty() { None } else { Some(v) }; }
@@ -298,7 +298,7 @@ impl crate::app::SmartMediaContext {
                         "openrouter" => {
                             ui.horizontal(|ui| {
                                 ui.label("OpenRouter API Key");
-                                let mut v = d.openrouter_api_key.clone().unwrap_or_default();
+                                let mut v = d.openrouter_api_key.clone().or_else(|| std::env::var("OPENROUTER_API_KEY").ok()).unwrap_or_default();
                                 let before = v.clone();
                                 let resp = ui.add(eframe::egui::TextEdit::singleline(&mut v).password(true).desired_width(260.));
                                 if resp.changed() && v != before { d.openrouter_api_key = if v.trim().is_empty() { None } else { Some(v) }; }

@@ -90,19 +90,21 @@ impl eframe::App for app::SmartMediaApp {
                 .show_inside(ui, &mut self.context);
         });
 
-        // Show AI Assistant in its own viewport window (independent of the dock)
-        let vp_id = egui::ViewportId::from_hash_of("ai-assistant-viewport");
-        ctx.show_viewport_immediate(
-            vp_id,
-            egui::ViewportBuilder::default()
-                .with_title("AI Assistant")
-                .with_inner_size([520.0, 720.0]),
-            |vcx, _class| {
-                egui::CentralPanel::default().show(vcx, |ui| {
-                    self.context.assistant.ui(ui, &mut self.context.file_explorer);
-                });
-            },
-        );
+        // Show AI Assistant in its own viewport window (independent of the dock) when enabled via View menu
+        if self.context.assistant_window_open {
+            let vp_id = egui::ViewportId::from_hash_of("ai-assistant-viewport");
+            ctx.show_viewport_immediate(
+                vp_id,
+                egui::ViewportBuilder::default()
+                    .with_title("AI Assistant")
+                    .with_inner_size([520.0, 720.0]),
+                |vcx, _class| {
+                    egui::CentralPanel::default().show(vcx, |ui| {
+                        self.context.assistant.ui(ui, &mut self.context.file_explorer);
+                    });
+                },
+            );
+        }
     }
 
     fn persist_egui_memory(&self) -> bool { true }
@@ -139,16 +141,16 @@ async fn main() -> eframe::Result<()> {
         }
     }
 
-    simplelog::WriteLogger::init(
-        log::LevelFilter::Trace,
-        simplelog::Config::default(),
-        std::fs::File::create("output.log").unwrap()
-    ).unwrap();
+    // simplelog::WriteLogger::init(
+    //     log::LevelFilter::Trace,
+    //     simplelog::Config::default(),
+    //     std::fs::File::create("output.log").unwrap()
+    // ).unwrap();
 
-    // egui_logger::builder()
-    //     .max_level(log::LevelFilter::Info) // defaults to Debug
-    //     .init()
-    //     .unwrap();
+    egui_logger::builder()
+        .max_level(log::LevelFilter::Info) // defaults to Debug
+        .init()
+        .unwrap();
 
     let _ = eframe::run_native(
         format!("Smart Media {}", env!("CARGO_PKG_VERSION")).as_str(),

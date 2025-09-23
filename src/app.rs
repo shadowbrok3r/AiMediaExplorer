@@ -45,6 +45,8 @@ pub struct SmartMediaContext {
     pub refinements: crate::ui::refine::RefinementsPanel,
     pub image_edit: crate::ui::image_edit::ImageEditPanel,
     pub open_ui_settings: bool,
+    // Toggle for showing the AI Assistant as a separate viewport window
+    pub assistant_window_open: bool,
     // UI state for adding excluded directories
     pub new_excluded_dir: String,
     // Toasts manager and channel for async notifications
@@ -112,10 +114,11 @@ impl SmartMediaApp {
             file_explorer: FileExplorer::new(false),
             open_tabs,
             filtered_tabs: std::collections::HashMap::new(),
-            assistant: Default::default(),
+            assistant: crate::ui::assistant::AssistantPanel::new(),
             refinements: RefinementsPanel::new(refine_tx.clone(), toast_tx.clone()),
             image_edit: Default::default(),
             open_ui_settings: false,
+            assistant_window_open: true,
             new_excluded_dir: String::new(),
             toasts: Toasts::new().anchor(eframe::egui::Align2::RIGHT_TOP, (-10.0, 10.0)),
             toast_tx,

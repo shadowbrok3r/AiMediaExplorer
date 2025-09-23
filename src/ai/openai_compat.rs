@@ -9,6 +9,7 @@ pub struct ProviderConfig {
     pub base_url: Option<String>,      // for custom; for others we choose defaults
     pub model: String,
     pub organization: Option<String>,  // OpenAI optional
+    pub temperature: Option<f32>,      // optional sampling temperature for chat completions
 }
 
 fn default_base_and_header(provider: &str) -> (String, String) {
@@ -22,17 +23,10 @@ fn default_base_and_header(provider: &str) -> (String, String) {
     }
 }
 
-fn is_openai_chat_compatible(provider: &str) -> bool {
-    match provider {
-        // These use the OpenAI Chat Completions API shape
-        "openai" | "grok" | "groq" | "openrouter" | "custom" => true,
-        // Gemini differs; we will call a separate path
-        _ => false,
-    }
-}
+// (compat note) Additional provider families can be added here in future.
 
 fn image_bytes_to_data_url(bytes: &[u8]) -> String {
-    let mime = infer::get(bytes).map(|t| t.mime_type()).unwrap_or("image/jpeg");
+    let mime = infer::get(bytes).map(|t| t.mime_type()).unwrap_or("image/png");
     let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
     format!("data:{};base64,{}", mime, b64)
 }
@@ -40,20 +34,20 @@ fn image_bytes_to_data_url(bytes: &[u8]) -> String {
 pub async fn stream_multimodal_reply(
     cfg: ProviderConfig,
     prompt: &str,
-    image_bytes: Option<&[u8]>,
+    images: &[Vec<u8>],
     on_token: impl FnMut(&str),
 ) -> Result<String> {
     if cfg.provider == "gemini" {
-        return stream_gemini(cfg, prompt, image_bytes, on_token).await;
+        return stream_gemini(cfg, prompt, images, on_token).await;
     }
     // OpenAI-compatible (Chat Completions)
-    stream_openai_compatible(cfg, prompt, image_bytes, on_token).await
+    stream_openai_compatible(cfg, prompt, images, on_token).await
 }
 
 async fn stream_openai_compatible(
     cfg: ProviderConfig,
     prompt: &str,
-    image_bytes: Option<&[u8]>,
+    images: &[Vec<u8>],
     mut on_token: impl FnMut(&str),
 ) -> Result<String> {
     let (default_base, auth_header_name) = default_base_and_header(&cfg.provider);
@@ -74,21 +68,22 @@ async fn stream_openai_compatible(
         req = req.header("OpenAI-Organization", org);
     }
 
-    // Build messages with optional image data URL. Add a system instruction to return strict JSON only.
-    let system_instruction = "You are a vision assistant. Reply with ONLY a single JSON object with keys: description (string), caption (string), tags (array of strings), category (string). Do not include code fences or extra prose.";
-    let messages = if let Some(img) = image_bytes {
-        let data_url = image_bytes_to_data_url(img);
-        serde_json::json!([
-            {"role": "system", "content": system_instruction},
-            {"role": "user", "content": [
-                {"type":"text", "text": prompt},
-                {"type":"image_url", "image_url": {"url": data_url}}
-            ]}
-        ])
-    } else {
+        // Build messages with optional multiple image data URLs. Add a system instruction to produce helpful, concise text suitable for a chat UI.
+        let system_instruction = "You are a helpful assistant. Produce helpful, concise text suitable for a chat UI.";
+    let messages = if images.is_empty() {
         serde_json::json!([
             {"role": "system", "content": system_instruction},
             {"role": "user", "content": prompt}
+        ])
+    } else {
+        let mut content: Vec<serde_json::Value> = vec![serde_json::json!({"type":"text", "text": prompt})];
+        for img in images {
+            let data_url = image_bytes_to_data_url(img);
+            content.push(serde_json::json!({"type":"image_url", "image_url": {"url": data_url}}));
+        }
+        serde_json::json!([
+            {"role": "system", "content": system_instruction},
+            {"role": "user", "content": content}
         ])
     };
 
@@ -97,7 +92,7 @@ async fn stream_openai_compatible(
         "stream": true,
         "messages": messages,
         // sensible defaults
-        "temperature": 0.2
+        "temperature": cfg.temperature.unwrap_or(0.2)
     });
 
     let resp = req.json(&body).send().await?;
@@ -148,7 +143,7 @@ async fn stream_openai_compatible(
 async fn stream_gemini(
     cfg: ProviderConfig,
     prompt: &str,
-    image_bytes: Option<&[u8]>,
+    images: &[Vec<u8>],
     mut on_token: impl FnMut(&str),
 ) -> Result<String> {
     // Gemini streaming uses a different endpoint and schema.
@@ -161,20 +156,18 @@ async fn stream_gemini(
         cfg.api_key.clone().unwrap_or_default()
     );
     let client = reqwest::Client::builder().build()?;
-    // Build Gemini payload with inline data or text-only, prefixed with an instruction to respond with strict JSON only.
-    let instruction = "You are a vision assistant. Reply with ONLY a single JSON object with keys: description (string), caption (string), tags (array of strings), category (string). Do not include code fences or extra prose.";
-    let contents = if let Some(img) = image_bytes {
-        let mime = infer::get(img).map(|t| t.mime_type()).unwrap_or("image/jpeg");
-        let b64 = base64::engine::general_purpose::STANDARD.encode(img);
-        serde_json::json!([{
-            "role":"user",
-            "parts":[
-                {"text": format!("{}\n\n{}", instruction, prompt)},
-                {"inline_data": {"mime_type": mime, "data": b64}}
-            ]
-        }])
+        // Build Gemini payload with multiple inline_data or text-only; request helpful concise text
+        let instruction = "You are a helpful assistant. Produce helpful, concise text suitable for a chat UI.";
+    let contents = if images.is_empty() {
+        serde_json::json!([{ "role":"user","parts":[{"text": format!("{}\n\n{}", instruction, prompt)}]}])
     } else {
-        serde_json::json!([{"role":"user","parts":[{"text": format!("{}\n\n{}", instruction, prompt)}]}])
+        let mut parts: Vec<serde_json::Value> = vec![serde_json::json!({"text": format!("{}\n\n{}", instruction, prompt)})];
+        for img in images {
+            let mime = infer::get(img).map(|t| t.mime_type()).unwrap_or("image/png");
+            let b64 = base64::engine::general_purpose::STANDARD.encode(img);
+            parts.push(serde_json::json!({"inline_data": {"mime_type": mime, "data": b64}}));
+        }
+        serde_json::json!([{ "role":"user","parts": parts }])
     };
     let body = serde_json::json!({"contents": contents});
     let resp = client.post(&url).json(&body).send().await?;

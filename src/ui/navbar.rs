@@ -193,6 +193,15 @@ impl crate::app::SmartMediaApp {
                             ui.close();
                         }
                     }
+
+                    ui.separator();
+                    // Toggle for Assistant Viewport window
+                    let mut was_open = self.context.assistant_window_open;
+                    if ui.checkbox(&mut was_open, "AI Assistant Window").clicked() {
+                        self.context.assistant_window_open = was_open;
+                        // If toggled off, we can optionally request the OS window to close next frame.
+                        // Not strictly needed: when flag is false, we simply stop showing it.
+                    }
                 });
 
                 ui.add_space(5.);
