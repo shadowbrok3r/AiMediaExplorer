@@ -14,6 +14,7 @@ use async_openai::types::{
 };
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION};
 use serde::Deserialize;
+use serde_json::Value;
 
 #[derive(Debug, Clone)]
 pub struct ProviderConfig {
@@ -132,6 +133,37 @@ async fn list_models_openrouter_direct(api_key: Option<String>, base_url: Option
     let mut out: Vec<String> = body.data.into_iter().map(|m| m.id).collect();
     out.sort();
     Ok(out)
+}
+
+/// Fetch the full OpenRouter models list as raw JSON values (one per model).
+/// This preserves all fields returned by OpenRouter, allowing the UI to show full details.
+pub async fn fetch_openrouter_models_json(api_key: Option<String>, base_url: Option<String>) -> Result<Vec<Value>> {
+    let base = base_url.unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
+    let url = format!("{}/models", base.trim_end_matches('/'));
+
+    let mut headers = HeaderMap::new();
+    headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+    if let Some(key) = api_key.as_ref() {
+        let token = format!("Bearer {}", key);
+        headers.insert(AUTHORIZATION, HeaderValue::from_str(&token)?);
+    }
+    if let Ok(site) = std::env::var("OPENROUTER_SITE") {
+        if let Ok(val) = HeaderValue::from_str(&site) { headers.insert(HeaderName::from_static("referer"), val); }
+    }
+    if let Ok(title) = std::env::var("OPENROUTER_TITLE") {
+        if let Ok(val) = HeaderValue::from_str(&title) { headers.insert(HeaderName::from_static("x-title"), val); }
+    }
+
+    let client = reqwest::Client::builder().default_headers(headers).build()?;
+    let resp = client.get(url).send().await?;
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        anyhow::bail!("openrouter models error {}: {}", status, text);
+    }
+    let v: Value = resp.json().await?;
+    let data = v.get("data").and_then(|d| d.as_array()).cloned().unwrap_or_default();
+    Ok(data)
 }
 
 pub async fn stream_multimodal_reply(

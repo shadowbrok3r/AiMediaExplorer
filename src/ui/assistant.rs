@@ -5,6 +5,7 @@ use crate::ui::status::GlobalStatusIndicator;
 use crossbeam::channel::{unbounded, Receiver, Sender};
 use tokio::task::JoinHandle;
 use std::collections::{HashMap, HashSet};
+use serde_json::Value;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChatRole { User, Assistant }
@@ -56,9 +57,16 @@ pub struct AssistantPanel {
     show_models_modal: bool,
     models_list: Vec<String>,
     models_filter: String,
-    models_rx: Option<crossbeam::channel::Receiver<Result<Vec<String>, String>>>,
+    // Persistent channel for OpenRouter models (full JSON objects)
+    models_rx: crossbeam::channel::Receiver<Result<Vec<Value>, String>>,
+    models_tx: crossbeam::channel::Sender<Result<Vec<Value>, String>>,
+    models_json: Vec<Value>,
+    models_open: HashSet<String>,
     models_loading: bool,
     models_error: Option<String>,
+    // MCP quick actions input state
+    mcp_ping_text: String,
+    mcp_search_text: String,
 }
 // API key fallback to env vars
 pub fn env_or(opt: &Option<String>, key: &str) -> Option<String> {
@@ -69,6 +77,13 @@ impl AssistantPanel {
     pub fn new() -> Self {
         let (chat_tx, chat_rx) = unbounded::<String>();
         let (db_tx, db_rx) = unbounded::<Vec<(String, String, Option<String>)>>();
+        let (models_tx, models_rx) = crossbeam::channel::unbounded::<Result<Vec<Value>, String>>();
+        // Start MCP stdio server in background (best-effort)
+        tokio::spawn(async move {
+            if let Err(e) = crate::ai::mcp::serve_stdio_background().await {
+                log::warn!("[MCP] stdio server not started: {e}");
+            }
+        });
         Self {
             prompt: String::new(),
             progress: None,
@@ -102,9 +117,14 @@ impl AssistantPanel {
             show_models_modal: false,
             models_list: Vec::new(),
             models_filter: String::new(),
-            models_rx: None,
+            models_rx,
+            models_tx,
+            models_json: Vec::new(),
+            models_open: HashSet::new(),
             models_loading: false,
             models_error: None,
+            mcp_ping_text: String::new(),
+            mcp_search_text: String::new(),
         }
     }
     
@@ -182,18 +202,17 @@ impl AssistantPanel {
             ui.label("Model");
             ui.add_sized([200.0, 22.0], TextEdit::singleline(self.model_override.get_or_insert(current_model)));
             if selected_provider == "openrouter" {
-                if ui.small_button("List OpenRouter models").on_hover_text("Fetch available models via async-openai").clicked() {
+                if ui.small_button("List OpenRouter models").on_hover_text("Fetch available models via OpenRouter").clicked() {
                     self.show_models_modal = true;
                     self.models_list.clear();
+                    self.models_json.clear();
+                    self.models_open.clear();
+                    self.models_error = None;
                     self.models_loading = true;
                     let api_key = super::assistant::env_or(&settings.openrouter_api_key, "OPENROUTER_API_KEY");
-                    // Always use OpenRouter base (do not reuse generic OpenAI base URL)
-                    let base = Some("https://openrouter.ai/api/v1".into());
-                    // Launch async fetch and keep receiver
-                    let (tx, rx) = crossbeam::channel::unbounded::<Result<Vec<String>, String>>();
-                    self.models_rx = Some(rx);
+                    let tx = self.models_tx.clone();
                     tokio::spawn(async move {
-                        let res = crate::ai::openai_compat::list_models_via_async_openai("openrouter", api_key, base)
+                        let res = crate::ai::openai_compat::fetch_openrouter_models_json(api_key, Some("https://openrouter.ai/api/v1".into()))
                             .await
                             .map_err(|e| e.to_string());
                         let _ = tx.send(res);
@@ -325,48 +344,107 @@ impl AssistantPanel {
                     }
                 });
             });
+
+            ui.separator();
+            CollapsingHeader::new("MCP Tools").show(ui, |ui| {
+                // Ping
+                ui.label(RichText::new("Ping (util.ping)").strong());
+                ui.horizontal(|ui| {
+                    ui.add(TextEdit::singleline(&mut self.mcp_ping_text).hint_text("message"));
+                    if ui.small_button("Send").clicked() {
+                        let msg = self.mcp_ping_text.clone();
+                        tokio::spawn(async move {
+                            match crate::ai::mcp::ping_tool(msg).await {
+                                Ok(echo) => log::info!("[MCP] ping: {}", echo),
+                                Err(e) => log::warn!("[MCP] ping failed: {e}"),
+                            }
+                        });
+                    }
+                });
+
+                ui.separator();
+                // Search
+                ui.label(RichText::new("Media Search (media.search)").strong());
+                ui.horizontal(|ui| {
+                    ui.add(TextEdit::singleline(&mut self.mcp_search_text).hint_text("query"));
+                    if ui.small_button("Run").clicked() {
+                        let q = self.mcp_search_text.clone();
+                        let tx_updates = explorer.viewer.ai_update_tx.clone();
+                        tokio::spawn(async move {
+                            match crate::ai::mcp::media_search_tool(q, Some(32)).await {
+                                Ok(hits) => {
+                                    let mut results = Vec::new();
+                                    for h in hits {
+                                        let thumb = crate::Thumbnail::get_thumbnail_by_path(&h.path).await.unwrap_or(None).unwrap_or_default();
+                                        results.push(crate::ui::file_table::SimilarResult { thumb, created: None, updated: None, similarity_score: None, clip_similarity_score: Some(h.score) });
+                                    }
+                                    let _ = tx_updates.try_send(crate::ui::file_table::AIUpdate::SimilarResults { origin_path: "mcp:media.search".into(), results });
+                                }
+                                Err(e) => log::warn!("[MCP] media.search failed: {e}"),
+                            }
+                        });
+                    }
+                });
+
+                ui.separator();
+                // Describe
+                ui.label(RichText::new("Describe Selected (media.describe)").strong());
+                if ui.small_button("Describe current selection").clicked() {
+                    let path = explorer.current_thumb.path.clone();
+                    if !path.is_empty() {
+                        tokio::spawn(async move {
+                            match crate::ai::mcp::media_describe_tool(path.clone()).await {
+                                Ok(resp) => log::info!("[MCP] describe ok: {} ({} tags)", resp.caption, resp.tags.len()),
+                                Err(e) => log::warn!("[MCP] describe failed: {e}"),
+                            }
+                        });
+                    }
+                }
+            });
         });
 
         // BOTTOM: Input bar
         TopBottomPanel::bottom("assistant_bottom").show(&ctx, |ui| {
-            // We'll track UI intents and apply to self after the closure to avoid borrow conflicts
-            let mut suppress_auto_selected = false;
-            let mut remove_index: Option<usize> = None;
-            // Attachments row (chips)
-            ui.horizontal_wrapped(|ui| {
-                // Auto-attachment tag for current selection
-                let selected_path = explorer.current_thumb.path.clone();
-                if !selected_path.is_empty() && !self.suppress_selected_attachment {
-                    // show auto-selected tag by default; user can hide via ✕
-                    Frame::new().show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(format!("📎 {}", std::path::Path::new(&selected_path).file_name().and_then(|s| s.to_str()).unwrap_or("selected"))).monospace());
-                            if ui.small_button("✕").on_hover_text("Remove").clicked() { suppress_auto_selected = true; }
+            if !self.attachments.is_empty() {
+                // We'll track UI intents and apply to self after the closure to avoid borrow conflicts
+                let mut suppress_auto_selected = false;
+                let mut remove_index: Option<usize> = None;
+                // Attachments row (chips)
+                ui.horizontal_wrapped(|ui| {
+                    // Auto-attachment tag for current selection
+                    let selected_path = explorer.current_thumb.path.clone();
+                    if !selected_path.is_empty() && !self.suppress_selected_attachment {
+                        // show auto-selected tag by default; user can hide via ✕
+                        Frame::new().show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(format!("📎 {}", std::path::Path::new(&selected_path).file_name().and_then(|s| s.to_str()).unwrap_or("selected"))).monospace());
+                                if ui.small_button("✕").on_hover_text("Remove").clicked() { suppress_auto_selected = true; }
+                            });
                         });
-                    });
-                }
-                // User-added attachments (iterate over a snapshot to avoid borrowing self immutably while needing &mut self)
-                let attachments_snapshot: Vec<String> = self.attachments.clone();
-                for (i, p) in attachments_snapshot.iter().enumerate() {
-                    Frame::new().show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            if let Some(tex) = self.try_thumbnail(ui, p) {
-                                let size = vec2(20.0, 20.0);
-                                let src = eframe::egui::ImageSource::Texture((tex, size).into());
-                                ui.add(eframe::egui::Image::new(src));
-                            }
-                            let fname = std::path::Path::new(p).file_name().and_then(|s| s.to_str()).unwrap_or(p);
-                            ui.label(RichText::new(format!(" {}", fname)).monospace());
-                            if ui.small_button("✕").clicked() { remove_index = Some(i); }
+                    }
+                    // User-added attachments (iterate over a snapshot to avoid borrowing self immutably while needing &mut self)
+                    let attachments_snapshot: Vec<String> = self.attachments.clone();
+                    for (i, p) in attachments_snapshot.iter().enumerate() {
+                        Frame::new().show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                if let Some(tex) = self.try_thumbnail(ui, p) {
+                                    let size = vec2(20.0, 20.0);
+                                    let src = eframe::egui::ImageSource::Texture((tex, size).into());
+                                    ui.add(eframe::egui::Image::new(src));
+                                }
+                                let fname = std::path::Path::new(p).file_name().and_then(|s| s.to_str()).unwrap_or(p);
+                                ui.label(RichText::new(format!(" {}", fname)).monospace());
+                                if ui.small_button("✕").clicked() { remove_index = Some(i); }
+                            });
                         });
-                    });
-                }
-            });
-            // Apply UI intents after the closure
-            if suppress_auto_selected { self.suppress_selected_attachment = true; }
-            if let Some(i) = remove_index { self.attachments.remove(i); }
+                    }
+                });
+                // Apply UI intents after the closure
+                if suppress_auto_selected { self.suppress_selected_attachment = true; }
+                if let Some(i) = remove_index { self.attachments.remove(i); }
+            }
 
-            TopBottomPanel::bottom("Bottom panel chat message").exact_height(25.).show_inside(ui, |ui| {
+            ui.horizontal(|ui| {
                 // Plus menu to add attachments
                 ui.menu_button("✚", |ui| {
                     if ui.button("Attach current selection").clicked() {
@@ -406,6 +484,9 @@ impl AssistantPanel {
                     }
                 });
             });
+
+            ui.separator();
+
             ui.horizontal(|ui| {
                 // Input field
                 let te = TextEdit::multiline(&mut self.prompt)
@@ -471,26 +552,30 @@ impl AssistantPanel {
 
 
         // Poll async OpenRouter models result
-        if let Some(rx) = self.models_rx.as_ref() {
-            if let Ok(res) = rx.try_recv() {
-                match res {
-                    Ok(list) => {
-                        log::info!("[Assistant] received {} OpenRouter models", list.len());
-                        self.models_list = list;
-                        self.models_error = None;
-                    }
-                    Err(e) => {
-                        log::warn!("OpenRouter models fetch failed: {e}");
-                        self.models_error = Some(e);
-                    }
+        if let Ok(res) = self.models_rx.try_recv() {
+            match res {
+                Ok(json_list) => {
+                    log::info!("[Assistant] received {} OpenRouter models", json_list.len());
+                    self.models_json = json_list;
+                    self.models_list = self
+                        .models_json
+                        .iter()
+                        .filter_map(|v| v.get("id").and_then(|x| x.as_str()).map(|s| s.to_string()))
+                        .collect();
+                    self.models_error = None;
                 }
-                self.models_rx = None;
-                self.models_loading = false;
-                ctx.request_repaint();
-            } else if self.models_loading {
-                // Keep the UI repainting while we wait so the spinner/text updates
-                ctx.request_repaint_after(std::time::Duration::from_millis(200));
+                Err(e) => {
+                    log::warn!("OpenRouter models fetch failed: {e}");
+                    self.models_error = Some(e);
+                    self.models_json.clear();
+                    self.models_list.clear();
+                }
             }
+            self.models_loading = false;
+            ctx.request_repaint();
+        } else if self.models_loading {
+            // Keep the UI repainting while we wait so the spinner/text updates
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
         }
 
         // Database picker modal
@@ -544,48 +629,81 @@ impl AssistantPanel {
                         if ui.small_button("Refresh").clicked() {
                             let settings = crate::database::settings::load_settings().unwrap_or_default();
                             let api_key = super::assistant::env_or(&settings.openrouter_api_key, "OPENROUTER_API_KEY");
-                            // Always use OpenRouter base (do not reuse generic OpenAI base URL)
-                            let base = Some("https://openrouter.ai/api/v1".into());
-                            let (tx, rx) = crossbeam::channel::unbounded::<Result<Vec<String>, String>>();
-                            self.models_rx = Some(rx);
                             self.models_loading = true;
                             self.models_error = None;
+                            let tx = self.models_tx.clone();
                             tokio::spawn(async move {
-                                let res = crate::ai::openai_compat::list_models_via_async_openai("openrouter", api_key, base).await.map_err(|e| e.to_string());
+                                let res = crate::ai::openai_compat::fetch_openrouter_models_json(api_key, Some("https://openrouter.ai/api/v1".into()))
+                                    .await
+                                    .map_err(|e| e.to_string());
                                 let _ = tx.send(res);
                             });
                         }
                     });
                     ui.separator();
-                    let matches_count = if self.models_filter.is_empty() { self.models_list.len() } else { self.models_list.iter().filter(|m| m.to_lowercase().contains(&self.models_filter.to_lowercase())).count() };
-                    if !self.models_loading { ui.label(RichText::new(format!("{} models ({} shown)", self.models_list.len(), matches_count)).weak()); }
-                    if self.models_loading {
-                        ui.label(RichText::new("Loading models…").weak());
-                    }
+                    let shown_ids: Vec<String> = self
+                        .models_list
+                        .iter()
+                        .filter(|m| self.models_filter.is_empty() || m.to_lowercase().contains(&self.models_filter.to_lowercase()))
+                        .cloned()
+                        .collect();
+                    if !self.models_loading { ui.label(RichText::new(format!("{} models ({} shown)", self.models_list.len(), shown_ids.len())).weak()); }
+                    if self.models_loading { ui.label(RichText::new("Loading models…").weak()); }
                     if let Some(err) = &self.models_error { ui.colored_label(ui.visuals().warn_fg_color, format!("Error: {err}")); }
-                    if !self.models_loading && !self.models_list.is_empty() && self.models_filter.is_empty() {
-                        egui::CollapsingHeader::new("Preview (first 20)").show(ui, |ui| {
-                            for m in self.models_list.iter().take(20) { ui.label(m); }
-                        });
-                    }
                     ScrollArea::vertical().show(ui, |ui| {
-                        for m in self.models_list.iter().filter(|m| self.models_filter.is_empty() || m.to_lowercase().contains(&self.models_filter.to_lowercase())) {
-                            ui.horizontal(|ui| {
-                                ui.label(m);
-                                if ui.small_button("Use").clicked() {
-                                    self.model_override = Some(m.clone());
-                                    let mut settings = crate::database::settings::load_settings().unwrap_or_default();
-                                    settings.openai_default_model = Some(m.clone());
-                                    crate::database::settings::save_settings(&settings);
+                        for id in shown_ids {
+                            if let Some(model) = self.models_json.iter().find(|v| v.get("id").and_then(|x| x.as_str()) == Some(id.as_str())) {
+                                ui.columns(2, |cols| {
+                                    let (left, right) = cols.split_at_mut(1);
+                                    let ui_left = &mut left[0];
+                                    let ui_right = &mut right[0];
+                                    let is_open = self.models_open.contains(&id);
+                                    let toggle = if is_open { "▼" } else { "▶" };
+                                    if ui_left.selectable_label(is_open, format!("{} {}", toggle, id)).clicked() {
+                                        if is_open { self.models_open.remove(&id); } else { self.models_open.insert(id.clone()); }
+                                    }
+                                    ui_right.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        if ui.small_button("Use").on_hover_text("Set as current model").clicked() {
+                                            self.model_override = Some(id.clone());
+                                            let mut settings = crate::database::settings::load_settings().unwrap_or_default();
+                                            settings.openai_default_model = Some(id.clone());
+                                            crate::database::settings::save_settings(&settings);
+                                        }
+                                        if ui.small_button("Copy").on_hover_text("Copy model id").clicked() {
+                                            ui.ctx().copy_text(id.clone());
+                                        }
+                                    });
+                                });
+                                if self.models_open.contains(&id) {
+                                    ui.add_space(4.0);
+                                    if let Ok(pretty) = serde_json::to_string_pretty(model) {
+                                        // Render JSON details as non-editable code block
+                                        ui.group(|ui| {
+                                            let lang = "json".to_string();
+                                            let theme = CodeTheme::from_style(ui.style().as_ref());
+                                            let style_clone = ui.style().clone();
+                                            let ctx_clone = ui.ctx().clone();
+                                            let mut layouter = move |ui: &Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
+                                                let s: &str = text.as_str();
+                                                let mut job = highlight(&ctx_clone, &style_clone, &theme, &lang, s);
+                                                job.wrap.max_width = wrap_width;
+                                                ui.fonts(|f| f.layout_job(job))
+                                            };
+                                            let mut text_mut = pretty.clone();
+                                            let rows_est = (text_mut.lines().count().max(3) as f32).min(24.0) as usize;
+                                            ui.add(
+                                                TextEdit::multiline(&mut text_mut)
+                                                    .desired_rows(rows_est)
+                                                    .desired_width(ui.available_width())
+                                                    .font(FontId::monospace(13.0))
+                                                    .interactive(false)
+                                                    .layouter(&mut layouter)
+                                            );
+                                        });
+                                    }
+                                    ui.separator();
                                 }
-                                if ui.small_button("Copy").clicked() {
-                                    ui.ctx().copy_text(m.clone());
-                                }
-                            });
-                            ui.separator();
-                        }
-                        if !self.models_loading && self.models_list.is_empty() {
-                            ui.label(RichText::new("No models found yet. Ensure API key and try Refresh.").weak());
+                            }
                         }
                     });
                 });
@@ -598,6 +716,7 @@ impl AssistantPanel {
         self.last_reply.clear();
         self.progress = Some(String::new());
     let prompt = self.prompt.clone();
+        let prompt_trim = prompt.trim().to_string();
         // Choose attachments to send: user-picked attachments (all), or fallback to current selection if none (and not suppressed)
         let mut paths: Vec<String> = self.attachments.clone();
         if paths.is_empty() && !explorer.current_thumb.path.is_empty() && !self.suppress_selected_attachment {
@@ -613,7 +732,67 @@ impl AssistantPanel {
         let use_cloud = provider != "local-joycaption";
         crate::ui::status::ASSIST_STATUS.set_state(crate::ui::status::StatusState::Running, if use_cloud { "Cloud request" } else { "Local request" });
         crate::ui::status::ASSIST_STATUS.set_model(&provider);
-    if use_cloud {
+        // Slash commands: /ping, /search, /describe
+        let is_command = prompt_trim.starts_with('/');
+        if is_command {
+            crate::ui::status::ASSIST_STATUS.set_state(crate::ui::status::StatusState::Running, "MCP command");
+            crate::ui::status::ASSIST_STATUS.set_model("mcp");
+            let session_id_for_async = self.session_ids.get(self.active_session).cloned();
+            let cmdline = prompt_trim.clone();
+            // Snapshot current selection path for /describe fallback
+            let selected_path_snapshot = explorer.current_thumb.path.clone();
+            let handle = tokio::spawn(async move {
+                let mut parts = cmdline[1..].splitn(2, ' ');
+                let cmd = parts.next().unwrap_or("").to_lowercase();
+                let arg = parts.next().unwrap_or("").trim().to_string();
+                let reply: String = match cmd.as_str() {
+                    "ping" => {
+                        match crate::ai::mcp::ping_tool(arg.clone()).await {
+                            Ok(echo) => format!("pong: {}", echo),
+                            Err(e) => format!("Ping failed: {e}"),
+                        }
+                    }
+                    "search" => {
+                        match crate::ai::mcp::media_search_tool(arg.clone(), Some(32)).await {
+                            Ok(hits) => {
+                                // Send results to the explorer panel
+                                let mut results = Vec::new();
+                                for h in hits.iter() {
+                                    let thumb = crate::Thumbnail::get_thumbnail_by_path(&h.path).await.unwrap_or(None).unwrap_or_default();
+                                    results.push(crate::ui::file_table::SimilarResult { thumb, created: None, updated: None, similarity_score: None, clip_similarity_score: Some(h.score) });
+                                }
+                                let _ = tx_updates.try_send(crate::ui::file_table::AIUpdate::SimilarResults { origin_path: format!("mcp:media.search:{}", arg), results });
+                                format!("Found {} similar items for '{}'. See results panel.", hits.len(), arg)
+                            }
+                            Err(e) => format!("Search failed: {e}"),
+                        }
+                    }
+                    "describe" => {
+                        // Use explicit argument or fallback to the selected item snapshot
+                        let chosen = if !arg.is_empty() { arg.clone() } else { selected_path_snapshot.clone() };
+                        if chosen.is_empty() {
+                            "No file selected or path specified.".to_string()
+                        } else {
+                            match crate::ai::mcp::media_describe_tool(chosen.clone()).await {
+                                Ok(resp) => format!("Caption: {}\nCategory: {}\nTags: {}", resp.caption, resp.category, resp.tags.join(", ")),
+                                Err(e) => format!("Describe failed: {e}"),
+                            }
+                        }
+                    }
+                    _ => format!("Unknown command: /{}", cmd),
+                };
+                let _ = chat_tx.try_send(reply.clone());
+                // Persist assistant reply
+                if let Some(id) = session_id_for_async {
+                    let _ = crate::database::assistant_chat::append_message(&id, "assistant", &reply, None).await;
+                }
+                crate::ui::status::ASSIST_STATUS.set_state(crate::ui::status::StatusState::Idle, "Idle");
+            });
+            self.assistant_task = Some(handle);
+            // Not streaming for commands
+            self.chat_streaming = false;
+            // Persist user prompt is handled below; then early return to avoid cloud/local flow
+        } else if use_cloud {
             let model = self.model_override.clone().unwrap_or_else(|| settings.openai_default_model.clone().unwrap_or_else(|| "gpt-4o-mini".into()));
             let (api_key, base_url, org) = match provider.as_str() {
                 "openai" => (super::assistant::env_or(&settings.openai_api_key, "OPENAI_API_KEY"), settings.openai_base_url.clone(), settings.openai_organization.clone()),

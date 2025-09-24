@@ -147,3 +147,29 @@ pub async fn serve_stdio_background() -> anyhow::Result<()> {
     Ok(())
 }
 
+// -------------------- UI-friendly helpers --------------------
+
+/// Convenience: Call the ping tool and return the echoed message.
+pub async fn ping_tool(message: String) -> Result<String, String> {
+    let server = MCPServer::new();
+    let params = rmcp::handler::server::wrapper::Parameters(PingRequest { message });
+    let res = server.ping(params).await?;
+    Ok(res.0.message)
+}
+
+/// Convenience: Call the media.search tool and return results.
+pub async fn media_search_tool(query: String, top_k: Option<u32>) -> Result<Vec<MediaSearchHit>, String> {
+    let server = MCPServer::new();
+    let params = rmcp::handler::server::wrapper::Parameters(MediaSearchRequest { query, top_k });
+    let res = server.media_search(params).await?;
+    Ok(res.0.results)
+}
+
+/// Convenience: Call the media.describe tool and return the response.
+pub async fn media_describe_tool(path: String) -> Result<MediaDescribeResponse, String> {
+    let server = MCPServer::new();
+    let params = rmcp::handler::server::wrapper::Parameters(MediaDescribeRequest { path });
+    let res = server.media_describe(params).await?;
+    Ok(res.0)
+}
+
