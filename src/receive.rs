@@ -705,5 +705,21 @@ impl crate::app::SmartMediaContext {
                 self.open_ui_settings = false;
             }
         }
+
+        // Show AI Assistant in its own viewport window (independent of the dock) when enabled via View menu
+        if self.assistant_window_open {
+            let vp_id = egui::ViewportId::from_hash_of("ai-assistant-viewport");
+            ctx.show_viewport_immediate(
+            vp_id,
+            egui::ViewportBuilder::default()
+            .with_title("AI Assistant")
+            .with_inner_size([800.0, 900.0]),
+            |vcx, _class| 
+            {
+                egui::CentralPanel::default().show(vcx, |ui| {
+                    self.assistant.ui(ui, &mut self.file_explorer);
+                });
+            });
+        }
     }
 }

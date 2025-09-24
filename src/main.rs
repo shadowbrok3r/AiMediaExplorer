@@ -89,22 +89,6 @@ impl eframe::App for app::SmartMediaApp {
                 .secondary_button_context_menu(true)
                 .show_inside(ui, &mut self.context);
         });
-
-        // Show AI Assistant in its own viewport window (independent of the dock) when enabled via View menu
-        if self.context.assistant_window_open {
-            let vp_id = egui::ViewportId::from_hash_of("ai-assistant-viewport");
-            ctx.show_viewport_immediate(
-                vp_id,
-                egui::ViewportBuilder::default()
-                    .with_title("AI Assistant")
-                    .with_inner_size([520.0, 720.0]),
-                |vcx, _class| {
-                    egui::CentralPanel::default().show(vcx, |ui| {
-                        self.context.assistant.ui(ui, &mut self.context.file_explorer);
-                    });
-                },
-            );
-        }
     }
 
     fn persist_egui_memory(&self) -> bool { true }

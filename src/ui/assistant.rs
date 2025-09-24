@@ -61,7 +61,7 @@ pub fn env_or(opt: &Option<String>, key: &str) -> Option<String> {
 impl AssistantPanel {
     pub fn new() -> Self {
         let (chat_tx, chat_rx) = unbounded::<String>();
-    let (db_tx, db_rx) = unbounded::<Vec<(String, String, Option<String>)>>();
+        let (db_tx, db_rx) = unbounded::<Vec<(String, String, Option<String>)>>();
         Self {
             prompt: String::new(),
             progress: None,
@@ -94,6 +94,7 @@ impl AssistantPanel {
             collapsed: HashSet::new(),
         }
     }
+    
     pub fn ui(&mut self, ui: &mut Ui, explorer: &mut crate::ui::file_table::FileExplorer) {
         let ctx = ui.ctx().clone();
         // Initialize a default session and defaults
@@ -147,9 +148,9 @@ impl AssistantPanel {
         });
 
         // LEFT: Provider/model + Sessions list
-        SidePanel::left("assistant_left").resizable(true).default_width(240.0).show(&ctx, |ui| {
+        SidePanel::left("assistant_left").exact_width(200.).show(&ctx, |ui| {
             let settings = crate::database::settings::load_settings().unwrap_or_default();
-            ui.label(RichText::new("Model Options").strong());
+            ui.vertical_centered(|ui| ui.heading(RichText::new("Model Options").color(ui.style().visuals.error_fg_color).strong()));
             ui.separator();
             let providers = ["local-joycaption","openai","gemini","groq","grok","openrouter","custom"];
             let current_provider = settings.ai_chat_provider.clone().unwrap_or_else(|| "local-joycaption".into());
@@ -214,8 +215,8 @@ impl AssistantPanel {
         });
 
         // RIGHT: Inference settings
-        SidePanel::right("assistant_right").resizable(true).default_width(280.0).show(&ctx, |ui| {
-            ui.label(RichText::new("Inference Settings").strong());
+        SidePanel::right("assistant_right").exact_width(280.).show(&ctx, |ui| {
+            ui.vertical_centered(|ui| ui.heading(RichText::new("Inference Settings").color(ui.style().visuals.error_fg_color).strong()));
             ui.separator();
             let mut settings = crate::database::settings::load_settings().unwrap_or_default();
             ui.label("Endpoint (OpenAI-compatible base URL)");
@@ -293,6 +294,102 @@ impl AssistantPanel {
             });
         });
 
+        // BOTTOM: Input bar
+        TopBottomPanel::bottom("assistant_bottom").show(&ctx, |ui| {
+            // We'll track UI intents and apply to self after the closure to avoid borrow conflicts
+            let mut suppress_auto_selected = false;
+            let mut remove_index: Option<usize> = None;
+            // Attachments row (chips)
+            ui.horizontal_wrapped(|ui| {
+                // Auto-attachment tag for current selection
+                let selected_path = explorer.current_thumb.path.clone();
+                if !selected_path.is_empty() && !self.suppress_selected_attachment {
+                    // show auto-selected tag by default; user can hide via ✕
+                    Frame::new().show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(format!("📎 {}", std::path::Path::new(&selected_path).file_name().and_then(|s| s.to_str()).unwrap_or("selected"))).monospace());
+                            if ui.small_button("✕").on_hover_text("Remove").clicked() { suppress_auto_selected = true; }
+                        });
+                    });
+                }
+                // User-added attachments (iterate over a snapshot to avoid borrowing self immutably while needing &mut self)
+                let attachments_snapshot: Vec<String> = self.attachments.clone();
+                for (i, p) in attachments_snapshot.iter().enumerate() {
+                    Frame::new().show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            if let Some(tex) = self.try_thumbnail(ui, p) {
+                                let size = vec2(20.0, 20.0);
+                                let src = eframe::egui::ImageSource::Texture((tex, size).into());
+                                ui.add(eframe::egui::Image::new(src));
+                            }
+                            let fname = std::path::Path::new(p).file_name().and_then(|s| s.to_str()).unwrap_or(p);
+                            ui.label(RichText::new(format!(" {}", fname)).monospace());
+                            if ui.small_button("✕").clicked() { remove_index = Some(i); }
+                        });
+                    });
+                }
+            });
+            // Apply UI intents after the closure
+            if suppress_auto_selected { self.suppress_selected_attachment = true; }
+            if let Some(i) = remove_index { self.attachments.remove(i); }
+
+            ui.horizontal(|ui| {
+                ui.set_height(20.);
+                // Plus menu to add attachments
+                ui.menu_button("✚", |ui| {
+                    if ui.button("Attach current selection").clicked() {
+                        if !explorer.current_thumb.path.is_empty() { self.suppress_selected_attachment = false; }
+                        ui.close_kind(UiKind::Menu);
+                    }
+                    if ui.button("Attach file…").clicked() {
+                        if let Some(file) = rfd::FileDialog::new().set_title("Attach image or file").pick_file() {
+                            self.attachments.push(file.display().to_string());
+                        }
+                        ui.close_kind(UiKind::Menu);
+                    }
+                    if ui.button("Pick from database…").clicked() {
+                        self.show_db_picker = true;
+                        let tx = self.db_tx.clone();
+                        tokio::spawn(async move {
+                            let rows = crate::Thumbnail::get_all_thumbnails().await.unwrap_or_default();
+                            let mut items: Vec<(String,String,Option<String>)> = rows.into_iter().map(|t| (t.path, t.filename, t.thumbnail_b64)).collect();
+                            if items.len() > 200 { items.truncate(200); }
+                            let _ = tx.send(items);
+                        });
+                        ui.close_kind(UiKind::Menu);
+                    }
+                });
+
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    // Send / Stop / Regenerate icons
+                    if ui.button("⬈").on_hover_text("Send").clicked() && !self.prompt.trim().is_empty() {
+                        self.send_current_prompt(explorer);
+                    }
+                    if ui.button("⏹").on_hover_text("Stop").clicked() {
+                        self.chat_streaming = false;
+                        if let Some(h) = self.assistant_task.take() { h.abort(); }
+                    }
+                    if ui.button("↻").on_hover_text("Regenerate").clicked() {
+                        if let Some(last_user) = self.messages.iter().rev().find(|m| matches!(m.role, ChatRole::User)).cloned() { self.prompt = last_user.content; self.send_current_prompt(explorer); }
+                    }
+                });
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                // Input field
+                let te = TextEdit::multiline(&mut self.prompt)
+                .desired_rows(5)
+                .desired_width(ui.available_width())
+                .hint_text("Type your message… Shift+Enter = newline, Enter = send")
+                .ui(ui);
+
+                let enter_send = te.has_focus() && ui.input(|i| i.key_pressed(Key::Enter) && !i.modifiers.shift);
+                if enter_send && !self.prompt.trim().is_empty() {
+                    self.send_current_prompt(explorer);
+                }
+            });
+        });
+
         // CENTER: Messages list
         CentralPanel::default().show(&ctx, |ui| {
             ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
@@ -341,89 +438,6 @@ impl AssistantPanel {
             }
         }
 
-        // BOTTOM: Input bar
-        TopBottomPanel::bottom("assistant_bottom").show(&ctx, |ui| {
-            // We'll track UI intents and apply to self after the closure to avoid borrow conflicts
-            let mut suppress_auto_selected = false;
-            let mut remove_index: Option<usize> = None;
-            // Attachments row (chips)
-            ui.horizontal_wrapped(|ui| {
-                // Auto-attachment tag for current selection
-                let selected_path = explorer.current_thumb.path.clone();
-                if !selected_path.is_empty() && !self.suppress_selected_attachment {
-                    // show auto-selected tag by default; user can hide via ✕
-                    Frame::new().show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(format!("📎 {}", std::path::Path::new(&selected_path).file_name().and_then(|s| s.to_str()).unwrap_or("selected"))).monospace());
-                            if ui.small_button("✕").on_hover_text("Remove").clicked() { suppress_auto_selected = true; }
-                        });
-                    });
-                }
-                // User-added attachments (iterate over a snapshot to avoid borrowing self immutably while needing &mut self)
-                let attachments_snapshot: Vec<String> = self.attachments.clone();
-                for (i, p) in attachments_snapshot.iter().enumerate() {
-                    Frame::new().show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            if let Some(tex) = self.try_thumbnail(ui, p) {
-                                let size = vec2(20.0, 20.0);
-                                let src = eframe::egui::ImageSource::Texture((tex, size).into());
-                                ui.add(eframe::egui::Image::new(src));
-                            }
-                            let fname = std::path::Path::new(p).file_name().and_then(|s| s.to_str()).unwrap_or(p);
-                            ui.label(RichText::new(format!(" {}", fname)).monospace());
-                            if ui.small_button("✕").clicked() { remove_index = Some(i); }
-                        });
-                    });
-                }
-            });
-            // Apply UI intents after the closure
-            if suppress_auto_selected { self.suppress_selected_attachment = true; }
-            if let Some(i) = remove_index { self.attachments.remove(i); }
-
-            ui.separator();
-            ui.horizontal(|ui| {
-                // Plus menu to add attachments
-                ui.menu_button("＋", |ui| {
-                    if ui.button("Attach current selection").clicked() {
-                        if !explorer.current_thumb.path.is_empty() { self.suppress_selected_attachment = false; }
-                        ui.close_kind(UiKind::Menu);
-                    }
-                    if ui.button("Attach file…").clicked() {
-                        if let Some(file) = rfd::FileDialog::new().set_title("Attach image or file").pick_file() {
-                            self.attachments.push(file.display().to_string());
-                        }
-                        ui.close_kind(UiKind::Menu);
-                    }
-                    if ui.button("Pick from database…").clicked() {
-                        self.show_db_picker = true;
-                        let tx = self.db_tx.clone();
-                        tokio::spawn(async move {
-                            let rows = crate::Thumbnail::get_all_thumbnails().await.unwrap_or_default();
-                            let mut items: Vec<(String,String,Option<String>)> = rows.into_iter().map(|t| (t.path, t.filename, t.thumbnail_b64)).collect();
-                            if items.len() > 200 { items.truncate(200); }
-                            let _ = tx.send(items);
-                        });
-                        ui.close_kind(UiKind::Menu);
-                    }
-                });
-
-                // Input field
-                let te = ui.add_sized([ui.available_width() - 120.0, 60.0], TextEdit::multiline(&mut self.prompt).desired_rows(4).hint_text("Type your message… Shift+Enter = newline, Enter = send"));
-                let enter_send = te.has_focus() && ui.input(|i| i.key_pressed(Key::Enter) && !i.modifiers.shift);
-
-                // Send / Stop / Regenerate icons
-                if (ui.button("➤").on_hover_text("Send").clicked() || enter_send) && !self.prompt.trim().is_empty() {
-                    self.send_current_prompt(explorer);
-                }
-                if ui.button("⏹").on_hover_text("Stop").clicked() {
-                    self.chat_streaming = false;
-                    if let Some(h) = self.assistant_task.take() { h.abort(); }
-                }
-                if ui.button("↻").on_hover_text("Regenerate").clicked() {
-                    if let Some(last_user) = self.messages.iter().rev().find(|m| matches!(m.role, ChatRole::User)).cloned() { self.prompt = last_user.content; self.send_current_prompt(explorer); }
-                }
-            });
-        });
 
         // Database picker modal
         if self.show_db_picker {
