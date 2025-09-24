@@ -51,8 +51,8 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
         DEFINE TABLE IF NOT EXISTS cached_scans TYPE NORMAL SCHEMAFULL PERMISSIONS FULL;
         DEFINE TABLE IF NOT EXISTS cached_scan_items TYPE NORMAL SCHEMAFULL PERMISSIONS FULL;
         DEFINE TABLE IF NOT EXISTS clip_embeddings TYPE NORMAL SCHEMAFULL PERMISSIONS FULL;
-    DEFINE TABLE IF NOT EXISTS assistant_sessions TYPE NORMAL SCHEMAFULL PERMISSIONS FULL;
-    DEFINE TABLE IF NOT EXISTS assistant_messages TYPE NORMAL SCHEMAFULL PERMISSIONS FULL;
+        DEFINE TABLE IF NOT EXISTS assistant_sessions TYPE NORMAL SCHEMAFULL PERMISSIONS FULL;
+        DEFINE TABLE IF NOT EXISTS assistant_messages TYPE NORMAL SCHEMAFULL PERMISSIONS FULL;
 
         DEFINE FIELD IF NOT EXISTS caption ON thumbnails TYPE option<string> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS category ON thumbnails TYPE option<string> PERMISSIONS FULL;
@@ -77,14 +77,14 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
         DEFINE FIELD IF NOT EXISTS updated ON clip_embeddings TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS similarity_score ON clip_embeddings TYPE option<float> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS clip_similarity_score ON clip_embeddings TYPE option<float> PERMISSIONS FULL;
-    DEFINE FIELD IF NOT EXISTS title ON assistant_sessions TYPE string PERMISSIONS FULL;
-    DEFINE FIELD IF NOT EXISTS created ON assistant_sessions TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
-    DEFINE FIELD IF NOT EXISTS updated ON assistant_sessions TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
-    DEFINE FIELD IF NOT EXISTS session_ref ON assistant_messages TYPE record<assistant_sessions> PERMISSIONS FULL;
-    DEFINE FIELD IF NOT EXISTS role ON assistant_messages TYPE string PERMISSIONS FULL;
-    DEFINE FIELD IF NOT EXISTS content ON assistant_messages TYPE string PERMISSIONS FULL;
-    DEFINE FIELD IF NOT EXISTS attachments ON assistant_messages TYPE option<array<string>> PERMISSIONS FULL;
-    DEFINE FIELD IF NOT EXISTS created ON assistant_messages TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS title ON assistant_sessions TYPE string PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS created ON assistant_sessions TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS updated ON assistant_sessions TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS session_ref ON assistant_messages TYPE record<assistant_sessions> PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS role ON assistant_messages TYPE string PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS content ON assistant_messages TYPE string PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS attachments ON assistant_messages TYPE option<array<string>> PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS created ON assistant_messages TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
         
         DEFINE FIELD IF NOT EXISTS ext_enabled ON user_settings TYPE option<array<any>> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS excluded_dirs ON user_settings TYPE option<array<string>> PERMISSIONS FULL;

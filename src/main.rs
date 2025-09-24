@@ -146,7 +146,15 @@ async fn main() -> eframe::Result<()> {
                 // .with_always_on_top(),
             ..Default::default()
         },
-        Box::new(|cc| Ok(Box::new(app::SmartMediaApp::new(cc)))),
+        Box::new(|cc| {
+            // Fire up MCP stdio server in the background for testing
+            tokio::spawn(async move {
+                if let Err(e) = crate::ai::mcp::serve_stdio_background().await {
+                    log::warn!("[MCP] stdio server failed to start: {e}");
+                }
+            });
+            Ok(Box::new(app::SmartMediaApp::new(cc)))
+        }),
     );
     
     Ok(())

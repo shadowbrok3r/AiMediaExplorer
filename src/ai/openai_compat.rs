@@ -1,6 +1,18 @@
 use anyhow::Result;
 use futures_util::StreamExt;
 use base64::Engine as _;
+use async_openai::{config::OpenAIConfig, Client};
+use async_openai::types::{
+    ChatCompletionRequestMessage,
+    ChatCompletionRequestSystemMessageArgs,
+    ChatCompletionRequestUserMessageArgs,
+    ChatCompletionRequestUserMessageContent,
+    ChatCompletionRequestMessageContentPartTextArgs,
+    ChatCompletionRequestMessageContentPartImageArgs,
+    CreateChatCompletionRequestArgs,
+    ImageUrlArgs,
+};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT};
 
 #[derive(Debug, Clone)]
 pub struct ProviderConfig {
@@ -31,6 +43,58 @@ fn image_bytes_to_data_url(bytes: &[u8]) -> String {
     format!("data:{};base64,{}", mime, b64)
 }
 
+/// Build an async-openai client configured for the given provider/base/key.
+/// For OpenRouter we add recommended headers (HTTP-Referer, X-Title) if provided via env.
+fn build_async_openai_client(
+    provider: &str,
+    api_key: Option<String>,
+    base_url: Option<String>,
+    organization: Option<String>,
+) -> Result<Client<OpenAIConfig>> {
+    // Determine base URL defaults per provider
+    let (default_base, _auth_header_name) = default_base_and_header(provider);
+    let api_base = base_url.unwrap_or(default_base);
+
+    let mut cfg = OpenAIConfig::new().with_api_base(api_base);
+    if let Some(key) = api_key { cfg = cfg.with_api_key(key); }
+
+    // Build reqwest client with optional OpenRouter headers
+    let mut headers = HeaderMap::new();
+    if let Some(org) = organization.as_deref() {
+        // OpenAI optional organization header
+        if let Ok(val) = HeaderValue::from_str(org) {
+            headers.insert(HeaderName::from_static("openai-organization"), val);
+        }
+    }
+    if provider == "openrouter" {
+        if let Ok(site) = std::env::var("OPENROUTER_SITE") {
+            if let Ok(val) = HeaderValue::from_str(&site) { headers.insert(HeaderName::from_static("referer"), val); }
+        }
+        if let Ok(title) = std::env::var("OPENROUTER_TITLE") {
+            if let Ok(val) = HeaderValue::from_str(&title) { headers.insert(HeaderName::from_static("x-title"), val); }
+        }
+        // Some proxies benefit from explicit Accept
+        headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+    }
+    let http_client = reqwest::Client::builder()
+        .default_headers(headers)
+        .build()?;
+
+    Ok(Client::with_config(cfg).with_http_client(http_client))
+}
+
+/// List available models via async-openai for a given provider. Primarily targets OpenRouter.
+pub async fn list_models_via_async_openai(provider: &str, api_key: Option<String>, base_url: Option<String>) -> Result<Vec<String>> {
+    let client = build_async_openai_client(provider, api_key, base_url, None)?;
+    let resp = client.models().list().await?;
+    let mut out = Vec::new();
+    for m in resp.data {
+        out.push(m.id);
+    }
+    out.sort();
+    Ok(out)
+}
+
 pub async fn stream_multimodal_reply(
     cfg: ProviderConfig,
     prompt: &str,
@@ -50,89 +114,67 @@ async fn stream_openai_compatible(
     images: &[Vec<u8>],
     mut on_token: impl FnMut(&str),
 ) -> Result<String> {
-    let (default_base, auth_header_name) = default_base_and_header(&cfg.provider);
-    let base = cfg.base_url.clone().unwrap_or(default_base);
-    let url = format!("{}/chat/completions", base.trim_end_matches('/'));
-    let client = reqwest::Client::builder().build()?;
-    let mut req = client.post(&url);
+    // Build async-openai client with provider-specific base URL, API key, and optional org header
+    let client = build_async_openai_client(
+        &cfg.provider,
+        cfg.api_key.clone(),
+        cfg.base_url.clone(),
+        cfg.organization.clone(),
+    )?;
 
-    if let Some(key) = cfg.api_key.as_deref() {
-        // Bearer token for most providers
-        if auth_header_name.eq_ignore_ascii_case("authorization") {
-            req = req.header("Authorization", format!("Bearer {}", key));
-        } else {
-            req = req.header(auth_header_name.clone(), key);
-        }
-    }
-    if let Some(org) = cfg.organization.as_deref() {
-        req = req.header("OpenAI-Organization", org);
-    }
+    // Build messages using typed builders, supporting multimodal (text + multiple image_url parts)
+    let system_instruction = "You are a helpful assistant. Produce helpful, concise text suitable for a chat UI.";
+    let system_msg = ChatCompletionRequestMessage::System(
+        ChatCompletionRequestSystemMessageArgs::default()
+            .content(system_instruction)
+            .build()?
+    );
 
-        // Build messages with optional multiple image data URLs. Add a system instruction to produce helpful, concise text suitable for a chat UI.
-        let system_instruction = "You are a helpful assistant. Produce helpful, concise text suitable for a chat UI.";
-    let messages = if images.is_empty() {
-        serde_json::json!([
-            {"role": "system", "content": system_instruction},
-            {"role": "user", "content": prompt}
-        ])
+    let user_content = if images.is_empty() {
+        ChatCompletionRequestUserMessageContent::Text(prompt.to_string())
     } else {
-        let mut content: Vec<serde_json::Value> = vec![serde_json::json!({"type":"text", "text": prompt})];
+        let mut parts = Vec::with_capacity(1 + images.len());
+        parts.push(
+            ChatCompletionRequestMessageContentPartTextArgs::default()
+                .text(prompt.to_string())
+                .build()?
+                .into()
+        );
         for img in images {
             let data_url = image_bytes_to_data_url(img);
-            content.push(serde_json::json!({"type":"image_url", "image_url": {"url": data_url}}));
+            let image_part = ChatCompletionRequestMessageContentPartImageArgs::default()
+                .image_url(
+                    ImageUrlArgs::default()
+                        .url(data_url)
+                        .build()?
+                )
+                .build()?;
+            parts.push(image_part.into());
         }
-        serde_json::json!([
-            {"role": "system", "content": system_instruction},
-            {"role": "user", "content": content}
-        ])
+        ChatCompletionRequestUserMessageContent::Array(parts)
     };
 
-    let body = serde_json::json!({
-        "model": cfg.model,
-        "stream": true,
-        "messages": messages,
-        // sensible defaults
-        "temperature": cfg.temperature.unwrap_or(0.2)
-    });
+    let user_msg = ChatCompletionRequestMessage::User(
+        ChatCompletionRequestUserMessageArgs::default()
+            .content(user_content)
+            .build()?
+    );
 
-    let resp = req.json(&body).send().await?;
-    let status = resp.status();
-    if !status.is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        anyhow::bail!("provider error {}: {}", status, text);
-    }
-    let mut stream = resp.bytes_stream();
+    let req = CreateChatCompletionRequestArgs::default()
+        .model(cfg.model.clone())
+        .messages(vec![system_msg, user_msg])
+        .temperature(cfg.temperature.unwrap_or(0.2))
+        .build()?;
+
+    let mut stream = client.chat().create_stream(req).await?;
     let mut acc = String::new();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
-        // Expect OpenAI SSE-like: lines starting with "data: " and possibly [DONE]
-        let s = String::from_utf8_lossy(&chunk);
-        for line in s.split('\n') {
-            let line = line.trim();
-            if line.is_empty() { continue; }
-            // Some servers may deliver full JSON not SSE. Try flexible parse.
-            if let Some(stripped) = line.strip_prefix("data: ").or_else(|| line.strip_prefix("Data: ")) {
-                if stripped == "[DONE]" { return Ok(acc); }
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(stripped) {
-                    if let Some(delta) = v.pointer("/choices/0/delta/content").and_then(|x| x.as_str()) {
-                        on_token(delta);
-                        acc.push_str(delta);
-                    } else if let Some(content) = v.pointer("/choices/0/message/content").and_then(|x| x.as_str()) {
-                        // Some servers send full content objects at once
-                        on_token(content);
-                        acc.push_str(content);
-                    }
-                }
-            } else {
-                // Try parse line as a JSON object
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-                    if let Some(delta) = v.pointer("/choices/0/delta/content").and_then(|x| x.as_str()) {
-                        on_token(delta);
-                        acc.push_str(delta);
-                    } else if let Some(content) = v.pointer("/choices/0/message/content").and_then(|x| x.as_str()) {
-                        on_token(content);
-                        acc.push_str(content);
-                    }
+    while let Some(event) = stream.next().await {
+        let resp = event?; // Map OpenAIError via ? into anyhow
+        for choice in resp.choices {
+            if let Some(delta) = choice.delta.content {
+                if !delta.is_empty() {
+                    on_token(&delta);
+                    acc.push_str(&delta);
                 }
             }
         }

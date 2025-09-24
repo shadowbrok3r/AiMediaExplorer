@@ -8,11 +8,13 @@ pub mod joycap;
 pub mod model;
 pub mod qwen2_5_vl;
 pub mod qwen_image_transformer;
+pub mod qwen_image_edit;
 pub mod refine;
 pub mod reranker;
 pub mod siglip;
 pub mod vae;
 pub mod openai_compat;
+pub mod mcp;
 
 pub use ai_search::*;
 pub use jina_m0::*;
@@ -24,7 +26,6 @@ pub use reranker::*;
 use crate::database::Thumbnail;
 use crate::ui::status::{CLIP_STATUS, GlobalStatusIndicator, StatusState, VISION_STATUS};
 use once_cell::sync::Lazy;
-pub mod qwen_image_edit;
 // Global lazy AI engine accessor. Initialized on first use.
 pub static GLOBAL_AI_ENGINE: Lazy<AISearchEngine> = Lazy::new(|| AISearchEngine::new());
 

@@ -52,6 +52,13 @@ pub struct AssistantPanel {
     db_thumb_map: HashMap<String, String>,
     // Track collapsed message indices for very long messages
     collapsed: HashSet<usize>,
+    // OpenRouter models UI state
+    show_models_modal: bool,
+    models_list: Vec<String>,
+    models_filter: String,
+    models_rx: Option<crossbeam::channel::Receiver<Result<Vec<String>, String>>>,
+    models_loading: bool,
+    models_error: Option<String>,
 }
 // API key fallback to env vars
 pub fn env_or(opt: &Option<String>, key: &str) -> Option<String> {
@@ -92,11 +99,16 @@ impl AssistantPanel {
             thumb_cache: HashMap::new(),
             db_thumb_map: HashMap::new(),
             collapsed: HashSet::new(),
+            show_models_modal: false,
+            models_list: Vec::new(),
+            models_filter: String::new(),
+            models_rx: None,
+            models_loading: false,
+            models_error: None,
         }
     }
     
-    pub fn ui(&mut self, ui: &mut Ui, explorer: &mut crate::ui::file_table::FileExplorer) {
-        let ctx = ui.ctx().clone();
+    pub fn ui(&mut self, ctx: &Context, explorer: &mut crate::ui::file_table::FileExplorer) {
         // Initialize a default session and defaults
         if self.sessions.is_empty() {
             // Load sessions from DB
@@ -136,7 +148,9 @@ impl AssistantPanel {
                 if let Some((_t, msgs)) = self.sessions.get(self.active_session) { self.messages = msgs.clone(); }
             }
         }
+
         if self.temp <= 0.0 { self.temp = 0.2; }
+
         // TOP PANEL
         TopBottomPanel::top("assistant_top").show(&ctx, |ui| {
             ui.horizontal(|ui| {
@@ -161,12 +175,31 @@ impl AssistantPanel {
             });
             if selected_provider != current_provider {
                 let mut s2 = settings.clone();
-                s2.ai_chat_provider = Some(selected_provider);
+                s2.ai_chat_provider = Some(selected_provider.clone());
                 crate::database::settings::save_settings(&s2);
             }
             let current_model = self.model_override.clone().unwrap_or_else(|| settings.openai_default_model.clone().unwrap_or_else(|| "gpt-4o-mini".into()));
             ui.label("Model");
             ui.add_sized([200.0, 22.0], TextEdit::singleline(self.model_override.get_or_insert(current_model)));
+            if selected_provider == "openrouter" {
+                if ui.small_button("List OpenRouter models").on_hover_text("Fetch available models via async-openai").clicked() {
+                    self.show_models_modal = true;
+                    self.models_list.clear();
+                    self.models_loading = true;
+                    let api_key = super::assistant::env_or(&settings.openrouter_api_key, "OPENROUTER_API_KEY");
+                    // Always use OpenRouter base (do not reuse generic OpenAI base URL)
+                    let base = Some("https://openrouter.ai/api/v1".into());
+                    // Launch async fetch and keep receiver
+                    let (tx, rx) = crossbeam::channel::unbounded::<Result<Vec<String>, String>>();
+                    self.models_rx = Some(rx);
+                    tokio::spawn(async move {
+                        let res = crate::ai::openai_compat::list_models_via_async_openai("openrouter", api_key, base)
+                            .await
+                            .map_err(|e| e.to_string());
+                        let _ = tx.send(res);
+                    });
+                }
+            }
             ui.add_space(8.0);
             ui.separator();
             ui.label(RichText::new("Sessions").strong());
@@ -333,8 +366,7 @@ impl AssistantPanel {
             if suppress_auto_selected { self.suppress_selected_attachment = true; }
             if let Some(i) = remove_index { self.attachments.remove(i); }
 
-            ui.horizontal(|ui| {
-                ui.set_height(20.);
+            TopBottomPanel::bottom("Bottom panel chat message").exact_height(25.).show_inside(ui, |ui| {
                 // Plus menu to add attachments
                 ui.menu_button("✚", |ui| {
                     if ui.button("Attach current selection").clicked() {
@@ -374,7 +406,6 @@ impl AssistantPanel {
                     }
                 });
             });
-            ui.separator();
             ui.horizontal(|ui| {
                 // Input field
                 let te = TextEdit::multiline(&mut self.prompt)
@@ -439,6 +470,29 @@ impl AssistantPanel {
         }
 
 
+        // Poll async OpenRouter models result
+        if let Some(rx) = self.models_rx.as_ref() {
+            if let Ok(res) = rx.try_recv() {
+                match res {
+                    Ok(list) => {
+                        log::info!("[Assistant] received {} OpenRouter models", list.len());
+                        self.models_list = list;
+                        self.models_error = None;
+                    }
+                    Err(e) => {
+                        log::warn!("OpenRouter models fetch failed: {e}");
+                        self.models_error = Some(e);
+                    }
+                }
+                self.models_rx = None;
+                self.models_loading = false;
+                ctx.request_repaint();
+            } else if self.models_loading {
+                // Keep the UI repainting while we wait so the spinner/text updates
+                ctx.request_repaint_after(std::time::Duration::from_millis(200));
+            }
+        }
+
         // Database picker modal
         if self.show_db_picker {
             while let Ok(items) = self.db_rx.try_recv() {
@@ -474,6 +528,68 @@ impl AssistantPanel {
                     });
                 });
         }
+
+        // OpenRouter models modal
+        if self.show_models_modal {
+            // No eager refresh here; the fetch starts when button is clicked or when Refresh is pressed below.
+            Window::new("OpenRouter Models")
+                .collapsible(true)
+                .resizable(true)
+                .open(&mut self.show_models_modal)
+                .default_size(vec2(520.0, 420.0))
+                .show(&ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Filter");
+                        ui.add(TextEdit::singleline(&mut self.models_filter).hint_text("name contains…"));
+                        if ui.small_button("Refresh").clicked() {
+                            let settings = crate::database::settings::load_settings().unwrap_or_default();
+                            let api_key = super::assistant::env_or(&settings.openrouter_api_key, "OPENROUTER_API_KEY");
+                            // Always use OpenRouter base (do not reuse generic OpenAI base URL)
+                            let base = Some("https://openrouter.ai/api/v1".into());
+                            let (tx, rx) = crossbeam::channel::unbounded::<Result<Vec<String>, String>>();
+                            self.models_rx = Some(rx);
+                            self.models_loading = true;
+                            self.models_error = None;
+                            tokio::spawn(async move {
+                                let res = crate::ai::openai_compat::list_models_via_async_openai("openrouter", api_key, base).await.map_err(|e| e.to_string());
+                                let _ = tx.send(res);
+                            });
+                        }
+                    });
+                    ui.separator();
+                    let matches_count = if self.models_filter.is_empty() { self.models_list.len() } else { self.models_list.iter().filter(|m| m.to_lowercase().contains(&self.models_filter.to_lowercase())).count() };
+                    if !self.models_loading { ui.label(RichText::new(format!("{} models ({} shown)", self.models_list.len(), matches_count)).weak()); }
+                    if self.models_loading {
+                        ui.label(RichText::new("Loading models…").weak());
+                    }
+                    if let Some(err) = &self.models_error { ui.colored_label(ui.visuals().warn_fg_color, format!("Error: {err}")); }
+                    if !self.models_loading && !self.models_list.is_empty() && self.models_filter.is_empty() {
+                        egui::CollapsingHeader::new("Preview (first 20)").show(ui, |ui| {
+                            for m in self.models_list.iter().take(20) { ui.label(m); }
+                        });
+                    }
+                    ScrollArea::vertical().show(ui, |ui| {
+                        for m in self.models_list.iter().filter(|m| self.models_filter.is_empty() || m.to_lowercase().contains(&self.models_filter.to_lowercase())) {
+                            ui.horizontal(|ui| {
+                                ui.label(m);
+                                if ui.small_button("Use").clicked() {
+                                    self.model_override = Some(m.clone());
+                                    let mut settings = crate::database::settings::load_settings().unwrap_or_default();
+                                    settings.openai_default_model = Some(m.clone());
+                                    crate::database::settings::save_settings(&settings);
+                                }
+                                if ui.small_button("Copy").clicked() {
+                                    ui.ctx().copy_text(m.clone());
+                                }
+                            });
+                            ui.separator();
+                        }
+                        if !self.models_loading && self.models_list.is_empty() {
+                            ui.label(RichText::new("No models found yet. Ensure API key and try Refresh.").weak());
+                        }
+                    });
+                });
+        }
     }
 }
 
@@ -504,7 +620,8 @@ impl AssistantPanel {
                 "grok" => (super::assistant::env_or(&settings.grok_api_key, "GROK_API_KEY"), settings.openai_base_url.clone(), None),
                 "gemini" => (super::assistant::env_or(&settings.gemini_api_key, "GEMINI_API_KEY"), settings.openai_base_url.clone(), None),
                 "groq" => (super::assistant::env_or(&settings.groq_api_key, "GROQ_API_KEY"), settings.openai_base_url.clone(), None),
-                "openrouter" => (super::assistant::env_or(&settings.openrouter_api_key, "OPENROUTER_API_KEY"), settings.openai_base_url.clone(), None),
+                // Always use the official OpenRouter base for this provider
+                "openrouter" => (super::assistant::env_or(&settings.openrouter_api_key, "OPENROUTER_API_KEY"), Some("https://openrouter.ai/api/v1".into()), None),
                 _ => (super::assistant::env_or(&settings.openai_api_key, "OPENAI_API_KEY"), settings.openai_base_url.clone(), None),
             };
             let txu = tx_updates.clone();
