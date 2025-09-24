@@ -12,7 +12,8 @@ use async_openai::types::{
     CreateChatCompletionRequestArgs,
     ImageUrlArgs,
 };
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION};
+use serde::Deserialize;
 
 #[derive(Debug, Clone)]
 pub struct ProviderConfig {
@@ -85,12 +86,50 @@ fn build_async_openai_client(
 
 /// List available models via async-openai for a given provider. Primarily targets OpenRouter.
 pub async fn list_models_via_async_openai(provider: &str, api_key: Option<String>, base_url: Option<String>) -> Result<Vec<String>> {
+    if provider == "openrouter" {
+        // OpenRouter's /models response doesn't include the OpenAI "object" field.
+        // Use a direct HTTP call and parse their schema.
+        return list_models_openrouter_direct(api_key, base_url).await;
+    }
     let client = build_async_openai_client(provider, api_key, base_url, None)?;
     let resp = client.models().list().await?;
     let mut out = Vec::new();
-    for m in resp.data {
-        out.push(m.id);
+    for m in resp.data { out.push(m.id); }
+    out.sort();
+    Ok(out)
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenRouterModelsList { data: Vec<OpenRouterModel> }
+
+#[derive(Debug, Deserialize)]
+struct OpenRouterModel { id: String }
+
+async fn list_models_openrouter_direct(api_key: Option<String>, base_url: Option<String>) -> Result<Vec<String>> {
+    let base = base_url.unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
+    let url = format!("{}/models", base.trim_end_matches('/'));
+
+    let mut headers = HeaderMap::new();
+    headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+    if let Some(key) = api_key.as_ref() {
+        let token = format!("Bearer {}", key);
+        headers.insert(AUTHORIZATION, HeaderValue::from_str(&token)?);
     }
+    if let Ok(site) = std::env::var("OPENROUTER_SITE") {
+        if let Ok(val) = HeaderValue::from_str(&site) { headers.insert(HeaderName::from_static("referer"), val); }
+    }
+    if let Ok(title) = std::env::var("OPENROUTER_TITLE") {
+        if let Ok(val) = HeaderValue::from_str(&title) { headers.insert(HeaderName::from_static("x-title"), val); }
+    }
+    let client = reqwest::Client::builder().default_headers(headers).build()?;
+    let resp = client.get(url).send().await?;
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        anyhow::bail!("openrouter models error {}: {}", status, text);
+    }
+    let body: OpenRouterModelsList = resp.json().await?;
+    let mut out: Vec<String> = body.data.into_iter().map(|m| m.id).collect();
     out.sort();
     Ok(out)
 }
