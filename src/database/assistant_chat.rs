@@ -59,6 +59,14 @@ pub async fn load_messages(session_id: &RecordId) -> anyhow::Result<Vec<ChatMess
 pub async fn append_message(session_id: &RecordId, role: &str, content: &str, attachments: Option<Vec<String>>) -> anyhow::Result<(), anyhow::Error> {
     let _ga = db_activity("Append chat message");
     db_set_detail(format!("{role}"));
+    // Defensive: ensure the provided session_id actually points to an assistant_sessions record.
+    // Surreal allows creating a RecordId with arbitrary tb so double-check with a lightweight select.
+    // If it fails, attempt to coerce by querying its id string inside assistant_sessions.
+    // Validate session id belongs to assistant_sessions.
+    let sid_render = session_id.to_string();
+    if !sid_render.starts_with("assistant_sessions:") {
+        return Err(anyhow::anyhow!("Invalid session_ref: expected table assistant_sessions"));
+    }
     let _: Option<ChatMessageRow> = DB
         .create("assistant_messages")
         .content(serde_json::json!({

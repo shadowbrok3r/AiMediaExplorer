@@ -12,6 +12,10 @@ use async_openai::types::{
     CreateChatCompletionRequestArgs,
     ImageUrlArgs,
 };
+use crate::ai::openrouter_types::{
+    OpenRouterChatCompletionResponseStream,
+    OpenRouterChatCompletionStreamResponse,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -129,6 +133,7 @@ pub async fn stream_multimodal_reply(
     on_token: impl FnMut(&str),
 ) -> Result<String> {
     // All providers go through the OpenAI-compatible path now
+    log::error!("Cfg: {cfg:?}");
     stream_openai_compatible(cfg, prompt, images, on_token).await
 }
 
@@ -154,6 +159,8 @@ async fn stream_openai_compatible(
             .build()?
     );
 
+    log::error!("system_msg: {system_msg:?}");
+
     let user_content = if images.is_empty() {
         ChatCompletionRequestUserMessageContent::Text(prompt.to_string())
     } else {
@@ -178,30 +185,61 @@ async fn stream_openai_compatible(
         ChatCompletionRequestUserMessageContent::Array(parts)
     };
 
+    log::error!("user_content: {user_content:?}");
+
     let user_msg = ChatCompletionRequestMessage::User(
         ChatCompletionRequestUserMessageArgs::default()
             .content(user_content)
             .build()?
     );
 
+    log::error!("user_msg: {user_msg:?}");
+
     let req = CreateChatCompletionRequestArgs::default()
         .model(cfg.model.clone())
         .messages(vec![system_msg, user_msg])
-        .temperature(cfg.temperature.unwrap_or(0.2))
+        .temperature(cfg.temperature.unwrap_or(0.5))
+        .stream(true)
         .build()?;
 
-    let mut stream = client.chat().create_stream(req).await?;
-    let mut acc = String::new();
-    while let Some(event) = stream.next().await {
-        let resp = event?; // Map OpenAIError via ? into anyhow
-        for choice in resp.choices {
-            if let Some(delta) = choice.delta.content {
-                if !delta.is_empty() {
-                    on_token(&delta);
-                    acc.push_str(&delta);
+    if cfg.provider == "openrouter" {
+        log::error!("OpenRouter Request: {req:?}");
+        // BYOT streaming with our custom OpenRouter stream type
+        let mut stream: OpenRouterChatCompletionResponseStream = client
+            .chat()
+            .create_stream_byot(req)
+            .await
+            .map_err(|e| anyhow::anyhow!("openrouter stream init failed: {e}"))?;
+
+        // Box the concrete stream into our alias
+        let mut acc = String::new();
+        while let Some(chunk) = stream.next().await {
+            let resp: OpenRouterChatCompletionStreamResponse = chunk?;
+            for choice in resp.choices {
+                if let Some(delta) = choice.delta.content {
+                    if !delta.is_empty() {
+                        on_token(&delta);
+                        acc.push_str(&delta);
+                    }
                 }
             }
         }
+        Ok(acc)
+    } else {
+        // Standard OpenAI-compatible streaming
+        let mut stream = client.chat().create_stream(req).await?;
+        let mut acc = String::new();
+        while let Some(event) = stream.next().await {
+            let resp = event?;
+            for choice in resp.choices {
+                if let Some(delta) = choice.delta.content {
+                    if !delta.is_empty() {
+                        on_token(&delta);
+                        acc.push_str(&delta);
+                    }
+                }
+            }
+        }
+        Ok(acc)
     }
-    Ok(acc)
 }

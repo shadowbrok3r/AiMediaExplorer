@@ -7019,6 +7019,7 @@ dependencies = [
  "egui_logger",
  "fastembed",
  "flate2",
+ "futures-core",
  "futures-util",
  "hf-hub",
  "humansize",

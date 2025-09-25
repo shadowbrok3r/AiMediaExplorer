@@ -15,6 +15,7 @@ pub mod siglip;
 pub mod vae;
 pub mod openai_compat;
 pub mod mcp;
+pub mod openrouter_types;
 
 pub use ai_search::*;
 pub use jina_m0::*;
