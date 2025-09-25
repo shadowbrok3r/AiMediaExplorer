@@ -1,11 +1,12 @@
 use eframe::egui::*;
 use egui_extras::syntax_highlighting::{highlight, CodeTheme};
+use egui_json_tree::{JsonTree, JsonTreeStyle, JsonTreeVisuals, ToggleButtonsState, DefaultExpand};
 use base64::Engine as _;
 use crate::ui::status::GlobalStatusIndicator;
 use crossbeam::channel::{unbounded, Receiver, Sender};
 use tokio::task::JoinHandle;
 use std::collections::{HashMap, HashSet};
-use serde_json::Value;
+use crate::ai::openai_compat::OpenRouterModel;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChatRole { User, Assistant }
@@ -17,68 +18,57 @@ pub struct AssistantPanel {
     pub prompt: String,
     pub progress: Option<String>,
     pub last_reply: String,
-    // If true, temporarily hide the auto-selected image tag for this prompt
     pub suppress_selected_attachment: bool,
-    // Attachments chosen by the user (absolute file paths)
     pub attachments: Vec<String>,
-    // Chat state
     pub messages: Vec<ChatMessage>,
     chat_rx: Receiver<String>,
     chat_tx: Sender<String>,
     chat_streaming: bool,
-    // Sessions and toolbar
     pub sessions: Vec<(String, Vec<ChatMessage>)>,
     pub active_session: usize,
-    // DB session ids parallel to sessions vector
     pub session_ids: Vec<surrealdb::RecordId>,
     pub temp: f32,
     pub model_override: Option<String>,
-    // Handle for the currently running assistant generation (to allow Stop)
     assistant_task: Option<JoinHandle<()>>,
-    // Refinement UI state
     pub ref_old_category: String,
     pub ref_new_category: String,
     pub ref_old_tag: String,
     pub ref_new_tag: String,
     pub ref_delete_tag: String,
     pub ref_limit_tags: i32,
-    // DB picker state
     pub show_db_picker: bool,
-    db_rx: Receiver<Vec<(String, String, Option<String>)>>, // (path, filename, thumbnail_b64)
+    db_rx: Receiver<Vec<(String, String, Option<String>)>>,
     db_tx: Sender<Vec<(String, String, Option<String>)>>,
     pub db_items: Vec<(String, String)>,
     pub db_filter: String,
-    // In-memory tiny texture cache for attachment chips
     thumb_cache: HashMap<String, egui::TextureHandle>,
     db_thumb_map: HashMap<String, String>,
-    // Track collapsed message indices for very long messages
     collapsed: HashSet<usize>,
-    // OpenRouter models UI state
     show_models_modal: bool,
     models_list: Vec<String>,
     models_filter: String,
-    // Persistent channel for OpenRouter models (full JSON objects)
-    models_rx: crossbeam::channel::Receiver<Result<Vec<Value>, String>>,
-    models_tx: crossbeam::channel::Sender<Result<Vec<Value>, String>>,
-    models_json: Vec<Value>,
+    models_rx: crossbeam::channel::Receiver<Result<Vec<OpenRouterModel>, String>>,
+    models_tx: crossbeam::channel::Sender<Result<Vec<OpenRouterModel>, String>>,
+    models_json: Vec<OpenRouterModel>,
     models_open: HashSet<String>,
     models_loading: bool,
     models_error: Option<String>,
-    // MCP quick actions input state
     mcp_ping_text: String,
     mcp_search_text: String,
+    model_sort: ModelSort,
 }
-// API key fallback to env vars
-pub fn env_or(opt: &Option<String>, key: &str) -> Option<String> {
-    opt.clone().or_else(|| std::env::var(key).ok())
-}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModelSort { NameAsc, NameDesc, PriceAsc, PriceDesc }
+
+// helper to read optional key or env
+fn env_or(opt: &Option<String>, key: &str) -> Option<String> { opt.clone().or_else(|| std::env::var(key).ok()) }
 
 impl AssistantPanel {
     pub fn new() -> Self {
         let (chat_tx, chat_rx) = unbounded::<String>();
         let (db_tx, db_rx) = unbounded::<Vec<(String, String, Option<String>)>>();
-        let (models_tx, models_rx) = crossbeam::channel::unbounded::<Result<Vec<Value>, String>>();
-        // Start MCP stdio server in background (best-effort)
+        let (models_tx, models_rx) = crossbeam::channel::unbounded::<Result<Vec<OpenRouterModel>, String>>();
         tokio::spawn(async move {
             if let Err(e) = crate::ai::mcp::serve_stdio_background().await {
                 log::warn!("[MCP] stdio server not started: {e}");
@@ -125,9 +115,10 @@ impl AssistantPanel {
             models_error: None,
             mcp_ping_text: String::new(),
             mcp_search_text: String::new(),
+            model_sort: ModelSort::NameAsc,
         }
     }
-    
+
     pub fn ui(&mut self, ctx: &Context, explorer: &mut crate::ui::file_table::FileExplorer) {
         // Initialize a default session and defaults
         if self.sessions.is_empty() {
@@ -209,7 +200,7 @@ impl AssistantPanel {
                     self.models_open.clear();
                     self.models_error = None;
                     self.models_loading = true;
-                    let api_key = super::assistant::env_or(&settings.openrouter_api_key, "OPENROUTER_API_KEY");
+                    let api_key = env_or(&settings.openrouter_api_key, "OPENROUTER_API_KEY");
                     let tx = self.models_tx.clone();
                     tokio::spawn(async move {
                         let res = crate::ai::openai_compat::fetch_openrouter_models_json(api_key, Some("https://openrouter.ai/api/v1".into()))
@@ -557,11 +548,7 @@ impl AssistantPanel {
                 Ok(json_list) => {
                     log::info!("[Assistant] received {} OpenRouter models", json_list.len());
                     self.models_json = json_list;
-                    self.models_list = self
-                        .models_json
-                        .iter()
-                        .filter_map(|v| v.get("id").and_then(|x| x.as_str()).map(|s| s.to_string()))
-                        .collect();
+                    self.models_list = self.models_json.iter().map(|m| m.id.clone()).collect();
                     self.models_error = None;
                 }
                 Err(e) => {
@@ -574,7 +561,6 @@ impl AssistantPanel {
             self.models_loading = false;
             ctx.request_repaint();
         } else if self.models_loading {
-            // Keep the UI repainting while we wait so the spinner/text updates
             ctx.request_repaint_after(std::time::Duration::from_millis(200));
         }
 
@@ -626,9 +612,18 @@ impl AssistantPanel {
                     ui.horizontal(|ui| {
                         ui.label("Filter");
                         ui.add(TextEdit::singleline(&mut self.models_filter).hint_text("name contains…"));
+                        ui.separator();
+                        ui.label("Sort");
+                        let sort_label = match self.model_sort { ModelSort::NameAsc=>"Name ↑", ModelSort::NameDesc=>"Name ↓", ModelSort::PriceAsc=>"Price ↑", ModelSort::PriceDesc=>"Price ↓" };
+                        ComboBox::from_id_salt("model_sort_combo").selected_text(sort_label).show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.model_sort, ModelSort::NameAsc, "Name ↑");
+                            ui.selectable_value(&mut self.model_sort, ModelSort::NameDesc, "Name ↓");
+                            ui.selectable_value(&mut self.model_sort, ModelSort::PriceAsc, "Price ↑");
+                            ui.selectable_value(&mut self.model_sort, ModelSort::PriceDesc, "Price ↓");
+                        });
                         if ui.small_button("Refresh").clicked() {
                             let settings = crate::database::settings::load_settings().unwrap_or_default();
-                            let api_key = super::assistant::env_or(&settings.openrouter_api_key, "OPENROUTER_API_KEY");
+                            let api_key = env_or(&settings.openrouter_api_key, "OPENROUTER_API_KEY");
                             self.models_loading = true;
                             self.models_error = None;
                             let tx = self.models_tx.clone();
@@ -641,77 +636,100 @@ impl AssistantPanel {
                         }
                     });
                     ui.separator();
-                    let shown_ids: Vec<String> = self
-                        .models_list
-                        .iter()
-                        .filter(|m| self.models_filter.is_empty() || m.to_lowercase().contains(&self.models_filter.to_lowercase()))
-                        .cloned()
+                    // Build filtered + sorted list of model refs
+                    let mut shown: Vec<&OpenRouterModel> = self.models_json.iter()
+                        .filter(|m| self.models_filter.is_empty() || m.id.to_lowercase().contains(&self.models_filter.to_lowercase()))
                         .collect();
-                    if !self.models_loading { ui.label(RichText::new(format!("{} models ({} shown)", self.models_list.len(), shown_ids.len())).weak()); }
+                    // helper to parse numeric price (prompt) as f64
+                    let parse_price = |s: &str| -> Option<f64> {
+                        if s.is_empty() { return None; }
+                        let trimmed = s.trim().trim_start_matches('$');
+                        let mut num_str = String::new();
+                        for ch in trimmed.chars() { if ch.is_ascii_digit() || ch=='.' { num_str.push(ch); } else { break; } }
+                        if num_str.is_empty() { None } else { num_str.parse::<f64>().ok() }
+                    };
+                    match self.model_sort {
+                        ModelSort::NameAsc => shown.sort_by(|a,b| a.id.cmp(&b.id)),
+                        ModelSort::NameDesc => shown.sort_by(|a,b| b.id.cmp(&a.id)),
+                        ModelSort::PriceAsc => shown.sort_by(|a,b| {
+                            let ap = a.pricing.as_ref().and_then(|p| p.prompt.as_deref()).and_then(parse_price).unwrap_or(f64::INFINITY);
+                            let bp = b.pricing.as_ref().and_then(|p| p.prompt.as_deref()).and_then(parse_price).unwrap_or(f64::INFINITY);
+                            ap.partial_cmp(&bp).unwrap_or(std::cmp::Ordering::Equal)
+                        }),
+                        ModelSort::PriceDesc => shown.sort_by(|a,b| {
+                            let ap = a.pricing.as_ref().and_then(|p| p.prompt.as_deref()).and_then(parse_price).unwrap_or(-1.0);
+                            let bp = b.pricing.as_ref().and_then(|p| p.prompt.as_deref()).and_then(parse_price).unwrap_or(-1.0);
+                            bp.partial_cmp(&ap).unwrap_or(std::cmp::Ordering::Equal)
+                        }),
+                    }
+                    if !self.models_loading { ui.label(RichText::new(format!("{} models ({} shown)", self.models_json.len(), shown.len())).weak()); }
                     if self.models_loading { ui.label(RichText::new("Loading models…").weak()); }
                     if let Some(err) = &self.models_error { ui.colored_label(ui.visuals().warn_fg_color, format!("Error: {err}")); }
                     ScrollArea::vertical().show(ui, |ui| {
-                        for id in shown_ids {
-                            if let Some(model) = self.models_json.iter().find(|v| v.get("id").and_then(|x| x.as_str()) == Some(id.as_str())) {
-                                ui.columns(2, |cols| {
-                                    let (left, right) = cols.split_at_mut(1);
-                                    let ui_left = &mut left[0];
-                                    let ui_right = &mut right[0];
-                                    let is_open = self.models_open.contains(&id);
-                                    let toggle = if is_open { "▼" } else { "▶" };
-                                    if ui_left.selectable_label(is_open, format!("{} {}", toggle, id)).clicked() {
-                                        if is_open { self.models_open.remove(&id); } else { self.models_open.insert(id.clone()); }
+                        for model in shown {
+                            let id = &model.id;
+                            let is_open = self.models_open.contains(id);
+                                let toggle = if is_open { "⏷" } else { "▶" };
+                                let arch = model.architecture.as_ref();
+                                let mut icons = String::new();
+                                if let Some(a) = arch {
+                                    if a.input_modalities.iter().any(|m| m.contains("text")) { icons.push_str("🖹 "); }
+                                    if a.input_modalities.iter().any(|m| m.contains("image")) { icons.push_str("🖼 "); }
+                                    if a.input_modalities.iter().any(|m| m.contains("audio")) { icons.push_str("🎵 "); }
+                                    if a.input_modalities.iter().any(|m| m.contains("video")) { icons.push_str("🎬 "); }
+                                }
+                                let price_suffix = if let Some(pr) = &model.pricing {
+                                    let prompt_p = pr.prompt.as_deref().unwrap_or("");
+                                    let completion_p = pr.completion.as_deref().unwrap_or("");
+                                    if !prompt_p.is_empty() || !completion_p.is_empty() {
+                                        let pp = if prompt_p.is_empty() {"?"} else {prompt_p};
+                                        let cp = if completion_p.is_empty() {"?"} else {completion_p};
+                                        format!(" (${}/{})", pp, cp)
+                                    } else { String::new() }
+                                } else { String::new() };
+                                let label_text = format!("{toggle} {id}");
+                                let prices = format!("{icons} {price_suffix}");
+                                ui.horizontal(|ui| {
+                                    let btn = Button::selectable(is_open, label_text)
+                                    .min_size([ui.available_width()/1.2, 15.].into())
+                                    .right_text(
+                                        RichText::new(prices).color(ui.style().visuals.error_fg_color)
+                                    ).ui(ui);
+                                    if btn.clicked() {
+                                        if is_open { self.models_open.remove(id); } else { self.models_open.insert(id.clone()); }
                                     }
-                                    ui_right.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                         if ui.small_button("Use").on_hover_text("Set as current model").clicked() {
                                             self.model_override = Some(id.clone());
                                             let mut settings = crate::database::settings::load_settings().unwrap_or_default();
                                             settings.openai_default_model = Some(id.clone());
                                             crate::database::settings::save_settings(&settings);
                                         }
-                                        if ui.small_button("Copy").on_hover_text("Copy model id").clicked() {
-                                            ui.ctx().copy_text(id.clone());
-                                        }
+                                        if ui.small_button("Copy").on_hover_text("Copy model id").clicked() { ui.ctx().copy_text(id.clone()); }
                                     });
                                 });
-                                if self.models_open.contains(&id) {
+                                if is_open {
                                     ui.add_space(4.0);
-                                    if let Ok(pretty) = serde_json::to_string_pretty(model) {
-                                        // Render JSON details as non-editable code block
-                                        ui.group(|ui| {
-                                            let lang = "json".to_string();
-                                            let theme = CodeTheme::from_style(ui.style().as_ref());
-                                            let style_clone = ui.style().clone();
-                                            let ctx_clone = ui.ctx().clone();
-                                            let mut layouter = move |ui: &Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
-                                                let s: &str = text.as_str();
-                                                let mut job = highlight(&ctx_clone, &style_clone, &theme, &lang, s);
-                                                job.wrap.max_width = wrap_width;
-                                                ui.fonts(|f| f.layout_job(job))
-                                            };
-                                            let mut text_mut = pretty.clone();
-                                            let rows_est = (text_mut.lines().count().max(3) as f32).min(24.0) as usize;
-                                            ui.add(
-                                                TextEdit::multiline(&mut text_mut)
-                                                    .desired_rows(rows_est)
-                                                    .desired_width(ui.available_width())
-                                                    .font(FontId::monospace(13.0))
-                                                    .interactive(false)
-                                                    .layouter(&mut layouter)
-                                            );
-                                        });
+                                    if let Ok(val) = serde_json::to_value(model) {
+                                        let style = JsonTreeStyle::new()
+                                            .abbreviate_root(true)
+                                            .toggle_buttons_state(ToggleButtonsState::VisibleDisabled)
+                                            .visuals(JsonTreeVisuals { bool_color: Color32::LIGHT_BLUE, ..Default::default() });
+                                        JsonTree::new(format!("model-tree-{}", id), &val)
+                                            .style(style)
+                                            .default_expand(DefaultExpand::All)
+                                            .show(ui);
+                                    } else {
+                                        ui.colored_label(ui.visuals().error_fg_color, "(failed to serialize model)");
                                     }
                                     ui.separator();
                                 }
-                            }
                         }
                     });
                 });
         }
     }
-}
 
-impl AssistantPanel {
     fn send_current_prompt(&mut self, explorer: &mut crate::ui::file_table::FileExplorer) {
         self.last_reply.clear();
         self.progress = Some(String::new());
@@ -795,13 +813,12 @@ impl AssistantPanel {
         } else if use_cloud {
             let model = self.model_override.clone().unwrap_or_else(|| settings.openai_default_model.clone().unwrap_or_else(|| "gpt-4o-mini".into()));
             let (api_key, base_url, org) = match provider.as_str() {
-                "openai" => (super::assistant::env_or(&settings.openai_api_key, "OPENAI_API_KEY"), settings.openai_base_url.clone(), settings.openai_organization.clone()),
-                "grok" => (super::assistant::env_or(&settings.grok_api_key, "GROK_API_KEY"), settings.openai_base_url.clone(), None),
-                "gemini" => (super::assistant::env_or(&settings.gemini_api_key, "GEMINI_API_KEY"), settings.openai_base_url.clone(), None),
-                "groq" => (super::assistant::env_or(&settings.groq_api_key, "GROQ_API_KEY"), settings.openai_base_url.clone(), None),
-                // Always use the official OpenRouter base for this provider
-                "openrouter" => (super::assistant::env_or(&settings.openrouter_api_key, "OPENROUTER_API_KEY"), Some("https://openrouter.ai/api/v1".into()), None),
-                _ => (super::assistant::env_or(&settings.openai_api_key, "OPENAI_API_KEY"), settings.openai_base_url.clone(), None),
+                "openai" => (env_or(&settings.openai_api_key, "OPENAI_API_KEY"), settings.openai_base_url.clone(), settings.openai_organization.clone()),
+                "grok" => (env_or(&settings.grok_api_key, "GROK_API_KEY"), settings.openai_base_url.clone(), None),
+                "gemini" => (env_or(&settings.gemini_api_key, "GEMINI_API_KEY"), settings.openai_base_url.clone(), None),
+                "groq" => (env_or(&settings.groq_api_key, "GROQ_API_KEY"), settings.openai_base_url.clone(), None),
+                "openrouter" => (env_or(&settings.openrouter_api_key, "OPENROUTER_API_KEY"), Some("https://openrouter.ai/api/v1".into()), None),
+                _ => (env_or(&settings.openai_api_key, "OPENAI_API_KEY"), settings.openai_base_url.clone(), None),
             };
             let txu = tx_updates.clone();
             let provider_clone = provider.clone();

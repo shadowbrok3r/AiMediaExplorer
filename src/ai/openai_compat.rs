@@ -12,8 +12,7 @@ use async_openai::types::{
     CreateChatCompletionRequestArgs,
     ImageUrlArgs,
 };
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Debug, Clone)]
@@ -26,18 +25,16 @@ pub struct ProviderConfig {
     pub temperature: Option<f32>,      // optional sampling temperature for chat completions
 }
 
-fn default_base_and_header(provider: &str) -> (String, String) {
+fn default_base(provider: &str) -> String {
     match provider {
-        "openai" => ("https://api.openai.com/v1".into(), "Authorization".into()),
-        "grok" => ("https://api.x.ai/v1".into(), "Authorization".into()),
-        "gemini" => ("https://generativelanguage.googleapis.com/v1beta".into(), "x-goog-api-key".into()),
-        "groq" => ("https://api.groq.com/openai/v1".into(), "Authorization".into()),
-        "openrouter" => ("https://openrouter.ai/api/v1".into(), "Authorization".into()),
-        _ => ("http://localhost:11434/v1".into(), "Authorization".into()),
+        "openai" => "https://api.openai.com/v1".into(),
+        "grok" => "https://api.x.ai/v1".into(),
+        "gemini" => "https://generativelanguage.googleapis.com/v1beta".into(), // OpenAI-compatible proxy assumed
+        "groq" => "https://api.groq.com/openai/v1".into(),
+        "openrouter" => "https://openrouter.ai/api/v1".into(),
+        _ => "http://localhost:11434/v1".into(),
     }
 }
-
-// (compat note) Additional provider families can be added here in future.
 
 fn image_bytes_to_data_url(bytes: &[u8]) -> String {
     let mime = infer::get(bytes).map(|t| t.mime_type()).unwrap_or("image/png");
@@ -46,125 +43,84 @@ fn image_bytes_to_data_url(bytes: &[u8]) -> String {
 }
 
 /// Build an async-openai client configured for the given provider/base/key.
-/// For OpenRouter we add recommended headers (HTTP-Referer, X-Title) if provided via env.
 fn build_async_openai_client(
     provider: &str,
     api_key: Option<String>,
     base_url: Option<String>,
     organization: Option<String>,
 ) -> Result<Client<OpenAIConfig>> {
-    // Determine base URL defaults per provider
-    let (default_base, _auth_header_name) = default_base_and_header(provider);
-    let api_base = base_url.unwrap_or(default_base);
-
+    let api_base = base_url.unwrap_or_else(|| default_base(provider));
     let mut cfg = OpenAIConfig::new().with_api_base(api_base);
     if let Some(key) = api_key { cfg = cfg.with_api_key(key); }
-
-    // Build reqwest client with optional OpenRouter headers
-    let mut headers = HeaderMap::new();
-    if let Some(org) = organization.as_deref() {
-        // OpenAI optional organization header
-        if let Ok(val) = HeaderValue::from_str(org) {
-            headers.insert(HeaderName::from_static("openai-organization"), val);
-        }
-    }
-    if provider == "openrouter" {
-        if let Ok(site) = std::env::var("OPENROUTER_SITE") {
-            if let Ok(val) = HeaderValue::from_str(&site) { headers.insert(HeaderName::from_static("referer"), val); }
-        }
-        if let Ok(title) = std::env::var("OPENROUTER_TITLE") {
-            if let Ok(val) = HeaderValue::from_str(&title) { headers.insert(HeaderName::from_static("x-title"), val); }
-        }
-        // Some proxies benefit from explicit Accept
-        headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
-    }
-    let http_client = reqwest::Client::builder()
-        .default_headers(headers)
-        .build()?;
-
-    Ok(Client::with_config(cfg).with_http_client(http_client))
+    if let Some(org) = organization { cfg = cfg.with_org_id(org); }
+    Ok(Client::with_config(cfg))
 }
 
 /// List available models via async-openai for a given provider. Primarily targets OpenRouter.
 pub async fn list_models_via_async_openai(provider: &str, api_key: Option<String>, base_url: Option<String>) -> Result<Vec<String>> {
-    if provider == "openrouter" {
-        // OpenRouter's /models response doesn't include the OpenAI "object" field.
-        // Use a direct HTTP call and parse their schema.
-        return list_models_openrouter_direct(api_key, base_url).await;
-    }
     let client = build_async_openai_client(provider, api_key, base_url, None)?;
     let resp = client.models().list().await?;
-    let mut out = Vec::new();
-    for m in resp.data { out.push(m.id); }
+    let mut out: Vec<String> = resp.data.into_iter().map(|m| m.id).collect();
     out.sort();
     Ok(out)
 }
 
-#[derive(Debug, Deserialize)]
-struct OpenRouterModelsList { data: Vec<OpenRouterModel> }
+// ---------------- OpenRouter typed model schema ----------------
 
-#[derive(Debug, Deserialize)]
-struct OpenRouterModel { id: String }
-
-async fn list_models_openrouter_direct(api_key: Option<String>, base_url: Option<String>) -> Result<Vec<String>> {
-    let base = base_url.unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
-    let url = format!("{}/models", base.trim_end_matches('/'));
-
-    let mut headers = HeaderMap::new();
-    headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
-    if let Some(key) = api_key.as_ref() {
-        let token = format!("Bearer {}", key);
-        headers.insert(AUTHORIZATION, HeaderValue::from_str(&token)?);
-    }
-    if let Ok(site) = std::env::var("OPENROUTER_SITE") {
-        if let Ok(val) = HeaderValue::from_str(&site) { headers.insert(HeaderName::from_static("referer"), val); }
-    }
-    if let Ok(title) = std::env::var("OPENROUTER_TITLE") {
-        if let Ok(val) = HeaderValue::from_str(&title) { headers.insert(HeaderName::from_static("x-title"), val); }
-    }
-    let client = reqwest::Client::builder().default_headers(headers).build()?;
-    let resp = client.get(url).send().await?;
-    let status = resp.status();
-    if !status.is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        anyhow::bail!("openrouter models error {}: {}", status, text);
-    }
-    let body: OpenRouterModelsList = resp.json().await?;
-    let mut out: Vec<String> = body.data.into_iter().map(|m| m.id).collect();
-    out.sort();
-    Ok(out)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OpenRouterArchitecture {
+    #[serde(default)] pub input_modalities: Vec<String>,
+    #[serde(default)] pub output_modalities: Vec<String>,
+    #[serde(default)] pub tokenizer: Option<String>,
+    #[serde(default)] pub instruct_type: Option<String>,
 }
 
-/// Fetch the full OpenRouter models list as raw JSON values (one per model).
-/// This preserves all fields returned by OpenRouter, allowing the UI to show full details.
-pub async fn fetch_openrouter_models_json(api_key: Option<String>, base_url: Option<String>) -> Result<Vec<Value>> {
-    let base = base_url.unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
-    let url = format!("{}/models", base.trim_end_matches('/'));
-
-    let mut headers = HeaderMap::new();
-    headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
-    if let Some(key) = api_key.as_ref() {
-        let token = format!("Bearer {}", key);
-        headers.insert(AUTHORIZATION, HeaderValue::from_str(&token)?);
-    }
-    if let Ok(site) = std::env::var("OPENROUTER_SITE") {
-        if let Ok(val) = HeaderValue::from_str(&site) { headers.insert(HeaderName::from_static("referer"), val); }
-    }
-    if let Ok(title) = std::env::var("OPENROUTER_TITLE") {
-        if let Ok(val) = HeaderValue::from_str(&title) { headers.insert(HeaderName::from_static("x-title"), val); }
-    }
-
-    let client = reqwest::Client::builder().default_headers(headers).build()?;
-    let resp = client.get(url).send().await?;
-    let status = resp.status();
-    if !status.is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        anyhow::bail!("openrouter models error {}: {}", status, text);
-    }
-    let v: Value = resp.json().await?;
-    let data = v.get("data").and_then(|d| d.as_array()).cloned().unwrap_or_default();
-    Ok(data)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OpenRouterTopProvider {
+    #[serde(default)] pub is_moderated: Option<bool>,
+    #[serde(default)] pub context_length: Option<u64>,
+    #[serde(default)] pub max_completion_tokens: Option<u64>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OpenRouterPricing {
+    #[serde(default)] pub prompt: Option<String>,
+    #[serde(default)] pub completion: Option<String>,
+    #[serde(default)] pub image: Option<String>,
+    #[serde(default)] pub request: Option<String>,
+    #[serde(default)] pub web_search: Option<String>,
+    #[serde(default)] pub internal_reasoning: Option<String>,
+    #[serde(default)] pub input_cache_read: Option<String>,
+    #[serde(default)] pub input_cache_write: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OpenRouterModel {
+    pub id: String,
+    #[serde(default)] pub name: Option<String>,
+    #[serde(default)] pub created: Option<f64>,
+    #[serde(default)] pub description: Option<String>,
+    #[serde(default)] pub architecture: Option<OpenRouterArchitecture>,
+    #[serde(default)] pub top_provider: Option<OpenRouterTopProvider>,
+    #[serde(default)] pub pricing: Option<OpenRouterPricing>,
+    #[serde(default)] pub canonical_slug: Option<String>,
+    #[serde(default)] pub context_length: Option<u64>,
+    #[serde(default)] pub hugging_face_id: Option<String>,
+    #[serde(default)] pub per_request_limits: Option<Value>,
+    #[serde(default)] pub supported_parameters: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenRouterModelsEnvelope { data: Vec<OpenRouterModel> }
+
+pub async fn fetch_openrouter_models_json(api_key: Option<String>, base_url: Option<String>) -> Result<Vec<OpenRouterModel>> {
+    let client = build_async_openai_client("openrouter", api_key, base_url, None)?;
+    let resp: OpenRouterModelsEnvelope = client.models().list_byot().await?;
+    let mut models: Vec<OpenRouterModel> = resp.data;
+    models.sort_by(|a,b| a.id.cmp(&b.id));
+    Ok(models)
+}
+
 
 pub async fn stream_multimodal_reply(
     cfg: ProviderConfig,
@@ -172,10 +128,7 @@ pub async fn stream_multimodal_reply(
     images: &[Vec<u8>],
     on_token: impl FnMut(&str),
 ) -> Result<String> {
-    if cfg.provider == "gemini" {
-        return stream_gemini(cfg, prompt, images, on_token).await;
-    }
-    // OpenAI-compatible (Chat Completions)
+    // All providers go through the OpenAI-compatible path now
     stream_openai_compatible(cfg, prompt, images, on_token).await
 }
 
@@ -246,68 +199,6 @@ async fn stream_openai_compatible(
                 if !delta.is_empty() {
                     on_token(&delta);
                     acc.push_str(&delta);
-                }
-            }
-        }
-    }
-    Ok(acc)
-}
-
-async fn stream_gemini(
-    cfg: ProviderConfig,
-    prompt: &str,
-    images: &[Vec<u8>],
-    mut on_token: impl FnMut(&str),
-) -> Result<String> {
-    // Gemini streaming uses a different endpoint and schema.
-    // We'll use: POST /models/{model}:streamGenerateContent?alt=sse&key=API_KEY
-    let base = cfg.base_url.clone().unwrap_or_else(|| "https://generativelanguage.googleapis.com/v1beta".into());
-    let url = format!(
-        "{}/models/{}:streamGenerateContent?alt=sse&key={}",
-        base.trim_end_matches('/'),
-        cfg.model,
-        cfg.api_key.clone().unwrap_or_default()
-    );
-    let client = reqwest::Client::builder().build()?;
-        // Build Gemini payload with multiple inline_data or text-only; request helpful concise text
-        let instruction = "You are a helpful assistant. Produce helpful, concise text suitable for a chat UI.";
-    let contents = if images.is_empty() {
-        serde_json::json!([{ "role":"user","parts":[{"text": format!("{}\n\n{}", instruction, prompt)}]}])
-    } else {
-        let mut parts: Vec<serde_json::Value> = vec![serde_json::json!({"text": format!("{}\n\n{}", instruction, prompt)})];
-        for img in images {
-            let mime = infer::get(img).map(|t| t.mime_type()).unwrap_or("image/png");
-            let b64 = base64::engine::general_purpose::STANDARD.encode(img);
-            parts.push(serde_json::json!({"inline_data": {"mime_type": mime, "data": b64}}));
-        }
-        serde_json::json!([{ "role":"user","parts": parts }])
-    };
-    let body = serde_json::json!({"contents": contents});
-    let resp = client.post(&url).json(&body).send().await?;
-    let status = resp.status();
-    if !status.is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        anyhow::bail!("gemini error {}: {}", status, text);
-    }
-    let mut stream = resp.bytes_stream();
-    let mut acc = String::new();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
-        let s = String::from_utf8_lossy(&chunk);
-        for line in s.split('\n') {
-            let line = line.trim();
-            if !line.starts_with("data:") { continue; }
-            let json = line.trim_start_matches("data:").trim();
-            if json.is_empty() || json == "[DONE]" { continue; }
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(json) {
-                // Look for candidates[0].content.parts[].text
-                if let Some(parts) = v.pointer("/candidates/0/content/parts").and_then(|x| x.as_array()) {
-                    for p in parts {
-                        if let Some(t) = p.get("text").and_then(|x| x.as_str()) {
-                            on_token(t);
-                            acc.push_str(t);
-                        }
-                    }
                 }
             }
         }
