@@ -1,10 +1,10 @@
+use crate::ui::status::{GlobalStatusIndicator, StatusState, DB_STATUS};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use surrealdb::{Surreal, engine::local::Db};
+use std::{fs, path::{Path, PathBuf}};
 use crossbeam::channel::Sender;
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use crate::ui::status::{GlobalStatusIndicator, StatusState, DB_STATUS};
-use surrealdb::{Surreal, engine::local::Db};
-use std::fs;
-use std::path::{Path, PathBuf};
+
 pub mod clip_embeddings;
 pub mod files;
 pub mod settings;
@@ -35,8 +35,6 @@ pub const DB_DEFAULT_PATH: &str = "./db/ai_search";
 
 pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
     DB_STATUS.set_state(StatusState::Initializing, "Connecting DB");
-    // let capabilities = surrealdb::capabilities::Capabilities::all().with_all_experimental_features_allowed();
-    // let config = surrealdb::opt::Config::new().capabilities(capabilities); // ("./db/ai_search", config)
     let db_path = get_db_path();
     DB.connect::<surrealdb::engine::local::SurrealKv>(&db_path).await?;
     DB.use_ns(NS).use_db(DB_NAME).await?;
@@ -104,11 +102,11 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
         DEFINE FIELD IF NOT EXISTS clip_model ON user_settings TYPE option<string> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS recent_paths ON user_settings TYPE array<string> PERMISSIONS FULL;
 
-    DEFINE FIELD IF NOT EXISTS recent_models ON user_settings TYPE array<string> PERMISSIONS FULL;
-    DEFINE FIELD IF NOT EXISTS last_used_model ON user_settings TYPE option<string> PERMISSIONS FULL;
-    DEFINE FIELD session_ref ON assistant_messages TYPE record<assistant_sessions> PERMISSIONS FULL;
-    DEFINE FIELD IF NOT EXISTS auto_save_to_database ON user_settings TYPE bool PERMISSIONS FULL;
-    DEFINE FIELD IF NOT EXISTS egui_preferences ON user_settings TYPE object DEFAULT {} PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS recent_models ON user_settings TYPE array<string> PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS last_used_model ON user_settings TYPE option<string> PERMISSIONS FULL;
+        DEFINE FIELD session_ref ON assistant_messages TYPE record<assistant_sessions> PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS auto_save_to_database ON user_settings TYPE bool PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS egui_preferences ON user_settings TYPE object DEFAULT {} PERMISSIONS FULL;
 
         DEFINE FIELD IF NOT EXISTS root ON cached_scans TYPE string PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS started ON cached_scans TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
@@ -147,7 +145,7 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
         DEFINE INDEX IF NOT EXISTS idx_clip_hnsw ON clip_embeddings FIELDS embedding HNSW DIMENSION 1024 TYPE F32 DIST COSINE EFC 120 M 12;
         DEFINE INDEX IF NOT EXISTS idx_cached_items_scan ON cached_scan_items FIELDS scan_ref;
         DEFINE INDEX IF NOT EXISTS idx_cached_scans_started ON cached_scans FIELDS started;
-    DEFINE INDEX IF NOT EXISTS idx_assistant_session ON assistant_messages FIELDS session_ref;
+        DEFINE INDEX IF NOT EXISTS idx_assistant_session ON assistant_messages FIELDS session_ref;
 
         COMMIT;
     "#;
@@ -254,12 +252,12 @@ pub async fn export_to<P: AsRef<Path>>(path: P) -> anyhow::Result<(), anyhow::Er
     let _ga = db_activity("EXPORT DB");
     db_set_detail(format!("Exporting to {}", path.as_ref().display()));
     // SurrealDB v2 exposes DB.export taking a file path or writer; use the path API.
-    super::DB.export(path.as_ref()).await.map_err(|e| { db_set_error(format!("DB export failed: {e}")); e.into() })
+    DB.export(path.as_ref()).await.map_err(|e| { db_set_error(format!("DB export failed: {e}")); e.into() })
 }
 
 /// Import a SurrealQL file into the current database (namespace+db).
 pub async fn import_from<P: AsRef<Path>>(path: P) -> anyhow::Result<(), anyhow::Error> {
     let _ga = db_activity("IMPORT DB");
     db_set_detail(format!("Importing from {}", path.as_ref().display()));
-    super::DB.import(path.as_ref()).await.map_err(|e| { db_set_error(format!("DB import failed: {e}")); e.into() })
+    DB.import(path.as_ref()).await.map_err(|e| { db_set_error(format!("DB import failed: {e}")); e.into() })
 }

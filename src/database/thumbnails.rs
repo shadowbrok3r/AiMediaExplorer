@@ -8,7 +8,7 @@ use chrono::Utc;
 impl Default for crate::Thumbnail {
     fn default() -> Self {
         Self { 
-            id: RecordId::from_table_key("thumbnails", surrealdb::sql::Uuid::new_v4().0.to_string()), 
+            id: RecordId::from_table_key(super::THUMBNAILS, surrealdb::sql::Uuid::new_v4().0.to_string()), 
             db_created: Default::default(), 
             path: Default::default(), 
             filename: Default::default(), 
@@ -38,7 +38,7 @@ impl crate::Thumbnail {
         // filename-based IDs remain valid; new inserts will use UUIDs avoiding collisions.
         Self {
             id: RecordId::from_table_key(
-                "thumbnails",
+                super::THUMBNAILS,
                 surrealdb::sql::Uuid::new_v4().0.to_string(),
             ),
             db_created: Default::default(),
@@ -302,7 +302,7 @@ impl crate::Thumbnail {
         let _ga = db_activity("Insert thumbnail row");
         db_set_detail("Inserting thumbnail".to_string());
         let _: Option<Self> = DB
-            .create("thumbnails")
+            .create(super::THUMBNAILS)
             .content::<Self>(self)
             .await
             .map_err(|e| {
@@ -394,7 +394,7 @@ impl crate::Thumbnail {
             // Insert new row. If another concurrent task already inserted a row with the same
             // (now UUID) id between our SELECT/UPDATE and this INSERT, we treat that as benign.
             match DB
-                .create("thumbnails")
+                .create(super::THUMBNAILS)
                 .content::<Self>(self.clone())
                 .await
             {
@@ -428,7 +428,7 @@ pub async fn save_thumbnail_batch(
     db_set_detail(format!("Saving {} thumbnails", thumbs.len()));
     db_set_progress(0, thumbs.len() as u64);
     let _: Vec<super::Thumbnail> = DB
-        .insert("thumbnails")
+        .insert(super::THUMBNAILS)
         .content::<Vec<super::Thumbnail>>(thumbs)
         .await
         .map_err(|e| {

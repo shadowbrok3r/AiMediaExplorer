@@ -7,8 +7,8 @@ build = "build.rs"
 [dependencies]
 eframe = { version="0.32", features=["persistence", "serde",  "default_fonts", "glow", "x11"], default-features=false }
 egui_extras = { version = "0.32", features = ["datepicker", "syntect", "serde", "image", "all_loaders" ]}
-egui-data-table = { path = "G:\\Users\\Owner\\Documents\\1-MyStuff\\TechStuff\\GitHub\\egui-data-table", features = ["persistency"]}
-# egui-data-table = { path = "C:\\Users\\Owner\\Documents\\Programming\\Rust\\egui-data-table", features = ["persistency"]}
+# egui-data-table = { path = "G:\\Users\\Owner\\Documents\\1-MyStuff\\TechStuff\\GitHub\\egui-data-table", features = ["persistency"]}
+egui-data-table = { path = "C:\\Users\\Owner\\Documents\\Programming\\Rust\\egui-data-table", features = ["persistency"]}
 # egui-data-table = { git = "https://github.com/shadowbrok3r/egui-data-table", branch = "master", features = ["persistency"]}
 egui_dock = { version = "0.17.0", features = ["serde"] }
 egui_logger = "0.8"
@@ -62,9 +62,11 @@ async-trait = "0.1"
 rmcp = { version = "0.7.0", features = ["server", "transport-sse-server", "transport-io", "schemars"]}
 egui_json_tree = "0.13.0"
 
+ffmpeg-next = { version = "8", optional = true }
+
 [features]
 cpu = []
-
+ffmpeg = ["ffmpeg-next"]
 
 # Keep windows features for Windows-specific functionality
 [target.'cfg(windows)'.dependencies]

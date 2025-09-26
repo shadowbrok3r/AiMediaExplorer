@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use surrealdb::RecordId;
 
-use crate::DB;
+use crate::{DB, LOGICAL_GROUPS};
 use crate::database::{db_activity, db_set_detail, db_set_error};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,7 +16,7 @@ struct LogicalGroupNew { name: String }
 impl Default for LogicalGroup {
     fn default() -> Self {
         Self { 
-            id: RecordId::from_table_key("logical_groups", "Default"), 
+            id: RecordId::from_table_key(LOGICAL_GROUPS, "Default"), 
             name: "Default".to_string()
         }
     }
@@ -74,7 +74,7 @@ impl LogicalGroup {
         db_set_detail(format!("Creating group '{name}'"));
         // Use the group name as the deterministic record key for easier lookup: logical_groups:<name>
         let g: Option<LogicalGroup> = DB
-            .create(("logical_groups", name))
+            .create((LOGICAL_GROUPS, name))
             .content(LogicalGroupNew { name: name.to_string() })
             .await
             .map_err(|e| { db_set_error(format!("Create group failed: {e}")); e })?

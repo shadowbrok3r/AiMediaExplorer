@@ -10,10 +10,6 @@ struct SimpleLinear {
 }
 
 impl SimpleLinear {
-    fn new_from_vb(vb: VarBuilder, path: &str, in_dim: usize, out_dim: usize) -> Result<Self> {
-        let w = vb.pp(path).get((out_dim, in_dim), "weight")?;
-        Ok(Self { w })
-    }
     fn new_from_qvb(
         vb: &candle_transformers::quantized_var_builder::VarBuilder,
         prefix: &str,
@@ -46,12 +42,6 @@ struct SimpleLayerNorm {
 }
 
 impl SimpleLayerNorm {
-    fn new_from_vb(vb: VarBuilder, path: &str, dim: usize, eps: f64) -> Result<Self> {
-        let vb = vb.pp(path);
-        let weight = vb.get(dim, "weight")?;
-        let bias = vb.get(dim, "bias")?;
-        Ok(Self { weight, bias, eps })
-    }
     fn new_from_qvb(
         vb: &candle_transformers::quantized_var_builder::VarBuilder,
         prefix: &str,
@@ -100,12 +90,6 @@ struct SimpleConv1x1 {
 }
 
 impl SimpleConv1x1 {
-    fn new_from_vb(vb: VarBuilder, path: &str, in_ch: usize, out_ch: usize) -> Result<Self> {
-        // Stored as [out,in,1,1]
-        let w4 = vb.pp(path).get((out_ch, in_ch, 1, 1), "weight")?;
-        let w2 = w4.reshape((out_ch, in_ch))?;
-        Ok(Self { w: w2 })
-    }
     fn new_from_qvb(
         vb: &candle_transformers::quantized_var_builder::VarBuilder,
         prefix: &str,

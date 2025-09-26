@@ -1,7 +1,3 @@
-// Lightweight headless runner for Qwen Image Edit e2e, to avoid the lib/test build tangles.
-// Usage:
-//   SM_QWEN_E2E=1 QWEN_EDIT_IMAGE=E:\path\to\image.jpg cargo run --bin qwen_e2e --release
-
 fn main() -> anyhow::Result<()> {
     simplelog::WriteLogger::init(
         log::LevelFilter::Trace,

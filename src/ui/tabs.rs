@@ -15,11 +15,9 @@ impl egui_dock::TabViewer for crate::app::SmartMediaContext {
     }
 
     fn ui(&mut self, ui: &mut Ui, tab: &mut Self::Tab) {
-        // Record active tab for context-aware metrics (e.g., thumbnails progress)
         self.active_tab_title = Some(tab.clone());
         match tab.as_str() {
             "File Explorer" => self.file_explorer.ui(ui),
-            // AI Assistant moved to a separate viewport window (see app::SmartMediaApp::update)
             "AI Refinements" => self.refinements.ui(ui),
             "Image Edit" => self.image_edit.ui(ui),
             "Logs" => egui_logger::logger_ui()
@@ -61,7 +59,6 @@ impl egui_dock::TabViewer for crate::app::SmartMediaContext {
 
     fn on_close(&mut self, tab: &mut Self::Tab) -> OnCloseResponse {
     self.open_tabs.remove(tab);
-    // Also drop any dynamic explorer for this tab
     self.filtered_tabs.remove(tab);
         OnCloseResponse::Close
     }

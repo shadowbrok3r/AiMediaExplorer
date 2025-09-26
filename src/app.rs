@@ -77,18 +77,11 @@ impl SmartMediaApp {
         let mut tree = DockState::new(vec![
             "File Explorer".to_owned(),
             "Logs".to_owned(),
-            "AI Assistant".to_owned(),
         ]);
 
         "Undock".clone_into(&mut tree.translations.tab_context_menu.eject_button);
 
-        // let [a, b] = tree.main_surface_mut().split_left(
-        //     NodeIndex::root(),
-        //     0.3,
-        //     vec![
-        //         "Inspector".to_owned()
-        //     ],
-        // );
+        // let [a, b] = tree.main_surface_mut().split_left(NodeIndex::root(), 0.3, vec!["Inspector".to_owned()]);
 
         let mut open_tabs = HashSet::new();
 
@@ -100,7 +93,7 @@ impl SmartMediaApp {
             }
         }
 
-    let context = SmartMediaContext {
+        let context = SmartMediaContext {
             first_run: true,
             page: Default::default(),
             ui_settings: UiSettings::default(),

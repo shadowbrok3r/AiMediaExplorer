@@ -8,6 +8,8 @@ use table::FileTableViewer;
 use humansize::DECIMAL;
 use serde::Serialize;
 use eframe::egui::*;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc as StdArc;
 
 pub mod quick_access_pane;
 pub mod preview_pane;
@@ -83,6 +85,14 @@ pub struct SimilarResult {
     pub updated: Option<surrealdb::sql::Datetime>,
     pub similarity_score: Option<f32>,
     pub clip_similarity_score: Option<f32>,
+}
+
+#[derive(Clone)]
+pub struct VideoFrame {
+    pub rgba: StdArc<[u8]>,
+    pub width: usize,
+    pub height: usize,
+    pub pts: f64,
 }
 
 #[derive(Serialize)]
@@ -272,6 +282,20 @@ pub struct FileExplorer {
     pub failed_tab_opened: bool,
     #[serde(skip)]
     repaint_next: bool,
+    #[serde(skip)]
+    pub video_frame_tx: crossbeam::channel::Sender<VideoFrame>,
+    #[serde(skip)]
+    pub video_frame_rx: crossbeam::channel::Receiver<VideoFrame>,
+    #[serde(skip)]
+    pub video_playing: bool,
+    #[serde(skip)]
+    pub video_stop_flag: StdArc<AtomicBool>,
+    #[serde(skip)]
+    pub video_texture: Option<egui::TextureHandle>,
+    #[serde(skip)]
+    pub video_duration_secs: Option<f32>,
+    #[serde(skip)]
+    pub video_position_secs: f32,
 }
 
 impl FileExplorer {
@@ -280,6 +304,7 @@ impl FileExplorer {
     pub fn new(skip_initial_scan: bool) -> Self {
         let (thumbnail_tx, thumbnail_rx) = crossbeam::channel::unbounded();
         let (scan_tx, scan_rx) = crossbeam::channel::unbounded();
+        let (video_frame_tx, video_frame_rx) = crossbeam::channel::unbounded();
         let (ai_update_tx, ai_update_rx) = crossbeam::channel::unbounded();
         let (clip_embedding_tx, clip_embedding_rx) = crossbeam::channel::unbounded();
         let (db_preload_tx, db_preload_rx) = crossbeam::channel::unbounded();
@@ -315,6 +340,13 @@ impl FileExplorer {
             pending_thumb_rows: Vec::new(),
             ai_update_rx,
             streaming_interim: std::collections::HashMap::new(),
+            video_frame_tx,
+            video_frame_rx,
+            video_playing: false,
+            video_stop_flag: StdArc::new(AtomicBool::new(false)),
+            video_texture: None,
+            video_duration_secs: None,
+            video_position_secs: 0.0,
             thumb_scheduled: std::collections::HashSet::new(),
             thumb_semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(6)),
             follow_active_vision: true,

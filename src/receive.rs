@@ -6,11 +6,8 @@ const STYLE: &str = r#"{"override_text_style":null,"override_font_id":null,"over
 
 impl crate::app::SmartMediaContext {
     pub fn receive(&mut self, ctx: &eframe::egui::Context) {
-        // Drain and render toasts
-        while let Ok((kind, msg)) = self.toast_rx.try_recv() {
-            self.toasts.add(egui_toast::Toast { kind, text: eframe::egui::RichText::new(msg).into(), ..Default::default() });
-        }
         self.toasts.show(ctx);
+        
         if self.first_run {
             egui_extras::install_image_loaders(ctx);
             let db_ready_tx = self.db_ready_tx.clone();
@@ -31,6 +28,14 @@ impl crate::app::SmartMediaContext {
                 }
                 Err(e) => log::info!("Error setting theme: {e:?}")
             };
+        }
+
+        while let Ok((kind, msg)) = self.toast_rx.try_recv() {
+            self.toasts.add(egui_toast::Toast { 
+                kind, 
+                text: eframe::egui::RichText::new(msg).into(), 
+                ..Default::default() 
+            });
         }
 
         if let Ok(ui_settings) = self.ui_settings_rx.try_recv() {
