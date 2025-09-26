@@ -995,7 +995,7 @@ impl AssistantPanel {
             .stroke(stroke)
             .inner_margin(egui::Margin { left: 10, right: 10, top: 6, bottom: 8 })
             .show(ui, |ui| {
-                ui.set_min_width(width - 4.0);
+                ui.set_width(width / 1.1);
                 self.render_message_inner(ui, &msg.content);
                 if let Some(atts) = &msg.attachments {
                     if !atts.is_empty() {
