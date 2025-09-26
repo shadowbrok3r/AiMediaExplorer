@@ -10,6 +10,9 @@ pub struct LogicalGroup {
     pub name: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct LogicalGroupNew { name: String }
+
 impl Default for LogicalGroup {
     fn default() -> Self {
         Self { 
@@ -72,7 +75,7 @@ impl LogicalGroup {
         // Use the group name as the deterministic record key for easier lookup: logical_groups:<name>
         let g: Option<LogicalGroup> = DB
             .create(("logical_groups", name))
-            .content(serde_json::json!({ "name": name }))
+            .content(LogicalGroupNew { name: name.to_string() })
             .await
             .map_err(|e| { db_set_error(format!("Create group failed: {e}")); e })?
             .take();

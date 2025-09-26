@@ -34,6 +34,9 @@ pub struct UiSettings {
     // Selected CLIP/SigLIP model key
     pub clip_model: Option<String>,
     pub recent_paths: Vec<String>,
+    // --- AI Assistant model history ---
+    pub recent_models: Vec<String>,
+    pub last_used_model: Option<String>,
     // When true, new scan results and thumbnail updates are saved into the DB automatically (if a logical group is active)
     pub auto_save_to_database: bool,
     // Optional: user-specified folder containing the vision (LLaVA/JoyCaption) model
@@ -93,6 +96,8 @@ impl Default for UiSettings {
             clip_overwrite_embeddings: false,
             clip_model: Some("siglip2-large-patch16-512".into()),
             recent_paths: Vec::new(),
+            recent_models: Vec::new(),
+            last_used_model: None,
             auto_save_to_database: false,
             joycaption_model_dir: None,
             reranker_model: Some("jinaai/jina-reranker-m0".into()),
@@ -108,7 +113,7 @@ impl Default for UiSettings {
             groq_api_key: std::env::var("GROQ_API_KEY").ok(),
             openrouter_api_key: std::env::var("OPENROUTER_API_KEY").ok(),
             openai_base_url: None,
-            openai_default_model: Some("gpt-4o-mini".into()),
+            openai_default_model: Some("gpt-5-mini".into()),
             openai_organization: None,
             egui_preferences: Options::default()
 
@@ -126,6 +131,16 @@ impl UiSettings {
         self.recent_paths.insert(0, p);
         // Cap at 20
         if self.recent_paths.len() > 10 { self.recent_paths.truncate(10); }
+    }
+
+    pub fn push_recent_model(&mut self, model: &str) {
+        if model.trim().is_empty() { return; }
+        if let Some(idx) = self.recent_models.iter().position(|x| x == model) {
+            self.recent_models.remove(idx);
+        }
+        self.recent_models.insert(0, model.to_string());
+        if self.recent_models.len() > 8 { self.recent_models.truncate(8); }
+        self.last_used_model = Some(model.to_string());
     }
 }
 // In-memory snapshot (optional) to avoid extra DB selects for callers that load early.

@@ -302,14 +302,21 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                 });
             }
             1 => {
-                // Name (passive label; cell click is handled in on_cell_view_response)
-                ui.label(format!(" {}", &row.filename));
+                // Name (make the label clickable so row click registers)
+                let _ = ui.add(
+                    egui::Label::new(format!(" {}", &row.filename))
+                        .sense(egui::Sense::click()),
+                );
             }
             2 => {
-                // Path or DB key depending on mode (non-interactive to allow cell-level clicks)
+                // Path or DB key depending on mode (make clickable to trigger selection)
                 match self.mode {
-                    ExplorerMode::FileSystem => ui.label(&row.path),
-                    ExplorerMode::Database => ui.label(&row.path),
+                    ExplorerMode::FileSystem => {
+                        let _ = ui.add(egui::Label::new(&row.path).sense(egui::Sense::click()));
+                    }
+                    ExplorerMode::Database => {
+                        let _ = ui.add(egui::Label::new(&row.path).sense(egui::Sense::click()));
+                    }
                 };
             }
             3 => {
@@ -766,6 +773,8 @@ impl RowViewer<Thumbnail> for FileTableViewer {
         }
         for row in highlighted.iter().filter(|r| r.file_type != "<DIR>") {
             self.selected.insert(row.path.to_string());
+            // Send a selection event to open preview pane via receiver
+            let _ = self.thumbnail_tx.try_send((*row).clone());
         }
     }
 
@@ -797,7 +806,7 @@ impl RowViewer<Thumbnail> for FileTableViewer {
             .selected_rows
             .iter()
             .any(|(_, r)| r.file_type == "<DIR>" && !r.path.is_empty());
-        vec![
+        let mut items = vec![
             CustomMenuItem::new(
                 "generate_description", 
                 "Generate Description"
@@ -847,7 +856,18 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                 "Find Similar (CLIP)"
             ).icon("🔍").enabled(!selection.selected_rows.is_empty()),
             // Future: rerank actions (category / tags) can be added once sorting hook in FileExplorer is exposed.
-        ]
+        ];
+        // In Database mode, allow attaching to chat window
+        if self.mode == ExplorerMode::Database {
+            let can_attach = !selection.selected_rows.is_empty();
+            items.push(
+                CustomMenuItem::new(
+                    "attach_to_chat_window",
+                    "Attach to chat window"
+                ).icon("📎").enabled(can_attach)
+            );
+        }
+        items
     }
 
     fn on_custom_action_ex(
@@ -857,6 +877,19 @@ impl RowViewer<Thumbnail> for FileTableViewer {
         _editor: &mut CustomActionEditor<Thumbnail>,
     ) {
         match action_id {
+            "attach_to_chat_window" => {
+                // Collect file paths from selected rows (skip directories)
+                let paths: Vec<String> = ctx
+                    .selection
+                    .selected_rows
+                    .iter()
+                    .filter(|(_, r)| r.file_type != "<DIR>")
+                    .map(|(_, r)| r.path.clone())
+                    .collect();
+                if !paths.is_empty() {
+                    crate::ui::assistant::request_attach_to_chat(paths);
+                }
+            }
             "open_selection_in_new_tab" => {
                 // Build a title from first selected name and count
                 let rows: Vec<crate::database::Thumbnail> = ctx

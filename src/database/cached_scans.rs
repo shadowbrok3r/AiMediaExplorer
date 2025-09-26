@@ -1,7 +1,7 @@
-use chrono::Utc;
-use surrealdb::RecordId;
-use crate::DB;
 use crate::database::{db_activity, db_set_detail};
+use surrealdb::RecordId;
+use chrono::Utc;
+use crate::DB;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CachedScan {
@@ -23,6 +23,28 @@ pub struct CachedScanItem {
     pub created: surrealdb::sql::Datetime,
 }
 
+// Typed payloads for inserts/updates
+#[derive(Debug, Clone, serde::Serialize)]
+struct CachedScanNew {
+    root: String,
+    started: surrealdb::sql::Datetime,
+    title: Option<String>,
+    scan_id: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct CachedScanUpdate {
+    finished: surrealdb::sql::Datetime,
+    total: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct CachedScanItemNew {
+    scan_ref: RecordId,
+    path: String,
+    created: surrealdb::sql::Datetime,
+}
+
 impl CachedScan {
     pub async fn create(root: &str, title: Option<String>, scan_id: u64) -> anyhow::Result<Self, anyhow::Error> {
         let _ga = db_activity("Create cached scan");
@@ -30,12 +52,12 @@ impl CachedScan {
         let started: surrealdb::sql::Datetime = Utc::now().into();
         let row: Option<Self> = DB
             .create("cached_scans")
-            .content(serde_json::json!({
-                "root": root,
-                "started": started,
-                "title": title,
-                "scan_id": scan_id,
-            }))
+            .content(CachedScanNew {
+                root: root.to_string(),
+                started,
+                title,
+                scan_id,
+            })
             .await?;
         row.ok_or_else(|| anyhow::anyhow!("create cached_scans returned empty"))
     }
@@ -46,10 +68,7 @@ impl CachedScan {
         let finished: surrealdb::sql::Datetime = Utc::now().into();
         let row: Option<Self> = DB
             .update((&self.id).clone())
-            .merge(serde_json::json!({
-                "finished": finished,
-                "total": total,
-            }))
+            .merge(CachedScanUpdate { finished, total })
             .await?;
         row.ok_or_else(|| anyhow::anyhow!("update cached_scans returned empty"))
     }
@@ -84,13 +103,13 @@ impl CachedScanItem {
         let chunk = 1000usize;
         let mut total = 0usize;
         for batch in paths.chunks(chunk) {
-            let mut values = Vec::with_capacity(batch.len());
+            let mut values: Vec<CachedScanItemNew> = Vec::with_capacity(batch.len());
             for p in batch.iter() {
-                values.push(serde_json::json!({
-                    "scan_ref": scan_ref,
-                    "path": p,
-                    "created": created,
-                }));
+                values.push(CachedScanItemNew {
+                    scan_ref: scan_ref.clone(),
+                    path: p.clone(),
+                    created: created.clone(),
+                });
             }
             let _: Option<Self> = DB.create("cached_scan_items").content(values).await?;
             total += batch.len();

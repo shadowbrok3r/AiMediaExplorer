@@ -1,3 +1,15 @@
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatSessionNew {
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessageNew {
+    pub session_ref: RecordId,
+    pub role: String,
+    pub content: String,
+    pub attachments: Option<Vec<String>>,
+}
 use serde::{Deserialize, Serialize};
 use surrealdb::RecordId;
 
@@ -26,9 +38,10 @@ pub async fn create_session(title: &str) -> anyhow::Result<RecordId, anyhow::Err
     db_set_detail(format!("{title}"));
     #[derive(Deserialize)]
     struct IdOnly { id: RecordId }
+    let new_row = ChatSessionNew { title: title.to_string() };
     let row: Option<IdOnly> = DB
         .create("assistant_sessions")
-        .content(serde_json::json!({"title": title}))
+        .content(new_row)
         .await
         .map_err(|e| { db_set_error(format!("create session failed: {e}")); e })?
         .take();
@@ -59,22 +72,15 @@ pub async fn load_messages(session_id: &RecordId) -> anyhow::Result<Vec<ChatMess
 pub async fn append_message(session_id: &RecordId, role: &str, content: &str, attachments: Option<Vec<String>>) -> anyhow::Result<(), anyhow::Error> {
     let _ga = db_activity("Append chat message");
     db_set_detail(format!("{role}"));
-    // Defensive: ensure the provided session_id actually points to an assistant_sessions record.
-    // Surreal allows creating a RecordId with arbitrary tb so double-check with a lightweight select.
-    // If it fails, attempt to coerce by querying its id string inside assistant_sessions.
-    // Validate session id belongs to assistant_sessions.
-    let sid_render = session_id.to_string();
-    if !sid_render.starts_with("assistant_sessions:") {
-        return Err(anyhow::anyhow!("Invalid session_ref: expected table assistant_sessions"));
-    }
+    let new_msg = ChatMessageNew {
+        session_ref: session_id.clone(),
+        role: role.to_string(),
+        content: content.to_string(),
+        attachments,
+    };
     let _: Option<ChatMessageRow> = DB
         .create("assistant_messages")
-        .content(serde_json::json!({
-            "session_ref": session_id,
-            "role": role,
-            "content": content,
-            "attachments": attachments,
-        }))
+        .content(new_msg)
         .await
         .map_err(|e| { db_set_error(format!("insert message failed: {e}")); e })?
         .take();

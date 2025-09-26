@@ -86,37 +86,50 @@ impl crate::ui::file_table::FileExplorer {
             }
         
             if self.viewer.mode == ExplorerMode::Database {
-                if ui.button(RichText::new(format!("Delete {} From DB", self.selection_count())).color(ui.style().visuals.error_fg_color))
-                    .on_hover_text("Delete all currently visible (filtered) rows from the database, including their CLIP embeddings. Files on disk are NOT affected.")
-                    .clicked()
-                {
-                    // Confirm destructive action
-                    let count = self.table.iter().filter(|r| r.file_type != "<DIR>").count();
-                    if count > 0 {
-                        if rfd::MessageDialog::new()
-                            .set_title("Delete from Database")
-                            .set_description(&format!("Permanently delete {} records from the database (and their embeddings)? This will not delete files on disk.", count))
-                            .set_level(rfd::MessageLevel::Warning)
-                            .set_buttons(rfd::MessageButtons::YesNo)
-                            .show() == rfd::MessageDialogResult::Yes
-                        {
-                            let paths: Vec<surrealdb::RecordId> = self
-                                .table
-                                .iter()
-                                .filter(|r| r.file_type != "<DIR>")
-                                .map(|r| r.id.clone())
-                                .collect();
-                            tokio::spawn(async move {
-                                match crate::database::delete_thumbnails_and_embeddings_by_paths(paths).await {
-                                    Ok((emb, thumbs)) => log::info!("Deleted {} embeddings and {} thumbnails.", emb, thumbs),
-                                    Err(e) => log::error!("Delete visible failed: {e:?}"),
-                                }
-                            });
-                            // Remove from the current table immediately for UX
-                            self.table.retain(|r| r.file_type == "<DIR>");
+                ui.horizontal(|ui| {
+                    if ui.button(RichText::new("Attach to chat window").color(ui.style().visuals.strong_text_color())).clicked() {
+                        // Send selected file paths to chat window as attachments
+                        let selected_files: Vec<String> = self
+                            .table
+                            .iter()
+                            .filter(|r| r.file_type != "<DIR>" && self.viewer.selected.contains(&r.path))
+                            .map(|r| r.path.clone())
+                            .collect();
+                        crate::ui::assistant::request_attach_to_chat(selected_files);
+                        ui.close();
+                    }
+                    if ui.button(RichText::new(format!("Delete {} From DB", self.selection_count())).color(ui.style().visuals.error_fg_color))
+                        .on_hover_text("Delete all currently visible (filtered) rows from the database, including their CLIP embeddings. Files on disk are NOT affected.")
+                        .clicked()
+                    {
+                        // Confirm destructive action
+                        let count = self.table.iter().filter(|r| r.file_type != "<DIR>").count();
+                        if count > 0 {
+                            if rfd::MessageDialog::new()
+                                .set_title("Delete from Database")
+                                .set_description(&format!("Permanently delete {} records from the database (and their embeddings)? This will not delete files on disk.", count))
+                                .set_level(rfd::MessageLevel::Warning)
+                                .set_buttons(rfd::MessageButtons::YesNo)
+                                .show() == rfd::MessageDialogResult::Yes
+                            {
+                                let paths: Vec<surrealdb::RecordId> = self
+                                    .table
+                                    .iter()
+                                    .filter(|r| r.file_type != "<DIR>")
+                                    .map(|r| r.id.clone())
+                                    .collect();
+                                tokio::spawn(async move {
+                                    match crate::database::delete_thumbnails_and_embeddings_by_paths(paths).await {
+                                        Ok((emb, thumbs)) => log::info!("Deleted {} embeddings and {} thumbnails.", emb, thumbs),
+                                        Err(e) => log::error!("Delete visible failed: {e:?}"),
+                                    }
+                                });
+                                // Remove from the current table immediately for UX
+                                self.table.retain(|r| r.file_type == "<DIR>");
+                            }
                         }
                     }
-                }
+                });
             }
         });
     }

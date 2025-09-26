@@ -38,6 +38,8 @@ impl crate::app::SmartMediaContext {
             let opts = self.ui_settings.egui_preferences.clone();
             // Keep FileExplorer's cached settings in sync with the latest from DB
             self.file_explorer.viewer.ui_settings = self.ui_settings.clone();
+            self.assistant.set_ui_settings(self.ui_settings.clone());
+            self.assistant_window_open = true;
             ctx.options_mut(|o| *o = opts);
             match serde_json::from_str::<eframe::egui::Style>(STYLE) {
                 Ok(mut theme) => {
@@ -572,9 +574,12 @@ impl crate::app::SmartMediaContext {
                     self.file_explorer.viewer.ui_settings = self.ui_settings.clone();
                     let to_save = self.ui_settings.clone();
                     let to_save_for_save = to_save.clone();
+                    let tx = self.toast_tx.clone();
                     tokio::spawn(async move { 
-                        crate::database::save_settings(&to_save_for_save);
-                        log::info!("Database save settings ");
+                        match crate::database::save_settings_in_db(to_save_for_save).await {
+                            Ok(_) => { let _ = tx.try_send((egui_toast::ToastKind::Success, "Settings saved".into())); },
+                            Err(e) => { let _ = tx.try_send((egui_toast::ToastKind::Error, format!("Failed to save settings: {e}"))); },
+                        }
                     });
                     // Reflect CLIP model change immediately in status hover
                     let model_key = self
@@ -609,14 +614,20 @@ impl crate::app::SmartMediaContext {
                     // self.open_settings_modal = false;
                 }
                 // Allow forcing a CLIP engine re-init immediately without waiting for next use
-                if ui.button("Reload CLIP Now").clicked() {
+                    if ui.button("Reload CLIP Now").clicked() {
                     // If user has a draft open, stage it to cache so reload picks the latest model
                     if let Some(d) = &self.settings_draft {
                         self.ui_settings = d.clone();
                         self.file_explorer.viewer.ui_settings = self.ui_settings.clone();
                         let to_save = self.ui_settings.clone();
                         let to_save_for_save = to_save.clone();
-                        tokio::spawn(async move { crate::database::save_settings(&to_save_for_save); });
+                        let tx = self.toast_tx.clone();
+                        tokio::spawn(async move {
+                            match crate::database::save_settings_in_db(to_save_for_save).await {
+                                Ok(_) => { let _ = tx.try_send((egui_toast::ToastKind::Success, "Settings saved".into())); },
+                                Err(e) => { let _ = tx.try_send((egui_toast::ToastKind::Error, format!("Failed to save settings: {e}"))); },
+                            }
+                        });
                         let model_key = to_save.clip_model.clone().unwrap_or_else(|| "siglip2-large-patch16-512".to_string());
                         CLIP_STATUS.set_model(&model_key);
                         CLIP_STATUS.set_state(StatusState::Initializing, format!("Reloading: {}", model_key));
@@ -633,13 +644,19 @@ impl crate::app::SmartMediaContext {
                         }
                     });
                 }
-                if ui.button("Reload Reranker Now").on_hover_text("Reload the reranker engine with the current HF repo setting").clicked() {
+                    if ui.button("Reload Reranker Now").on_hover_text("Reload the reranker engine with the current HF repo setting").clicked() {
                     // Stage draft if any
                     if let Some(d) = &self.settings_draft {
                         self.ui_settings = d.clone();
                         self.file_explorer.viewer.ui_settings = self.ui_settings.clone();
                         let to_save = self.ui_settings.clone();
-                        tokio::spawn(async move { crate::database::save_settings(&to_save); });
+                        let tx = self.toast_tx.clone();
+                        tokio::spawn(async move { 
+                            match crate::database::save_settings_in_db(to_save).await {
+                                Ok(_) => { let _ = tx.try_send((egui_toast::ToastKind::Success, "Settings saved".into())); },
+                                Err(e) => { let _ = tx.try_send((egui_toast::ToastKind::Error, format!("Failed to save settings: {e}"))); },
+                            }
+                        });
                     }
                     tokio::spawn(async move {
                         crate::ai::reranker::clear_global_reranker().await;
@@ -687,9 +704,12 @@ impl crate::app::SmartMediaContext {
                                 new_opts.dark_style = style;
                                 self.ui_settings.egui_preferences = new_opts;
                                 let s = self.ui_settings.clone();
+                                let tx = self.toast_tx.clone();
                                 tokio::spawn(async move {
-                                    let res=  save_settings_in_db(s).await;
-                                    log::info!("Database save result: {res:?}");
+                                    match save_settings_in_db(s).await {
+                                        Ok(_) => { let _ = tx.try_send((egui_toast::ToastKind::Success, "Egui settings saved".into())); },
+                                        Err(e) => { let _ = tx.try_send((egui_toast::ToastKind::Error, format!("Failed to save Egui settings: {e}"))); },
+                                    }
                                 });
                                 ui.close();
                             }

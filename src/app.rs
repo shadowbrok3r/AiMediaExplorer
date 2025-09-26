@@ -118,7 +118,7 @@ impl SmartMediaApp {
             refinements: RefinementsPanel::new(refine_tx.clone(), toast_tx.clone()),
             image_edit: Default::default(),
             open_ui_settings: false,
-            assistant_window_open: true,
+            assistant_window_open: false,
             new_excluded_dir: String::new(),
             toasts: Toasts::new().anchor(eframe::egui::Align2::RIGHT_TOP, (-10.0, 10.0)),
             toast_tx,
