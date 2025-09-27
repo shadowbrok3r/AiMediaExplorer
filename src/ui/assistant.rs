@@ -179,16 +179,16 @@ impl AssistantPanel {
             let current_provider = settings
                 .ai_chat_provider
                 .clone()
-                .unwrap_or_else(|| "local-joycaption".into());
+                .unwrap_or_else(|| "openrouter".into());
             let mut selected_provider = current_provider.clone();
             ui.vertical_centered(|ui| ui.heading(RichText::new("Provider").strong()));
             ComboBox::from_id_salt("provider_combo")
-                .selected_text(&selected_provider)
-                .show_ui(ui, |ui| {
-                    for p in providers {
-                        ui.selectable_value(&mut selected_provider, p.to_string(), p);
-                    }
-                });
+            .selected_text(&selected_provider)
+            .show_ui(ui, |ui| {
+                for p in providers {
+                    ui.selectable_value(&mut selected_provider, p.to_string(), p);
+                }
+            });
             if selected_provider != current_provider {
                 let mut s2 = settings.clone();
                 s2.ai_chat_provider = Some(selected_provider.clone());
@@ -1268,6 +1268,7 @@ impl AssistantPanel {
                     model,
                     organization: org,
                     temperature: Some(temp),
+                    zdr: true
                 };
 
                 // Use the raw prompt; avoid adding artificial 'You:'/'Assistant:' prefixes which can

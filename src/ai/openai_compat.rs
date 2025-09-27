@@ -27,6 +27,7 @@ pub struct ProviderConfig {
     pub model: String,
     pub organization: Option<String>,  // OpenAI optional
     pub temperature: Option<f32>,      // optional sampling temperature for chat completions
+    pub zdr: bool
 }
 
 fn default_base(provider: &str) -> String {
