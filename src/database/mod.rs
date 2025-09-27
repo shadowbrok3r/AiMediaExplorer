@@ -81,7 +81,8 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
         DEFINE FIELD IF NOT EXISTS session_ref ON assistant_messages TYPE record<assistant_sessions> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS role ON assistant_messages TYPE string PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS content ON assistant_messages TYPE string PERMISSIONS FULL;
-        DEFINE FIELD IF NOT EXISTS attachments ON assistant_messages TYPE option<array<string>> PERMISSIONS FULL;
+    DEFINE FIELD IF NOT EXISTS attachments ON assistant_messages TYPE option<array<string>> PERMISSIONS FULL;
+    DEFINE FIELD IF NOT EXISTS attachments_refs ON assistant_messages TYPE option<array<record<thumbnails>>> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS created ON assistant_messages TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
         
         DEFINE FIELD IF NOT EXISTS ext_enabled ON user_settings TYPE option<array<any>> PERMISSIONS FULL;

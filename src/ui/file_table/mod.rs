@@ -356,7 +356,7 @@ impl FileExplorer {
             vision_completed: 0,
             vision_pending: 0,
             db_offset: 0,
-            db_limit: 500,
+            db_limit: 5_000,
             db_last_batch_len: 0,
             db_loading: false,
             db_all_view: false,
@@ -493,6 +493,31 @@ impl FileExplorer {
                         ui.separator();
                         ui.label(format!("Rows {}-{}", start_idx + 1, end_idx));
                     }
+                });
+                ui.separator();
+            }
+            // Database mode pagination when browsing by directory (not full DB view and not similarity)
+            if self.viewer.mode == table::ExplorerMode::Database && !self.db_all_view && !self.viewer.showing_similarity {
+                ui.horizontal(|ui| {
+                    let can_prev = self.db_offset >= self.db_limit && !self.db_loading;
+                    let can_next = !self.db_loading && (self.db_last_batch_len == self.db_limit || self.table.is_empty());
+                    if ui.add_enabled(can_prev, egui::Button::new("Prev Page")).clicked() {
+                        // Go back one page
+                        let new_off = self.db_offset.saturating_sub(self.db_limit);
+                        self.db_offset = new_off.saturating_sub(self.db_limit); // load_database_rows will add rows and advance offset per row
+                        self.db_last_batch_len = 0;
+                        self.table.clear();
+                        self.table_index.clear();
+                        self.load_database_rows();
+                    }
+                    if ui.add_enabled(can_next, egui::Button::new("Next Page")).clicked() {
+                        self.db_last_batch_len = 0;
+                        self.table.clear();
+                        self.table_index.clear();
+                        self.load_database_rows();
+                    }
+                    ui.separator();
+                    ui.label(format!("Offset {} · Page size {}", self.db_offset, self.db_limit));
                 });
                 ui.separator();
             }

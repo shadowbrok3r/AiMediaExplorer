@@ -148,13 +148,28 @@ impl super::FileExplorer {
                     ui.separator();
                     // For preview pane, render a higher-quality preview instead of the small table thumb
                     let cache_key = format!("preview::{},{}", self.current_thumb.path, 1600);
-                    // If this is a video, allow video player controls; otherwise generate preview image as before
+                    // Compute video flag only when ffmpeg is enabled; otherwise always render image
                     #[cfg(feature = "ffmpeg")]
                     let is_video = {
                         if self.current_thumb.file_type == "<DIR>" || self.current_thumb.file_type == "<ARCHIVE>" { false } else { 
                             if let Some(ext) = std::path::Path::new(&self.current_thumb.path).extension().and_then(|e| e.to_str()) { crate::is_video(&ext.to_ascii_lowercase()) } else { false }
                         }
                     };
+                    #[cfg(not(feature = "ffmpeg"))]
+                    let is_video = false;
+
+                    // In Database mode, if we already have a base64 thumbnail on the row, seed the preview cache immediately
+                    if matches!(self.viewer.mode, super::table::ExplorerMode::Database) && !thumb_cache.contains_key(&cache_key) {
+                        if let Some(mut b64) = self.current_thumb.thumbnail_b64.clone() {
+                            if b64.starts_with("data:image/png;base64,") {
+                                if let Some((_, end)) = b64.split_once("data:image/png;base64,") { b64 = end.to_string(); }
+                            }
+                            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64.as_bytes()) {
+                                let t = crate::database::Thumbnail { path: cache_key.clone(), thumbnail_b64: Some(base64::engine::general_purpose::STANDARD.encode(&bytes)), ..Default::default() };
+                                crate::ui::file_table::insert_thumbnail(thumb_cache, t);
+                            }
+                        }
+                    }
                     if !thumb_cache.contains_key(&cache_key) {
                         let path = std::path::Path::new(&self.current_thumb.path).to_path_buf();
                         let tx = self.thumbnail_tx.clone();
@@ -238,6 +253,11 @@ impl super::FileExplorer {
                             if updated { ui.ctx().request_repaint(); }
                         });
                     } else {
+                        super::get_img_ui(&thumb_cache, &cache_key, ui);
+                    }
+                    #[cfg(not(feature = "ffmpeg"))]
+                    {
+                        // Without ffmpeg feature, always render image preview
                         super::get_img_ui(&thumb_cache, &cache_key, ui);
                     }
 

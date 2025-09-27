@@ -1,7 +1,7 @@
 use crate::ai::openai_compat::OpenRouterModel;
 use crate::{UiSettings, ui::status::GlobalStatusIndicator};
 use base64::Engine as _;
-use crossbeam::channel::{Receiver, Sender, unbounded};
+use crossbeam::channel::{Receiver, Sender, unbounded, bounded};
 use eframe::egui::*;
 use egui_extras::syntax_highlighting::{CodeTheme, highlight};
 use egui_json_tree::{DefaultExpand, JsonTree, JsonTreeStyle, JsonTreeVisuals, ToggleButtonsState};
@@ -62,6 +62,29 @@ pub struct AssistantPanel {
     mcp_search_text: String,
     model_sort: ModelSort,
     settings: UiSettings,
+    // UI-bound copies of option fields that need stable mutable references
+    selected_provider: String,
+    model_name: String,
+    open_model_opts: bool,
+    open_inference_opts: bool,
+    // Async new-session creation pipe (persistent channel)
+    new_session_tx: crossbeam::channel::Sender<(Option<surrealdb::RecordId>, String)>,
+    new_session_rx: crossbeam::channel::Receiver<(Option<surrealdb::RecordId>, String)>,
+    // OpenRouter filters
+    filter_text: bool,
+    filter_image: bool,
+    filter_audio: bool,
+    filter_free: bool,
+    // Output modality filters
+    filter_out_text: bool,
+    filter_out_image: bool,
+    filter_out_audio: bool,
+    // Cache-priming sentinel for current session index
+    preloaded_session_index: Option<usize>,
+    // One-shot initial load control and channel
+    first_run: bool,
+    initial_sessions_tx: crossbeam::channel::Sender<(Vec<(String, Vec<ChatMessage>)>, Vec<surrealdb::RecordId>)>,
+    initial_sessions_rx: crossbeam::channel::Receiver<(Vec<(String, Vec<ChatMessage>)>, Vec<surrealdb::RecordId>)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,7 +121,9 @@ impl AssistantPanel {
                 log::warn!("[MCP] stdio server not started: {e}");
             }
         });
-        Self {
+    let (new_session_tx, new_session_rx) = unbounded::<(Option<surrealdb::RecordId>, String)>();
+    let (initial_sessions_tx, initial_sessions_rx) = bounded::<(Vec<(String, Vec<ChatMessage>)>, Vec<surrealdb::RecordId>)>(1);
+    Self {
             prompt: String::new(),
             progress: None,
             last_reply: String::new(),
@@ -135,11 +160,38 @@ impl AssistantPanel {
             mcp_search_text: String::new(),
             model_sort: ModelSort::NameAsc,
             settings: UiSettings::default(),
+            selected_provider: "local-joycaption".into(),
+            model_name: String::new(),
+            open_model_opts: true,
+            open_inference_opts: true,
+            new_session_tx,
+            new_session_rx,
+            filter_text: false,
+            filter_image: false,
+            filter_audio: false,
+            filter_free: false,
+            filter_out_text: false,
+            filter_out_image: false,
+            filter_out_audio: false,
+            preloaded_session_index: None,
+            first_run: true,
+            initial_sessions_tx,
+            initial_sessions_rx,
         }
     }
 
     pub fn set_ui_settings(&mut self, settings: UiSettings) {
+        // Merge new settings and refresh UI-bound copies
         self.settings = settings.clone();
+        self.selected_provider = settings
+            .ai_chat_provider
+            .clone()
+            .unwrap_or_else(|| self.selected_provider.clone());
+        self.model_name = self
+            .model_override
+            .clone()
+            .or_else(|| settings.openai_default_model.clone())
+            .unwrap_or_else(|| self.model_name.clone());
     }
 
     pub fn ui(&mut self, ctx: &Context, explorer: &mut crate::ui::file_table::FileExplorer) {
@@ -147,18 +199,33 @@ impl AssistantPanel {
         // TOP PANEL
         TopBottomPanel::top("assistant_top").show(&ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.heading("AI Assistant");
+                if ui.button("Model Options").clicked() {
+                    self.open_model_opts = !self.open_model_opts;
+                }
+
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.small(RichText::new("Chat").italics());
+                    if ui.button("+ New Chat").on_hover_text("Create a new chat session").clicked() {
+                        let new_title = format!("Chat {}", self.sessions.len() + 1);
+                        tokio::spawn({
+                            let title_clone = new_title.clone();
+                            let tx_clone = self.new_session_tx.clone();
+                            async move {
+                                let id = crate::database::assistant_chat::create_session(&title_clone).await.ok();
+                                let _ = tx_clone.send((id, title_clone));
+                            }
+                        });
+                    }
+                    if ui.button("Inference Options").clicked() {
+                        self.open_inference_opts = !self.open_inference_opts;
+                    }
                 });
             });
         });
 
         // LEFT: Provider/model + Sessions list
         SidePanel::left("assistant_left")
-        .exact_width(200.)
-        .show(&ctx, |ui| {
-            let settings = self.settings.clone();
+        .default_width(200.)
+        .show_animated(ctx, self.open_model_opts, |ui| {
             ui.vertical_centered(|ui| {
                 ui.heading(
                     RichText::new("Model Options")
@@ -176,10 +243,8 @@ impl AssistantPanel {
                 "openrouter",
                 "custom",
             ];
-            let current_provider = settings
-                .ai_chat_provider
-                .clone()
-                .unwrap_or_else(|| "openrouter".into());
+
+            let current_provider = self.selected_provider.clone();
             let mut selected_provider = current_provider.clone();
             ui.vertical_centered(|ui| ui.heading(RichText::new("Provider").strong()));
             ComboBox::from_id_salt("provider_combo")
@@ -190,33 +255,56 @@ impl AssistantPanel {
                 }
             });
             if selected_provider != current_provider {
-                let mut s2 = settings.clone();
+                self.selected_provider = selected_provider.clone();
+                let mut s2 = self.settings.clone();
                 s2.ai_chat_provider = Some(selected_provider.clone());
                 crate::database::settings::save_settings(&s2);
+                self.settings = s2;
             }
-            let current_model = self.model_override.clone().unwrap_or_else(|| {
-                settings
-                    .openai_default_model
-                    .clone()
-                    .unwrap_or_else(|| "gpt-5-mini".into())
-            });
+            let current_model = if self.model_name.is_empty() {
+                self.model_override.clone().unwrap_or_else(|| {
+                    self.settings
+                        .openai_default_model
+                        .clone()
+                        .unwrap_or_else(|| "gpt-5-mini".into())
+                })
+            } else {
+                self.model_name.clone()
+            };
             ui.vertical_centered(|ui| ui.heading(RichText::new("Model").strong()));
-            TextEdit::singleline(self.model_override.get_or_insert(current_model))
+            self.model_name = current_model;
+            let te_resp = TextEdit::singleline(&mut self.model_name)
                 .desired_width(ui.available_width())
                 .ui(ui);
+            if te_resp.changed() {
+                self.model_override = Some(self.model_name.clone());
+                let mut s2 = self.settings.clone();
+                s2.openai_default_model = Some(self.model_name.clone());
+                s2.push_recent_model(&self.model_name);
+                crate::database::settings::save_settings(&s2);
+                self.settings = s2;
+                // Create a new chat session named after the model and switch to it
+                let model_title = self.model_name.clone();
+                let tx_clone = self.new_session_tx.clone();
+                tokio::spawn(async move {
+                    let id = crate::database::assistant_chat::create_session(&model_title).await.ok();
+                    let _ = tx_clone.send((id, model_title));
+                });
+            }
 
             // --- Recent Models UI ---
-            let recent_models = &settings.recent_models;
-            let last_used_model = settings.last_used_model.as_deref();
+            let recent_models = &self.settings.recent_models;
+            let last_used_model = self.settings.last_used_model.as_deref();
             if !recent_models.is_empty() || last_used_model.is_some() {
                 ui.add_space(6.0);
                 ui.separator();
                 ui.vertical_centered(|ui| ui.heading(RichText::new("Recent Models").strong()));
                 if let Some(last) = last_used_model {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("Last used: {}", last)).weak());
-                        if ui.button("Load").on_hover_text("Set as current model").clicked() {
+                        ui.label(RichText::new("Last used:").weak());
+                        if ui.button(last).clicked() {
                             self.model_override = Some(last.to_string());
+                            self.model_name = last.to_string();
                             let mut s2 = self.settings.clone();
                             s2.openai_default_model = Some(last.to_string());
                             crate::database::settings::save_settings(&s2);
@@ -226,20 +314,18 @@ impl AssistantPanel {
                 if !recent_models.is_empty() {
                     ScrollArea::vertical().max_height(80.0).show(ui, |ui| {
                         for m in recent_models {
-                            ui.horizontal(|ui| {
-                                ui.label(m);
-                                if ui.button("Load").on_hover_text("Set as current model").clicked() {
-                                    self.model_override = Some(m.clone());
-                                    let mut s2 = self.settings.clone();
-                                    s2.openai_default_model = Some(m.clone());
-                                    crate::database::settings::save_settings(&s2);
-                                }
-                            });
+                            if ui.button(m).clicked() {
+                                self.model_override = Some(m.clone());
+                                self.model_name = m.clone();
+                                let mut s2 = self.settings.clone();
+                                s2.openai_default_model = Some(m.clone());
+                                crate::database::settings::save_settings(&s2);
+                            }
                         }
                     });
                 }
             }
-            if selected_provider == "openrouter" {
+            if self.selected_provider == "openrouter" {
                 if ui
                     .button("List OpenRouter models")
                     .on_hover_text("Fetch available models via OpenRouter")
@@ -251,7 +337,7 @@ impl AssistantPanel {
                     self.models_open.clear();
                     self.models_error = None;
                     self.models_loading = true;
-                    let api_key = env_or(&settings.openrouter_api_key, "OPENROUTER_API_KEY");
+                    let api_key = env_or(&self.settings.openrouter_api_key, "OPENROUTER_API_KEY");
                     let tx = self.models_tx.clone();
                     tokio::spawn(async move {
                         let res = crate::ai::openai_compat::fetch_openrouter_models_json(
@@ -267,6 +353,7 @@ impl AssistantPanel {
             ui.add_space(8.0);
             ui.separator();
             ui.vertical_centered(|ui| ui.heading(RichText::new("Sessions").strong()));
+            let mut pending_switch: Option<usize> = None;
             ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
@@ -274,31 +361,27 @@ impl AssistantPanel {
                         for (i, (title, _)) in self.sessions.iter().enumerate() {
                             let selected = i == self.active_session;
                             if ui.selectable_label(selected, title).clicked() {
-                                self.active_session = i;
-                                self.messages = self.sessions[i].1.clone();
+                                pending_switch = Some(i);
                             }
                         }
                     });
                 });
+            if let Some(i) = pending_switch {
+                self.active_session = i;
+                self.messages = self.sessions[i].1.clone();
+                self.preload_session_thumbs(ctx);
+            }
             ui.horizontal(|ui| {
                 if ui.button("+ New").clicked() {
                     let new_title = format!("Chat {}", self.sessions.len() + 1);
-                    let new_title_clone = new_title.clone();
-                    // Create in DB
-                    let (tx, rx) = unbounded::<Option<surrealdb::RecordId>>();
-                    tokio::spawn(async move {
-                        let id =
-                            crate::database::assistant_chat::create_session(&new_title_clone)
-                                .await
-                                .ok();
-                        let _ = tx.send(id);
+                    tokio::spawn({
+                        let title_clone = new_title.clone();
+                        let tx_clone = self.new_session_tx.clone();
+                        async move {
+                            let id = crate::database::assistant_chat::create_session(&title_clone).await.ok();
+                            let _ = tx_clone.send((id, title_clone));
+                        }
                     });
-                    if let Ok(Some(id)) = rx.recv() {
-                        self.sessions.push((new_title, Vec::new()));
-                        self.session_ids.push(id);
-                        self.active_session = self.sessions.len() - 1;
-                        self.messages.clear();
-                    }
                 }
                 if ui.button("Clear").clicked() {
                     self.messages.clear();
@@ -326,8 +409,8 @@ impl AssistantPanel {
 
         // RIGHT: Inference settings
         SidePanel::right("assistant_right")
-        .exact_width(280.)
-        .show(&ctx, |ui| {
+        .default_width(280.)
+        .show_animated(ctx, self.open_inference_opts, |ui| {
             ui.vertical_centered(|ui| {
                 ui.heading(
                     RichText::new("Inference Settings")
@@ -714,11 +797,10 @@ impl AssistantPanel {
                 }
             }
         }
-        // Initialize a default session and defaults
-        if self.sessions.is_empty() {
-            // Load sessions from DB
-            let (tx, rx) =
-                unbounded::<(Vec<(String, Vec<ChatMessage>)>, Vec<surrealdb::RecordId>)>();
+        // One-time initial session load (non-blocking, using bounded(1) channel stored on self)
+        if self.first_run {
+            self.first_run = false;
+            let tx_init = self.initial_sessions_tx.clone();
             tokio::spawn(async move {
                 let mut items: Vec<(String, Vec<ChatMessage>)> = Vec::new();
                 let mut ids: Vec<surrealdb::RecordId> = Vec::new();
@@ -726,21 +808,20 @@ impl AssistantPanel {
                     Ok(list) => {
                         for (id, title) in list.into_iter() {
                             let mut msgs: Vec<ChatMessage> = Vec::new();
-                            if let Ok(rows) =
-                                crate::database::assistant_chat::load_messages(&id).await
-                            {
+                            if let Ok(rows) = crate::database::assistant_chat::load_messages(&id).await {
                                 for r in rows.into_iter() {
-                                    let role = if r.role == "assistant" {
-                                        ChatRole::Assistant
-                                    } else {
-                                        ChatRole::User
-                                    };
-                                    msgs.push(ChatMessage {
-                                        role,
-                                        content: r.content,
-                                        attachments: r.attachments,
-                                        created: r.created,
-                                    });
+                                    let role = if r.role == "assistant" { ChatRole::Assistant } else { ChatRole::User };
+                                    let mut atts = r.attachments.clone();
+                                    if (atts.is_none() || atts.as_ref().map(|v| v.is_empty()).unwrap_or(true)) && r.attachments_refs.is_some() {
+                                        let mut paths: Vec<String> = Vec::new();
+                                        if let Some(refs) = r.attachments_refs.clone() {
+                                            for rid in refs {
+                                                if let Ok(Some(t)) = crate::Thumbnail::get_by_id(&rid).await { paths.push(t.path); }
+                                            }
+                                        }
+                                        if !paths.is_empty() { atts = Some(paths); }
+                                    }
+                                    msgs.push(ChatMessage { role, content: r.content, attachments: atts, created: r.created });
                                 }
                             }
                             items.push((title, msgs));
@@ -750,28 +831,35 @@ impl AssistantPanel {
                     Err(e) => log::warn!("load sessions failed: {e}"),
                 }
                 if items.is_empty() {
-                    // bootstrap
-                    if let Ok(id) = crate::database::assistant_chat::create_session("Chat 1").await
-                    {
+                    if let Ok(id) = crate::database::assistant_chat::create_session("Chat 1").await {
                         items.push(("Chat 1".into(), Vec::new()));
                         ids.push(id);
                     }
                 }
-                let _ = tx.send((items, ids));
+                let _ = tx_init.send((items, ids));
             });
-            if let Ok((items, ids)) = rx.recv() {
-                self.sessions = items;
-                self.session_ids = ids;
-                self.active_session = 0;
-                if let Some((_t, msgs)) = self.sessions.get(self.active_session) {
-                    self.messages = msgs.clone();
-                }
+        }
+        if let Ok((items, ids)) = self.initial_sessions_rx.try_recv() {
+            self.sessions = items;
+            self.session_ids = ids;
+            self.active_session = 0;
+            if let Some((_t, msgs)) = self.sessions.get(self.active_session) {
+                self.messages = msgs.clone();
+                self.preload_session_thumbs(ctx);
             }
         }
 
-        if self.temp <= 0.0 {
-            self.temp = 0.2;
+        // Drain any new session creations
+        while let Ok((opt_id, title)) = self.new_session_rx.try_recv() {
+            if let Some(id) = opt_id {
+                self.sessions.push((title, Vec::new()));
+                self.session_ids.push(id);
+                self.active_session = self.sessions.len() - 1;
+                self.messages.clear();
+                // Nothing to warm yet; new chat has no messages
+            }
         }
+
 
         // Poll streaming chat updates (if any)
         {
@@ -830,6 +918,18 @@ impl AssistantPanel {
                             TextEdit::singleline(&mut self.models_filter)
                                 .hint_text("name contains…"),
                         );
+                        ui.separator();
+                        ui.label("Input");
+                        ui.toggle_value(&mut self.filter_text, "text");
+                        ui.toggle_value(&mut self.filter_image, "image");
+                        ui.toggle_value(&mut self.filter_audio, "audio");
+                        ui.separator();
+                        ui.label("Output");
+                        ui.toggle_value(&mut self.filter_out_text, "text");
+                        ui.toggle_value(&mut self.filter_out_image, "image");
+                        ui.toggle_value(&mut self.filter_out_audio, "audio");
+                        ui.separator();
+                        ui.toggle_value(&mut self.filter_free, "free");
                         ui.separator();
                         ui.label("Sort");
                         let sort_label = match self.model_sort {
@@ -892,6 +992,35 @@ impl AssistantPanel {
                                     .contains(&self.models_filter.to_lowercase())
                         })
                         .collect();
+                    // Apply modality filters if any are enabled
+                    if self.filter_text || self.filter_image || self.filter_audio || self.filter_out_text || self.filter_out_image || self.filter_out_audio {
+                        shown.retain(|m| {
+                            let arch = m.architecture.as_ref();
+                            let in_mods = arch.map(|a| a.input_modalities.clone()).unwrap_or_default();
+                            let out_mods = arch.map(|a| a.output_modalities.clone()).unwrap_or_default();
+                            let mut ok = true;
+                            if self.filter_text { ok &= in_mods.iter().any(|v| v.contains("text")); }
+                            if self.filter_image { ok &= in_mods.iter().any(|v| v.contains("image")); }
+                            if self.filter_audio { ok &= in_mods.iter().any(|v| v.contains("audio")); }
+                            if self.filter_out_text { ok &= out_mods.iter().any(|v| v.contains("text")); }
+                            if self.filter_out_image { ok &= out_mods.iter().any(|v| v.contains("image")); }
+                            if self.filter_out_audio { ok &= out_mods.iter().any(|v| v.contains("audio")); }
+                            ok
+                        });
+                    }
+                    // Apply free filter naive heuristic: pricing.prompt/completion empty or starts with $0
+                    if self.filter_free {
+                        shown.retain(|m| {
+                            if let Some(p) = &m.pricing {
+                                let pp = p.prompt.as_deref().unwrap_or("");
+                                let cp = p.completion.as_deref().unwrap_or("");
+                                (pp.is_empty() || pp.trim_start_matches('$').starts_with('0'))
+                                    && (cp.is_empty() || cp.trim_start_matches('$').starts_with('0'))
+                            } else {
+                                true
+                            }
+                        });
+                    }
                     // helper to parse numeric price (prompt) as f64
                     let parse_price = |s: &str| -> Option<f64> {
                         if s.is_empty() {
@@ -1024,11 +1153,19 @@ impl AssistantPanel {
                                         .clicked()
                                     {
                                         self.model_override = Some(id.clone());
+                                        self.model_name = id.clone();
                                         let mut settings = self.settings.clone();
                                         settings.openai_default_model = Some(id.clone());
                                         settings.push_recent_model(&id);
                                         crate::database::settings::save_settings(&settings);
                                         self.settings = settings;
+                                        // Create a new chat session named after the model and switch to it
+                                        let model_title = id.clone();
+                                        let tx_clone = self.new_session_tx.clone();
+                                        tokio::spawn(async move {
+                                            let id = crate::database::assistant_chat::create_session(&model_title).await.ok();
+                                            let _ = tx_clone.send((id, model_title));
+                                        });
                                     }
                                     if ui.button("Copy").on_hover_text("Copy model id").clicked() {
                                         ui.ctx().copy_text(id.clone());
@@ -1061,7 +1198,6 @@ impl AssistantPanel {
                     });
                 });
         }
-    
     }
 
     fn send_current_prompt(&mut self, explorer: &mut crate::ui::file_table::FileExplorer) {
@@ -1659,8 +1795,7 @@ impl AssistantPanel {
         if let Some(h) = self.thumb_cache.get(path) {
             return Some(h.id());
         }
-        // NOTE: We avoid hitting the database from this synchronous UI path.
-        // Fallback to file read if no DB thumbnail available
+        // Read from filesystem best-effort (assistant attachments are local files)
         if let Ok(bytes) = std::fs::read(path) {
             if let Ok(img) = image::load_from_memory(&bytes) {
                 let rgba = img.to_rgba8();
@@ -1677,5 +1812,35 @@ impl AssistantPanel {
             }
         }
         None
+    }
+}
+
+impl AssistantPanel {
+    fn preload_session_thumbs(&mut self, ctx: &Context) {
+        // Skip if already warmed for this session index
+        if self.preloaded_session_index == Some(self.active_session) { return; }
+        // Iterate current messages and try to load textures for attachment paths
+        let mut warmed = 0usize;
+        for msg in self.messages.iter() {
+            if let Some(atts) = &msg.attachments {
+                for p in atts {
+                    if self.thumb_cache.contains_key(p) { continue; }
+                    // Synchronous load from disk best-effort; DB fetch is async so we avoid here
+                    if let Ok(bytes) = std::fs::read(p) {
+                        if let Ok(img) = image::load_from_memory(&bytes) {
+                            let rgba = img.to_rgba8();
+                            let (w, h) = rgba.dimensions();
+                            let color = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
+                            let name = format!("assistant_attach:{}", p);
+                            let tex = ctx.load_texture(name, color, egui::TextureOptions::LINEAR);
+                            self.thumb_cache.insert(p.clone(), tex);
+                            warmed += 1;
+                        }
+                    }
+                }
+            }
+        }
+        self.preloaded_session_index = Some(self.active_session);
+        if warmed > 0 { ctx.request_repaint(); }
     }
 }

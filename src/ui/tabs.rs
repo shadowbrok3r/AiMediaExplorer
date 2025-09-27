@@ -28,6 +28,7 @@ impl egui_dock::TabViewer for crate::app::SmartMediaContext {
                 .enable_category("eframe::native::glow_integration".to_string(), false)
                 .enable_category("egui_glow::shader_version".to_string(), false)
                 .enable_category("egui_glow::painter".to_string(), false)
+                .max_log_length(200)
                 .show(ui),
             _ => {
                 // Dynamic tabs: delegate to filtered explorers if present

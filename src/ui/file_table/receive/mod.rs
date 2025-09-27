@@ -45,13 +45,8 @@ impl super::FileExplorer {
             }
         }
         
-        // If we were loading a DB page and all rows have arrived (channel drained for now), finalize batch.
+        // If we were loading a DB page or full view, finalize after preload integration
         if self.viewer.mode == super::table::ExplorerMode::Database && self.db_loading {
-            // Heuristic: if last batch len < limit then no more pages.
-            if self.db_last_batch_len > 0 {
-                // Completed a page
-                self.db_offset += self.db_last_batch_len;
-            }
             self.db_loading = false;
             // After loading a DB page, hydrate minimal AI metadata for these paths into the engine
             // so that CLIP searches have in-memory candidates.

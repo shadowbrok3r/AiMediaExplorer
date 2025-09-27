@@ -3,6 +3,27 @@ impl crate::ui::file_table::FileExplorer {
     pub fn receive_preload(&mut self, ctx: &eframe::egui::Context) {
         // First, integrate any preloaded DB rows for current path into a fast lookup by path
         while let Ok(rows) = self.db_preload_rx.try_recv() {
+            // Streamed batches: when rows.is_empty(), it's a completion signal
+            if self.db_all_view {
+                if self.table.is_empty() && !rows.is_empty() {
+                    // First batch: reset table
+                    self.table.clear();
+                    self.table_index.clear();
+                }
+                if !rows.is_empty() {
+                    for r in rows.iter() {
+                        if self.table_index.contains_key(&r.path) { continue; }
+                        let idx = self.table.len();
+                        self.table_index.insert(r.path.clone(), idx);
+                        self.table.push(r.clone());
+                    }
+                    self.db_last_batch_len = rows.len();
+                    self.db_offset += rows.len();
+                } else {
+                    // Completion
+                    self.db_loading = false;
+                }
+            }
             self.db_lookup.clear();
             for r in rows.into_iter() {
                 self.db_lookup.insert(r.path.clone(), r);
@@ -46,7 +67,6 @@ impl crate::ui::file_table::FileExplorer {
                     if self.current_thumb.size == 0 { self.current_thumb.size = db_row.size; }
                 }
             }
-        
             ctx.request_repaint();
         }
     }

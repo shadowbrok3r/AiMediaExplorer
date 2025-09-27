@@ -9,6 +9,7 @@ pub struct ChatMessageNew {
     pub role: String,
     pub content: String,
     pub attachments: Option<Vec<String>>,
+    pub attachments_refs: Option<Vec<RecordId>>,
 }
 use serde::{Deserialize, Serialize};
 use surrealdb::RecordId;
@@ -30,6 +31,7 @@ pub struct ChatMessageRow {
     pub role: String, // "user" | "assistant"
     pub content: String,
     pub attachments: Option<Vec<String>>,
+    pub attachments_refs: Option<Vec<RecordId>>,
     pub created: Option<surrealdb::sql::Datetime>,
 }
 
@@ -72,11 +74,22 @@ pub async fn load_messages(session_id: &RecordId) -> anyhow::Result<Vec<ChatMess
 pub async fn append_message(session_id: &RecordId, role: &str, content: &str, attachments: Option<Vec<String>>) -> anyhow::Result<(), anyhow::Error> {
     let _ga = db_activity("Append chat message");
     db_set_detail(format!("{role}"));
+    // Best-effort convert file paths to thumbnail record ids for reloadable previews
+    let attachments_refs: Option<Vec<RecordId>> = if let Some(paths) = &attachments {
+        let mut out: Vec<RecordId> = Vec::new();
+        for p in paths.iter() {
+            if let Ok(Some(thumb)) = crate::Thumbnail::get_thumbnail_by_path(p).await {
+                out.push(thumb.id);
+            }
+        }
+        if out.is_empty() { None } else { Some(out) }
+    } else { None };
     let new_msg = ChatMessageNew {
         session_ref: session_id.clone(),
         role: role.to_string(),
         content: content.to_string(),
         attachments,
+        attachments_refs,
     };
     let _: Option<ChatMessageRow> = DB
         .create("assistant_messages")

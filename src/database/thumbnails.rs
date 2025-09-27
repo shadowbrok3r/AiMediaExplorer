@@ -4,6 +4,7 @@ use crate::{LogicalGroup, DB};
 use crate::database::{db_activity, db_set_progress, db_set_detail, db_set_error};
 use surrealdb::RecordId;
 use chrono::Utc;
+use crossbeam::channel::Sender as CrossbeamSender;
 
 impl Default for crate::Thumbnail {
     fn default() -> Self {
@@ -58,15 +59,69 @@ impl crate::Thumbnail {
         }
     }
 
-    /// Fetch all thumbnail rows across the entire database.
+    /// Fetch all thumbnail rows across the entire database in large batches.
+    /// Uses SurrealDB pagination (LIMIT/START) to avoid huge single responses.
     pub async fn get_all_thumbnails() -> anyhow::Result<Vec<Self>, anyhow::Error> {
-        let _ga = db_activity("Load all thumbnails");
-        db_set_detail("Loading all thumbnails".to_string());
-        let resp: Vec<Self> = DB
-            .query("SELECT * FROM thumbnails")
-            .await?
-            .take(0)?;
-        Ok(resp)
+        let _ga = db_activity("Load all thumbnails (batched)");
+        const CHUNK: i64 = 5_000;
+        let mut out: Vec<Self> = Vec::new();
+        let mut start: i64 = 0;
+        loop {
+            db_set_detail(format!("Loading thumbnails ({}..{}]", start, start + CHUNK));
+            let batch: Vec<Self> = DB
+                .query("SELECT * FROM thumbnails LIMIT $limit START $start")
+                .bind(("limit", CHUNK))
+                .bind(("start", start))
+                .await?
+                .take(0)?;
+            if batch.is_empty() {
+                break;
+            }
+            let len = batch.len() as i64;
+            out.extend(batch);
+            start += len;
+            if len < CHUNK { break; }
+        }
+        Ok(out)
+    }
+
+    /// Stream all thumbnails in batches to the provided channel. Sends an empty Vec at the end.
+    pub async fn stream_all_thumbnails(tx: CrossbeamSender<Vec<Self>>) -> anyhow::Result<(), anyhow::Error> {
+        let _ga = db_activity("Load all thumbnails (stream)");
+        // Determine total rows for progress updates
+        let total_rows: i64 = DB
+            .query("SELECT VALUE count() FROM thumbnails")
+            .await
+            .and_then(|mut r| r.take::<Vec<i64>>(0))
+            .ok()
+            .and_then(|v| v.get(0).copied())
+            .unwrap_or(0);
+        db_set_detail(format!("Loading all thumbnails (0/{total_rows})"));
+        db_set_progress(0, total_rows as u64);
+        const CHUNK: i64 = 5_000;
+        let mut start: i64 = 0;
+        loop {
+            let batch: Vec<Self> = DB
+                .query("SELECT * FROM thumbnails LIMIT $limit START $start")
+                .bind(("limit", CHUNK))
+                .bind(("start", start))
+                .await?
+                .take(0)?;
+            let len = batch.len() as i64;
+            if len == 0 {
+                let _ = tx.try_send(Vec::new());
+                break;
+            }
+            start += len;
+            let _ = tx.try_send(batch);
+            db_set_progress(start as u64, total_rows as u64);
+            db_set_detail(format!("Loading all thumbnails ({} / {})", start, total_rows));
+            if len < CHUNK { 
+                let _ = tx.try_send(Vec::new());
+                break; 
+            }
+        }
+        Ok(())
     }
     // Fetch a single thumbnail row by exact path (leverages UNIQUE index on path)
     pub async fn get_thumbnail_by_path(
@@ -96,6 +151,43 @@ impl crate::Thumbnail {
             .await?
             .take(0)?;
         log::warn!("get_all_thumbnails_from_directory is empty: {:?}\nTime for query: {:?}", resp.is_empty(), now.elapsed().as_secs_f32());
+        Ok(resp)
+    }
+
+    /// Count thumbnails in a given parent directory (exact match).
+    pub async fn count_thumbnails_in_directory(path: &str) -> anyhow::Result<i64, anyhow::Error> {
+        let _ga = db_activity("Count thumbnails by parent directory");
+        db_set_detail("Counting thumbnails (by directory)".to_string());
+        let count_vec: Vec<i64> = DB
+            .query("SELECT VALUE count() FROM thumbnails WITH INDEX idx_parent_dir WHERE parent_dir = $parent_directory")
+            .bind(("parent_directory", path.to_string()))
+            .await?
+            .take(0)?;
+        Ok(count_vec.first().copied().unwrap_or(0))
+    }
+
+    /// Page through thumbnails in a parent directory using LIMIT/START for Database mode pagination.
+    pub async fn get_thumbnails_from_directory_paged(
+        path: &str,
+        limit: i64,
+        start: i64,
+    ) -> anyhow::Result<Vec<Self>, anyhow::Error> {
+        let _ga = db_activity("Load thumbnails by directory (paged)");
+        db_set_detail(format!("Loading thumbnails ({}..{})", start, start + limit));
+        let resp: Vec<Self> = DB
+            .query("SELECT * FROM thumbnails WITH INDEX idx_parent_dir WHERE parent_dir = $parent_directory LIMIT $limit START $start")
+            .bind(("parent_directory", path.to_string()))
+            .bind(("limit", limit))
+            .bind(("start", start))
+            .await?
+            .take(0)?;
+        Ok(resp)
+    }
+
+    pub async fn get_by_id(id: &RecordId) -> anyhow::Result<Option<Self>, anyhow::Error> {
+        let _ga = db_activity("Load thumbnail by id");
+        db_set_detail("Loading thumbnail by id".to_string());
+        let resp: Option<Self> = DB.select(id.clone()).await?;
         Ok(resp)
     }
 
