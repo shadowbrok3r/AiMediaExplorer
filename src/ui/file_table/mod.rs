@@ -296,6 +296,18 @@ pub struct FileExplorer {
     pub video_duration_secs: Option<f32>,
     #[serde(skip)]
     pub video_position_secs: f32,
+
+    // Database paging state (for directory and All DB views)
+    #[serde(skip)]
+    pub db_current_page: usize,
+    #[serde(skip)]
+    pub db_page_cache: std::collections::BTreeMap<usize, Vec<crate::database::Thumbnail>>,
+    #[serde(skip)]
+    pub db_loading_page: Option<usize>,
+    #[serde(skip)]
+    pub db_max_loaded_page: usize,
+    #[serde(skip)]
+    pub db_reached_end: bool,
 }
 
 impl FileExplorer {
@@ -360,6 +372,11 @@ impl FileExplorer {
             db_last_batch_len: 0,
             db_loading: false,
             db_all_view: false,
+            db_current_page: 0,
+            db_page_cache: std::collections::BTreeMap::new(),
+            db_loading_page: None,
+            db_max_loaded_page: 0,
+            db_reached_end: false,
             ai_search_enabled: false,
             current_scan_id: None,
             db_lookup: std::collections::HashMap::new(),
@@ -496,28 +513,70 @@ impl FileExplorer {
                 });
                 ui.separator();
             }
-            // Database mode pagination when browsing by directory (not full DB view and not similarity)
-            if self.viewer.mode == table::ExplorerMode::Database && !self.db_all_view && !self.viewer.showing_similarity {
+            // Database mode pagination (directory and All DB views)
+            if self.viewer.mode == table::ExplorerMode::Database && !self.viewer.showing_similarity {
                 ui.horizontal(|ui| {
-                    let can_prev = self.db_offset >= self.db_limit && !self.db_loading;
-                    let can_next = !self.db_loading && (self.db_last_batch_len == self.db_limit || self.table.is_empty());
+                    let current_page = self.db_current_page;
+                    let next_page = current_page + 1;
+                    let can_prev = current_page > 0 && !self.db_loading;
+                    let can_next = if self.db_loading { false } else {
+                        if self.db_reached_end && next_page > self.db_max_loaded_page { false }
+                        else { true }
+                    };
                     if ui.add_enabled(can_prev, egui::Button::new("Prev Page")).clicked() {
-                        // Go back one page
-                        let new_off = self.db_offset.saturating_sub(self.db_limit);
-                        self.db_offset = new_off.saturating_sub(self.db_limit); // load_database_rows will add rows and advance offset per row
+                        // Target previous page index and offset
+                        let target_page = current_page.saturating_sub(1);
+                        let new_off = target_page * self.db_limit;
+                        self.db_offset = new_off;
+                        self.db_current_page = target_page;
                         self.db_last_batch_len = 0;
-                        self.table.clear();
-                        self.table_index.clear();
-                        self.load_database_rows();
+                        // If we have this page cached, swap it in; else trigger a load
+                        if let Some(rows) = self.db_page_cache.get(&target_page).cloned() {
+                            self.table.clear();
+                            self.table_index.clear();
+                            for r in rows.into_iter() {
+                                let idx = self.table.len();
+                                self.table_index.insert(r.path.clone(), idx);
+                                self.table.push(r);
+                            }
+                            self.db_last_batch_len = self.table.len();
+                            self.db_loading = false;
+                        } else {
+                            self.table.clear();
+                            self.table_index.clear();
+                            self.db_loading_page = Some(target_page);
+                            if self.db_all_view { self.load_all_database_rows(); } else { self.load_database_rows(); }
+                        }
                     }
                     if ui.add_enabled(can_next, egui::Button::new("Next Page")).clicked() {
                         self.db_last_batch_len = 0;
-                        self.table.clear();
-                        self.table_index.clear();
-                        self.load_database_rows();
+                        let target_page = current_page + 1;
+                        self.db_offset = target_page * self.db_limit;
+                        self.db_current_page = target_page;
+                        if let Some(rows) = self.db_page_cache.get(&target_page).cloned() {
+                            self.table.clear();
+                            self.table_index.clear();
+                            for r in rows.into_iter() {
+                                let idx = self.table.len();
+                                self.table_index.insert(r.path.clone(), idx);
+                                self.table.push(r);
+                            }
+                            self.db_last_batch_len = self.table.len();
+                            self.db_loading = false;
+                        } else {
+                            self.table.clear();
+                            self.table_index.clear();
+                            self.db_loading_page = Some(target_page);
+                            if self.db_all_view { self.load_all_database_rows(); } else { self.load_database_rows(); }
+                        }
                     }
                     ui.separator();
-                    ui.label(format!("Offset {} · Page size {}", self.db_offset, self.db_limit));
+                    ui.label(format!("Page {} · Offset {} · Page size {}{}",
+                        current_page + 1,
+                        self.db_offset,
+                        self.db_limit,
+                        if self.db_all_view { " · All DB" } else { "" }
+                    ));
                 });
                 ui.separator();
             }
@@ -723,18 +782,7 @@ impl FileExplorer {
                 ui.separator();
                 ui.horizontal(|ui| {
                     if self.db_all_view { ui.colored_label(Color32::LIGHT_BLUE, "All DB"); ui.separator(); }
-                    if self.db_loading {
-                        ui.label(RichText::new("Loading page ...").italics());
-                    } else {
-                        let no_more = self.db_last_batch_len < self.db_limit && self.db_offset > 0;
-                        if no_more {
-                            ui.label(RichText::new("No more rows").weak());
-                        } else if ui.button("Load More").clicked() {
-                            // Prepare for next page
-                            self.db_last_batch_len = 0; // reset counter for incoming batch
-                            self.load_database_rows();
-                        }
-                    }
+                    if self.db_loading { ui.label(RichText::new("Loading page ...").italics()); }
                     ui.label(format!("Loaded: {} rows", self.table.len()));
                 });
             }

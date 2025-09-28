@@ -123,6 +123,30 @@ impl crate::Thumbnail {
         }
         Ok(())
     }
+
+    /// Count all thumbnails across the entire database.
+    pub async fn count_all_thumbnails() -> anyhow::Result<i64, anyhow::Error> {
+        let _ga = db_activity("Count all thumbnails");
+        db_set_detail("Counting all thumbnails".to_string());
+        let count_vec: Vec<i64> = DB
+            .query("SELECT VALUE count() FROM thumbnails")
+            .await?
+            .take(0)?;
+        Ok(count_vec.first().copied().unwrap_or(0))
+    }
+
+    /// Fetch a single page of thumbnails across the entire database using LIMIT/START.
+    pub async fn get_all_thumbnails_paged(limit: i64, start: i64) -> anyhow::Result<Vec<Self>, anyhow::Error> {
+        let _ga = db_activity("Load all thumbnails (paged)");
+        db_set_detail(format!("Loading all thumbnails ({}..{})", start, start + limit));
+        let rows: Vec<Self> = DB
+            .query("SELECT * FROM thumbnails LIMIT $limit START $start")
+            .bind(("limit", limit))
+            .bind(("start", start))
+            .await?
+            .take(0)?;
+        Ok(rows)
+    }
     // Fetch a single thumbnail row by exact path (leverages UNIQUE index on path)
     pub async fn get_thumbnail_by_path(
         path: &str,

@@ -3,25 +3,42 @@ impl crate::ui::file_table::FileExplorer {
     pub fn receive_preload(&mut self, ctx: &eframe::egui::Context) {
         // First, integrate any preloaded DB rows for current path into a fast lookup by path
         while let Ok(rows) = self.db_preload_rx.try_recv() {
-            // Streamed batches: when rows.is_empty(), it's a completion signal
-            if self.db_all_view {
-                if self.table.is_empty() && !rows.is_empty() {
-                    // First batch: reset table
-                    self.table.clear();
-                    self.table_index.clear();
-                }
-                if !rows.is_empty() {
-                    for r in rows.iter() {
-                        if self.table_index.contains_key(&r.path) { continue; }
-                        let idx = self.table.len();
-                        self.table_index.insert(r.path.clone(), idx);
-                        self.table.push(r.clone());
+            // Page-aware apply: only apply to table if these rows belong to the active loading page
+            let expecting_page = self.db_loading_page;
+            let current_page = self.db_current_page;
+            let rows_len = rows.len();
+            if rows_len > 0 {
+                // Determine which page these rows correspond to based on current offset when spawned
+                // We treat any incoming rows as the ones requested for expecting_page
+                if let Some(p) = expecting_page {
+                    if p == current_page {
+                        // Apply to table (fresh page swap)
+                        self.table.clear();
+                        self.table_index.clear();
+                        for r in rows.iter() {
+                            let idx = self.table.len();
+                            self.table_index.insert(r.path.clone(), idx);
+                            self.table.push(r.clone());
+                        }
+                        // Clamp to page size for safety
+                        if self.table.len() > self.db_limit { self.table.truncate(self.db_limit); }
+                        self.db_last_batch_len = self.table.len();
+                        self.db_offset = p * self.db_limit + self.db_last_batch_len;
+                        // Cache page snapshot
+                        self.db_page_cache.insert(p, self.table.iter().cloned().collect());
+                        self.db_max_loaded_page = self.db_max_loaded_page.max(p);
+                        self.db_reached_end = rows_len < self.db_limit;
+                        self.db_loading = false;
+                        self.db_loading_page = None;
+                    } else {
+                        // Not the page we're currently viewing; cache only
+                        self.db_page_cache.insert(p, rows.clone());
+                        self.db_max_loaded_page = self.db_max_loaded_page.max(p);
+                        if rows_len < self.db_limit { self.db_reached_end = true; }
+                        // Keep loading state as-is for the actual active page
                     }
-                    self.db_last_batch_len = rows.len();
-                    self.db_offset += rows.len();
                 } else {
-                    // Completion
-                    self.db_loading = false;
+                    // No page is expected (shouldn't happen), ignore apply but keep lookup merge below
                 }
             }
             self.db_lookup.clear();

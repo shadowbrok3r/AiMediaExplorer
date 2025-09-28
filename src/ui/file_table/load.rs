@@ -1,5 +1,4 @@
-
-use crate::ui::status::GlobalStatusIndicator;
+// use crate::ui::status::GlobalStatusIndicator;
 
 impl super::FileExplorer {
     /// Load a virtual "folders" view where each folder is a distinct category
@@ -104,23 +103,24 @@ impl super::FileExplorer {
             // Reset CLIP presence caches for a fresh page
             self.viewer.clip_presence.clear();
             self.viewer.clip_presence_hashes.clear();
+            // Reset DB page cache when starting directory view pagination
+            self.db_page_cache.clear();
+            self.db_current_page = 0;
+            self.db_max_loaded_page = 0;
+            self.db_reached_end = false;
         }
-        let tx = self.thumbnail_tx.clone();
+        let tx = self.db_preload_tx.clone();
         let offset = self.db_offset;
         let limit = self.db_limit as i64;
         let path = self.current_path.clone();
+        let page = self.db_offset / self.db_limit;
+        self.db_loading_page = Some(page);
         tokio::spawn(async move {
             match crate::Thumbnail::get_thumbnails_from_directory_paged(&path, limit, offset as i64).await {
                 Ok(rows) => {
-                    for r in rows.iter() {
-                        let _ = tx.try_send(r.clone());
-                    }
-                    // Signal page completion to update offset and loading state
-                    let mut done = crate::Thumbnail::default();
-                    done.file_type = "<PAGE_DONE>".to_string();
-                    done.size = rows.len() as u64;
-                    let _ = tx.try_send(done);
-                    log::info!("[DB] Loaded page offset={} count={}", offset, rows.len());
+                    let count = rows.len();
+                    let _ = tx.try_send(rows);
+                    log::info!("[DB] Loaded directory page={} offset={} count={}", page, offset, count);
                 }
                 Err(e) => {
                     log::error!("DB page load failed: {e}");
@@ -134,27 +134,39 @@ impl super::FileExplorer {
         if self.db_loading {
             return;
         }
-        // Reset similarity state and table caches
+        // Reset similarity state and table caches when starting fresh
+        if self.db_offset == 0 {
+            self.table.clear();
+            self.table_index.clear();
+            self.thumb_scheduled.clear();
+            self.pending_thumb_rows.clear();
+            self.viewer.clip_presence.clear();
+            self.viewer.clip_presence_hashes.clear();
+            self.db_page_cache.clear();
+            self.db_current_page = 0;
+            self.db_max_loaded_page = 0;
+            self.db_reached_end = false;
+        }
         self.viewer.showing_similarity = false;
         self.viewer.similar_scores.clear();
-        self.db_loading = true;
-        self.db_offset = 0;
         self.db_all_view = true;
-        self.table.clear();
-        self.table_index.clear();
-        self.thumb_scheduled.clear();
-        self.pending_thumb_rows.clear();
-        self.viewer.clip_presence.clear();
-        self.viewer.clip_presence_hashes.clear();
+        self.db_loading = true;
+        // Page index derived from offset
+        self.db_current_page = self.db_offset / self.db_limit;
+        self.db_loading_page = Some(self.db_current_page);
 
         let tx = self.db_preload_tx.clone();
+        let limit = self.db_limit as i64;
+        let offset = self.db_offset as i64;
+    // page index implied by offset in the receiver
         tokio::spawn(async move {
-            crate::ui::status::DB_STATUS.set_state(crate::ui::status::StatusState::Running, "Loading database");
-            if let Err(e) = crate::Thumbnail::stream_all_thumbnails(tx).await {
-                log::error!("DB full load streaming failed: {e}");
-                crate::ui::status::DB_STATUS.set_error(format!("Load failed: {e}"));
-            } else {
-                crate::ui::status::DB_STATUS.set_state(crate::ui::status::StatusState::Idle, "Done");
+            match crate::Thumbnail::get_all_thumbnails_paged(limit, offset).await {
+                Ok(rows) => {
+                    let _ = tx.try_send(rows);
+                }
+                Err(e) => {
+                    log::error!("DB all-view page load failed: {e}");
+                }
             }
         });
     }

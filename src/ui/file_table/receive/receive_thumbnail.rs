@@ -6,15 +6,7 @@ static EMBED_CHECK_SEM: once_cell::sync::Lazy<std::sync::Arc<tokio::sync::Semaph
 impl crate::ui::file_table::FileExplorer {
     pub fn receive_thumbnail(&mut self, ctx: &eframe::egui::Context) {
         if let Ok(thumbnail) = self.thumbnail_rx.try_recv() {
-            // Handle control messages first
-            if thumbnail.file_type == "<PAGE_DONE>" {
-                self.db_last_batch_len = thumbnail.size as usize;
-                // If batch smaller than limit, no more pages for this directory
-                if self.db_last_batch_len < self.db_limit { self.db_loading = false; }
-                // Request repaint and skip normal handling
-                ctx.request_repaint();
-                return;
-            }
+            // No more per-row <PAGE_DONE> path; page loads come via db_preload_rx
             // Special-case: high-res preview thumbnails use a synthetic cache key ("preview::...")
             // These should only populate the in-memory cache and not affect table rows or selection.
             if thumbnail.path.starts_with("preview::") {

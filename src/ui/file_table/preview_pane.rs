@@ -155,8 +155,6 @@ impl super::FileExplorer {
                             if let Some(ext) = std::path::Path::new(&self.current_thumb.path).extension().and_then(|e| e.to_str()) { crate::is_video(&ext.to_ascii_lowercase()) } else { false }
                         }
                     };
-                    #[cfg(not(feature = "ffmpeg"))]
-                    let is_video = false;
 
                     // In Database mode, if we already have a base64 thumbnail on the row, seed the preview cache immediately
                     if matches!(self.viewer.mode, super::table::ExplorerMode::Database) && !thumb_cache.contains_key(&cache_key) {
