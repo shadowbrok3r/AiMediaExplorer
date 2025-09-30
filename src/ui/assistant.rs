@@ -114,16 +114,10 @@ pub fn request_attach_to_chat(paths: Vec<String>) {
 impl AssistantPanel {
     pub fn new() -> Self {
         let (chat_tx, chat_rx) = unbounded::<String>();
-        let (models_tx, models_rx) =
-            crossbeam::channel::unbounded::<Result<Vec<OpenRouterModel>, String>>();
-        tokio::spawn(async move {
-            if let Err(e) = crate::ai::mcp::serve_stdio_background().await {
-                log::warn!("[MCP] stdio server not started: {e}");
-            }
-        });
-    let (new_session_tx, new_session_rx) = unbounded::<(Option<surrealdb::RecordId>, String)>();
-    let (initial_sessions_tx, initial_sessions_rx) = bounded::<(Vec<(String, Vec<ChatMessage>)>, Vec<surrealdb::RecordId>)>(1);
-    Self {
+        let (models_tx, models_rx) = unbounded::<Result<Vec<OpenRouterModel>, String>>();
+        let (new_session_tx, new_session_rx) = unbounded::<(Option<surrealdb::RecordId>, String)>();
+        let (initial_sessions_tx, initial_sessions_rx) = bounded::<(Vec<(String, Vec<ChatMessage>)>, Vec<surrealdb::RecordId>)>(1);
+        Self {
             prompt: String::new(),
             progress: None,
             last_reply: String::new(),
@@ -196,12 +190,93 @@ impl AssistantPanel {
 
     pub fn ui(&mut self, ctx: &Context, explorer: &mut crate::ui::file_table::FileExplorer) {
         self.receive(ctx);
+
         // TOP PANEL
         TopBottomPanel::top("assistant_top").show(&ctx, |ui| {
             ui.horizontal(|ui| {
                 if ui.button("Model Options").clicked() {
                     self.open_model_opts = !self.open_model_opts;
                 }
+
+                ui.add_space(4.);
+                ui.separator();
+                ui.add_space(4.);
+
+                let providers = [
+                    "local-joycaption",
+                    "openai",
+                    "gemini",
+                    "groq",
+                    "grok",
+                    "openrouter",
+                    "custom",
+                ];
+
+                let current_provider = self.selected_provider.clone();
+                let mut selected_provider = current_provider.clone();
+
+                ComboBox::from_id_salt("provider_combo")
+                .selected_text(&selected_provider)
+                .width(135.)
+                .show_ui(ui, |ui| {
+                    for p in providers {
+                        ui.selectable_value(&mut selected_provider, p.to_string(), p);
+                    }
+                });
+
+                if self.selected_provider == "openrouter" {
+                    if Button::new("List OpenRouter models").ui(ui).on_hover_text("Fetch available models via OpenRouter").clicked() {
+                        self.show_models_modal = true;
+                        self.models_list.clear();
+                        self.models_json.clear();
+                        self.models_open.clear();
+                        self.models_error = None;
+                        self.models_loading = true;
+                        let api_key = env_or(&self.settings.openrouter_api_key, "OPENROUTER_API_KEY");
+                        let tx = self.models_tx.clone();
+                        tokio::spawn(async move {
+                            let res = crate::ai::openai_compat::fetch_openrouter_models_json(
+                                api_key,
+                                Some("https://openrouter.ai/api/v1".into()),
+                            )
+                            .await
+                            .map_err(|e| e.to_string());
+                            let _ = tx.try_send(res);
+                        });
+                    }
+                }
+
+                if selected_provider != current_provider {
+                    self.selected_provider = selected_provider.clone();
+                    let mut s2 = self.settings.clone();
+                    s2.ai_chat_provider = Some(selected_provider.clone());
+                    crate::database::settings::save_settings(&s2);
+                    self.settings = s2;
+                }
+
+                let current_model = if self.model_name.is_empty() {
+                    self.model_override.clone().unwrap_or_else(|| {
+                        self.settings
+                            .openai_default_model
+                            .clone()
+                            .unwrap_or_else(|| "gpt-5-mini".into())
+                    })
+                } else { self.model_name.clone() };
+
+                let te_resp = TextEdit::singleline(&mut self.model_name).desired_width(250.).ui(ui);
+
+                // Only update the default model on edit; do NOT create a new session or mark it as recently used here.
+                if te_resp.lost_focus() && self.model_name != current_model && !self.model_name.trim().is_empty() {
+                    self.model_override = Some(self.model_name.clone());
+                    let mut s2 = self.settings.clone();
+                    s2.openai_default_model = Some(self.model_name.clone());
+                    crate::database::settings::save_settings(&s2);
+                    self.settings = s2;
+                }
+                
+                ui.add_space(4.);
+                ui.separator();
+                ui.add_space(4.);
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui.button("+ New Chat").on_hover_text("Create a new chat session").clicked() {
@@ -211,7 +286,7 @@ impl AssistantPanel {
                             let tx_clone = self.new_session_tx.clone();
                             async move {
                                 let id = crate::database::assistant_chat::create_session(&title_clone).await.ok();
-                                let _ = tx_clone.send((id, title_clone));
+                                let _ = tx_clone.try_send((id, title_clone));
                             }
                         });
                     }
@@ -222,75 +297,159 @@ impl AssistantPanel {
             });
         });
 
-        // LEFT: Provider/model + Sessions list
-        SidePanel::left("assistant_left")
-        .default_width(200.)
-        .show_animated(ctx, self.open_model_opts, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.heading(
-                    RichText::new("Model Options")
-                        .color(ui.style().visuals.error_fg_color)
-                        .strong(),
-                )
-            });
-            ui.separator();
-            let providers = [
-                "local-joycaption",
-                "openai",
-                "gemini",
-                "groq",
-                "grok",
-                "openrouter",
-                "custom",
-            ];
+        // BOTTOM: Input bar
+        TopBottomPanel::bottom("assistant_bottom").show(&ctx, |ui| {
+            if !self.attachments.is_empty() {
+                // We'll track UI intents and apply to self after the closure to avoid borrow conflicts
+                let mut suppress_auto_selected = false;
+                let mut remove_index: Option<usize> = None;
+                // Attachments row (chips)
+                ui.horizontal_wrapped(|ui| {
+                    // Auto-attachment tag for current selection
+                    let selected_path = explorer.current_thumb.path.clone();
+                    if !selected_path.is_empty() && !self.suppress_selected_attachment {
+                        // show auto-selected tag by default; user can hide via ✕
+                        Frame::new().show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "📎 {}",
+                                        std::path::Path::new(&selected_path)
+                                            .file_name()
+                                            .and_then(|s| s.to_str())
+                                            .unwrap_or("selected")
+                                    ))
+                                    .monospace(),
+                                );
+                                if ui.button("✕").on_hover_text("Remove").clicked() {
+                                    suppress_auto_selected = true;
+                                }
+                            });
+                        });
+                    }
+                    // User-added attachments (iterate over a snapshot to avoid borrowing self immutably while needing &mut self)
+                    let attachments_snapshot: Vec<String> = self.attachments.clone();
+                    for (i, p) in attachments_snapshot.iter().enumerate() {
+                        Frame::new().show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                if let Some(tex) = self.try_thumbnail(ui, p) {
+                                    let size = vec2(20.0, 20.0);
+                                    let src =
+                                        eframe::egui::ImageSource::Texture((tex, size).into());
+                                    ui.add(eframe::egui::Image::new(src));
+                                }
+                                let fname = std::path::Path::new(p)
+                                    .file_name()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or(p);
+                                ui.label(RichText::new(format!(" {}", fname)).monospace());
+                                if ui.button("🗙").clicked() {
+                                    remove_index = Some(i);
+                                }
+                            });
+                        });
+                    }
+                });
+                // Apply UI intents after the closure
+                if suppress_auto_selected {
+                    self.suppress_selected_attachment = true;
+                }
+                if let Some(i) = remove_index {
+                    self.attachments.remove(i);
+                }
+            }
 
-            let current_provider = self.selected_provider.clone();
-            let mut selected_provider = current_provider.clone();
-            ui.vertical_centered(|ui| ui.heading(RichText::new("Provider").strong()));
-            ComboBox::from_id_salt("provider_combo")
-            .selected_text(&selected_provider)
-            .show_ui(ui, |ui| {
-                for p in providers {
-                    ui.selectable_value(&mut selected_provider, p.to_string(), p);
+            ui.horizontal(|ui| {
+                // Plus menu to add attachments
+                ui.menu_button("➕", |ui| {
+                    if ui.button("Attach current selection").clicked() {
+                        if !explorer.current_thumb.path.is_empty() {
+                            self.suppress_selected_attachment = false;
+                        }
+                        ui.close_kind(UiKind::Menu);
+                    }
+                    if ui.button("Attach file…").clicked() {
+                        if let Some(file) = rfd::FileDialog::new()
+                            .set_title("Attach image or file")
+                            .pick_file()
+                        {
+                            self.attachments.push(file.display().to_string());
+                        }
+                        ui.close_kind(UiKind::Menu);
+                    }
+                });
+
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    // Send / Stop / Regenerate icons
+                    if ui.button("⬈").on_hover_text("Send").clicked()
+                        && !self.prompt.trim().is_empty()
+                    {
+                        self.send_current_prompt(explorer);
+                    }
+                    if ui.button("⏹").on_hover_text("Stop").clicked() {
+                        self.chat_streaming = false;
+                        if let Some(h) = self.assistant_task.take() {
+                            h.abort();
+                        }
+                    }
+                    if ui.button("↻").on_hover_text("Regenerate").clicked() {
+                        if let Some(last_user) = self
+                            .messages
+                            .iter()
+                            .rev()
+                            .find(|m| matches!(m.role, ChatRole::User))
+                            .cloned()
+                        {
+                            self.prompt = last_user.content;
+                            self.send_current_prompt(explorer);
+                        }
+                    }
+                });
+            });
+
+            ui.separator();
+
+            ui.horizontal(|ui| {
+                // Input field
+                let te = TextEdit::multiline(&mut self.prompt)
+                    .desired_rows(5)
+                    .desired_width(ui.available_width())
+                    .hint_text("Type your message… Shift+Enter = newline, Enter = send")
+                    .ui(ui);
+
+                let enter_send =
+                    te.has_focus() && ui.input(|i| i.key_pressed(Key::Enter) && !i.modifiers.shift);
+                if enter_send && !self.prompt.trim().is_empty() {
+                    self.send_current_prompt(explorer);
                 }
             });
-            if selected_provider != current_provider {
-                self.selected_provider = selected_provider.clone();
-                let mut s2 = self.settings.clone();
-                s2.ai_chat_provider = Some(selected_provider.clone());
-                crate::database::settings::save_settings(&s2);
-                self.settings = s2;
-            }
-            let current_model = if self.model_name.is_empty() {
-                self.model_override.clone().unwrap_or_else(|| {
-                    self.settings
-                        .openai_default_model
-                        .clone()
-                        .unwrap_or_else(|| "gpt-5-mini".into())
-                })
-            } else {
-                self.model_name.clone()
-            };
-            ui.vertical_centered(|ui| ui.heading(RichText::new("Model").strong()));
-            self.model_name = current_model;
-            let te_resp = TextEdit::singleline(&mut self.model_name)
-                .desired_width(ui.available_width())
-                .ui(ui);
-            if te_resp.changed() {
-                self.model_override = Some(self.model_name.clone());
-                let mut s2 = self.settings.clone();
-                s2.openai_default_model = Some(self.model_name.clone());
-                s2.push_recent_model(&self.model_name);
-                crate::database::settings::save_settings(&s2);
-                self.settings = s2;
-                // Create a new chat session named after the model and switch to it
-                let model_title = self.model_name.clone();
-                let tx_clone = self.new_session_tx.clone();
-                tokio::spawn(async move {
-                    let id = crate::database::assistant_chat::create_session(&model_title).await.ok();
-                    let _ = tx_clone.send((id, model_title));
-                });
-            }
+        });
+
+        // LEFT: Provider/model + Sessions list
+        SidePanel::left("assistant_left")
+        .max_width(250.)
+        .min_width(200.)
+        .show_animated(ctx, self.open_model_opts, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("+ New").clicked() {
+                    let new_title = format!("Chat {}", self.sessions.len() + 1);
+                    tokio::spawn({
+                        let title_clone = new_title.clone();
+                        let tx_clone = self.new_session_tx.clone();
+                        async move {
+                            let id = crate::database::assistant_chat::create_session(&title_clone).await.ok();
+                            let _ = tx_clone.try_send((id, title_clone));
+                        }
+                    });
+                }
+                if ui.button("Clear").clicked() {
+                    self.messages.clear();
+                    if let Some((title, store)) = self.sessions.get_mut(self.active_session) {
+                        *store = self.messages.clone();
+                        *title = format!("Chat {}", self.active_session + 1);
+                    }
+                }
+            });
 
             // --- Recent Models UI ---
             let recent_models = &self.settings.recent_models;
@@ -298,6 +457,7 @@ impl AssistantPanel {
             if !recent_models.is_empty() || last_used_model.is_some() {
                 ui.add_space(6.0);
                 ui.separator();
+                ui.add_space(6.0);
                 ui.vertical_centered(|ui| ui.heading(RichText::new("Recent Models").strong()));
                 if let Some(last) = last_used_model {
                     ui.horizontal(|ui| {
@@ -312,98 +472,82 @@ impl AssistantPanel {
                     });
                 }
                 if !recent_models.is_empty() {
-                    ScrollArea::vertical().max_height(80.0).show(ui, |ui| {
-                        for m in recent_models {
-                            if ui.button(m).clicked() {
-                                self.model_override = Some(m.clone());
-                                self.model_name = m.clone();
-                                let mut s2 = self.settings.clone();
-                                s2.openai_default_model = Some(m.clone());
-                                crate::database::settings::save_settings(&s2);
+                    ScrollArea::vertical().id_salt("Recent Models").max_height(80.0).show(ui, |ui| {
+                        ui.vertical_centered_justified(|ui| {
+                            for m in recent_models {
+                                if ui.button(m).clicked() {
+                                    self.model_override = Some(m.clone());
+                                    self.model_name = m.clone();
+                                    let mut s2 = self.settings.clone();
+                                    s2.openai_default_model = Some(m.clone());
+                                    crate::database::settings::save_settings(&s2);
+                                }
                             }
-                        }
+                        });
                     });
                 }
             }
-            if self.selected_provider == "openrouter" {
-                if ui
-                    .button("List OpenRouter models")
-                    .on_hover_text("Fetch available models via OpenRouter")
-                    .clicked()
-                {
-                    self.show_models_modal = true;
-                    self.models_list.clear();
-                    self.models_json.clear();
-                    self.models_open.clear();
-                    self.models_error = None;
-                    self.models_loading = true;
-                    let api_key = env_or(&self.settings.openrouter_api_key, "OPENROUTER_API_KEY");
-                    let tx = self.models_tx.clone();
-                    tokio::spawn(async move {
-                        let res = crate::ai::openai_compat::fetch_openrouter_models_json(
-                            api_key,
-                            Some("https://openrouter.ai/api/v1".into()),
-                        )
-                        .await
-                        .map_err(|e| e.to_string());
-                        let _ = tx.send(res);
-                    });
-                }
-            }
-            ui.add_space(8.0);
+            
+            ui.add_space(6.0);
             ui.separator();
+            ui.add_space(6.0);
+
+            // --- Sessions list ---
             ui.vertical_centered(|ui| ui.heading(RichText::new("Sessions").strong()));
             let mut pending_switch: Option<usize> = None;
             ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.vertical_centered_justified(|ui| {
-                        for (i, (title, _)) in self.sessions.iter().enumerate() {
+            .id_salt("Sessions")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.vertical_centered_justified(|ui| {
+                    for (i, (title, _)) in self.sessions.iter().enumerate() {
+                        ui.horizontal(|ui| {
                             let selected = i == self.active_session;
                             if ui.selectable_label(selected, title).clicked() {
                                 pending_switch = Some(i);
                             }
-                        }
-                    });
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if ui.button("🗙").on_hover_text("Delete this session").clicked() {
+                                    // Defer deletion until after the list iteration
+                                    // We can't mutate self.sessions while iterating; mark index
+                                    // We'll handle it below the list rendering
+                                    // Use a unique id salt to stash requested deletion index in ui memory
+                                    ui.data_mut(|d| d.insert_temp::<usize>(Id::new("assistant_delete_idx"), i));
+                                }
+                            });
+                        });
+                    }
                 });
+            });
+
             if let Some(i) = pending_switch {
                 self.active_session = i;
                 self.messages = self.sessions[i].1.clone();
                 self.preload_session_thumbs(ctx);
             }
-            ui.horizontal(|ui| {
-                if ui.button("+ New").clicked() {
-                    let new_title = format!("Chat {}", self.sessions.len() + 1);
-                    tokio::spawn({
-                        let title_clone = new_title.clone();
-                        let tx_clone = self.new_session_tx.clone();
-                        async move {
-                            let id = crate::database::assistant_chat::create_session(&title_clone).await.ok();
-                            let _ = tx_clone.send((id, title_clone));
-                        }
+            
+            // Apply a pending deletion if requested
+            if let Some(del_idx) = ctx.data(|d| d.get_temp::<usize>(Id::new("assistant_delete_idx"))) {
+                if del_idx < self.sessions.len() && del_idx < self.session_ids.len() {
+                    let to_delete_id = self.session_ids[del_idx].clone();
+                    // Remove from UI state first for snappy UX
+                    self.sessions.remove(del_idx);
+                    self.session_ids.remove(del_idx);
+                    // Adjust active index
+                    if self.sessions.is_empty() {
+                        self.active_session = 0;
+                        self.messages.clear();
+                    } else {
+                        if self.active_session >= self.sessions.len() { self.active_session = self.sessions.len() - 1; }
+                        self.messages = self.sessions[self.active_session].1.clone();
+                    }
+                    // Fire-and-forget DB deletion
+                    tokio::spawn(async move {
+                        let _ = crate::database::assistant_chat::delete_session(&to_delete_id).await;
                     });
                 }
-                if ui.button("Clear").clicked() {
-                    self.messages.clear();
-                    if let Some((title, store)) = self.sessions.get_mut(self.active_session) {
-                        *store = self.messages.clone();
-                        *title = format!("Chat {}", self.active_session + 1);
-                    }
-                }
-            });
-            if self.sessions.len() > 1 {
-                if ui.button("Delete").clicked() {
-                    self.sessions.remove(self.active_session);
-                    if self.active_session < self.session_ids.len() {
-                        self.session_ids.remove(self.active_session);
-                    }
-                    self.active_session = self.active_session.saturating_sub(1);
-                    if let Some((_t, msgs)) = self.sessions.get(self.active_session) {
-                        self.messages = msgs.clone();
-                    } else {
-                        self.messages.clear();
-                    }
-                }
+                // Clear the temp marker
+                ctx.data_mut(|d| d.remove::<usize>(Id::new("assistant_delete_idx")));
             }
         });
 
@@ -598,188 +742,60 @@ impl AssistantPanel {
             });
         });
 
-        // BOTTOM: Input bar
-        TopBottomPanel::bottom("assistant_bottom").show(&ctx, |ui| {
-            if !self.attachments.is_empty() {
-                // We'll track UI intents and apply to self after the closure to avoid borrow conflicts
-                let mut suppress_auto_selected = false;
-                let mut remove_index: Option<usize> = None;
-                // Attachments row (chips)
-                ui.horizontal_wrapped(|ui| {
-                    // Auto-attachment tag for current selection
-                    let selected_path = explorer.current_thumb.path.clone();
-                    if !selected_path.is_empty() && !self.suppress_selected_attachment {
-                        // show auto-selected tag by default; user can hide via ✕
-                        Frame::new().show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    RichText::new(format!(
-                                        "📎 {}",
-                                        std::path::Path::new(&selected_path)
-                                            .file_name()
-                                            .and_then(|s| s.to_str())
-                                            .unwrap_or("selected")
-                                    ))
-                                    .monospace(),
-                                );
-                                if ui.button("✕").on_hover_text("Remove").clicked() {
-                                    suppress_auto_selected = true;
-                                }
-                            });
-                        });
-                    }
-                    // User-added attachments (iterate over a snapshot to avoid borrowing self immutably while needing &mut self)
-                    let attachments_snapshot: Vec<String> = self.attachments.clone();
-                    for (i, p) in attachments_snapshot.iter().enumerate() {
-                        Frame::new().show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                if let Some(tex) = self.try_thumbnail(ui, p) {
-                                    let size = vec2(20.0, 20.0);
-                                    let src =
-                                        eframe::egui::ImageSource::Texture((tex, size).into());
-                                    ui.add(eframe::egui::Image::new(src));
-                                }
-                                let fname = std::path::Path::new(p)
-                                    .file_name()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or(p);
-                                ui.label(RichText::new(format!(" {}", fname)).monospace());
-                                if ui.button("🗙").clicked() {
-                                    remove_index = Some(i);
-                                }
-                            });
-                        });
-                    }
-                });
-                // Apply UI intents after the closure
-                if suppress_auto_selected {
-                    self.suppress_selected_attachment = true;
-                }
-                if let Some(i) = remove_index {
-                    self.attachments.remove(i);
-                }
-            }
-
-            ui.horizontal(|ui| {
-                // Plus menu to add attachments
-                ui.menu_button("➕", |ui| {
-                    if ui.button("Attach current selection").clicked() {
-                        if !explorer.current_thumb.path.is_empty() {
-                            self.suppress_selected_attachment = false;
-                        }
-                        ui.close_kind(UiKind::Menu);
-                    }
-                    if ui.button("Attach file…").clicked() {
-                        if let Some(file) = rfd::FileDialog::new()
-                            .set_title("Attach image or file")
-                            .pick_file()
-                        {
-                            self.attachments.push(file.display().to_string());
-                        }
-                        ui.close_kind(UiKind::Menu);
-                    }
-                });
-
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    // Send / Stop / Regenerate icons
-                    if ui.button("⬈").on_hover_text("Send").clicked()
-                        && !self.prompt.trim().is_empty()
-                    {
-                        self.send_current_prompt(explorer);
-                    }
-                    if ui.button("⏹").on_hover_text("Stop").clicked() {
-                        self.chat_streaming = false;
-                        if let Some(h) = self.assistant_task.take() {
-                            h.abort();
-                        }
-                    }
-                    if ui.button("↻").on_hover_text("Regenerate").clicked() {
-                        if let Some(last_user) = self
-                            .messages
-                            .iter()
-                            .rev()
-                            .find(|m| matches!(m.role, ChatRole::User))
-                            .cloned()
-                        {
-                            self.prompt = last_user.content;
-                            self.send_current_prompt(explorer);
-                        }
-                    }
-                });
-            });
-
-            ui.separator();
-
-            ui.horizontal(|ui| {
-                // Input field
-                let te = TextEdit::multiline(&mut self.prompt)
-                    .desired_rows(5)
-                    .desired_width(ui.available_width())
-                    .hint_text("Type your message… Shift+Enter = newline, Enter = send")
-                    .ui(ui);
-
-                let enter_send =
-                    te.has_focus() && ui.input(|i| i.key_pressed(Key::Enter) && !i.modifiers.shift);
-                if enter_send && !self.prompt.trim().is_empty() {
-                    self.send_current_prompt(explorer);
-                }
-            });
-        });
-
         // CENTER: Messages list
         CentralPanel::default().show(&ctx, |ui| {
             ScrollArea::vertical()
-                .stick_to_bottom(true)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    let total_messages = self.messages.len();
-                    let max_msg_width: f32 = 376.0;
-                    for idx in 0..total_messages {
-                        let msg = &self.messages[idx];
-                        // clone minimal data to avoid borrow issues
-                        let role_clone = msg.role.clone();
-                        let content_clone = msg.content.clone();
-                        let atts_clone = msg.attachments.clone();
+            .stick_to_bottom(true)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let total_messages = self.messages.len();
+                let max_msg_width: f32 = 376.0;
+                for idx in 0..total_messages {
+                    let msg = &self.messages[idx];
+                    // clone minimal data to avoid borrow issues
+                    let role_clone = msg.role.clone();
+                    let content_clone = msg.content.clone();
+                    let atts_clone = msg.attachments.clone();
 
-                        let is_user = matches!(role_clone, ChatRole::User);
-                        let created_clone = msg.created.clone();
-                        let layout = if is_user { Layout::top_down(Align::Max) } else { Layout::top_down(Align::Min) };
-                        ui.with_layout(layout, |ui| {
-                            ui.set_max_width(max_msg_width);
-                            // Header row: name + actions
-                            ui.horizontal(|ui| {
-                                let who = if is_user { "You" } else { "Assistant" };
-                                ui.strong(who);
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    if let Some(ts) = created_clone.clone() {
-                                        let s = chrono::DateTime::<chrono::Utc>::from(ts).with_timezone(&Local).format("%m/%d @ %I:%M%p").to_string();
-                                        ui.label(RichText::new(s).weak());
-                                        ui.separator();
+                    let is_user = matches!(role_clone, ChatRole::User);
+                    let created_clone = msg.created.clone();
+                    let layout = if is_user { Layout::top_down(Align::Max) } else { Layout::top_down(Align::Min) };
+                    ui.with_layout(layout, |ui| {
+                        ui.set_max_width(max_msg_width);
+                        // Header row: name + actions
+                        ui.horizontal(|ui| {
+                            let who = if is_user { "You" } else { "Assistant" };
+                            ui.strong(who);
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if let Some(ts) = created_clone.clone() {
+                                    let s = chrono::DateTime::<chrono::Utc>::from(ts).with_timezone(&Local).format("%m/%d @ %I:%M%p").to_string();
+                                    ui.label(RichText::new(s).weak());
+                                    ui.separator();
+                                }
+                                let is_long = content_clone.len() > 1200 || content_clone.lines().count() > 20;
+                                if is_long {
+                                    let is_collapsed = self.collapsed.contains(&idx);
+                                    let label = if is_collapsed { "Expand" } else { "Collapse" };
+                                    if ui.button(label).clicked() {
+                                        if is_collapsed { self.collapsed.remove(&idx); } else { self.collapsed.insert(idx); }
                                     }
-                                    let is_long = content_clone.len() > 1200 || content_clone.lines().count() > 20;
-                                    if is_long {
-                                        let is_collapsed = self.collapsed.contains(&idx);
-                                        let label = if is_collapsed { "Expand" } else { "Collapse" };
-                                        if ui.button(label).clicked() {
-                                            if is_collapsed { self.collapsed.remove(&idx); } else { self.collapsed.insert(idx); }
-                                        }
-                                        ui.separator();
-                                    }
-                                    if ui.button("Copy").clicked() { ui.ctx().copy_text(content_clone.clone()); }
-                                });
+                                    ui.separator();
+                                }
+                                if ui.button("Copy").clicked() { ui.ctx().copy_text(content_clone.clone()); }
                             });
-                            ui.add_space(2.0);
-                            let is_long = content_clone.len() > 1200 || content_clone.lines().count() > 20;
-                            let is_collapsed = is_long && self.collapsed.contains(&idx);
-                            if is_collapsed { self.render_bubble_preview(ui, &content_clone); }
-                            else {
-                                let temp = ChatMessage { role: role_clone.clone(), content: content_clone.clone(), attachments: atts_clone.clone(), created: None };
-                                self.render_bubble(ui, &temp);
-                            }
                         });
-                        ui.add_space(8.0);
-                    }
-                });
+                        ui.add_space(2.0);
+                        let is_long = content_clone.len() > 1200 || content_clone.lines().count() > 20;
+                        let is_collapsed = is_long && self.collapsed.contains(&idx);
+                        if is_collapsed { self.render_bubble_preview(ui, &content_clone); }
+                        else {
+                            let temp = ChatMessage { role: role_clone.clone(), content: content_clone.clone(), attachments: atts_clone.clone(), created: None };
+                            self.render_bubble(ui, &temp);
+                        }
+                    });
+                    ui.add_space(8.0);
+                }
+            });
         });
     }
 
@@ -836,7 +852,7 @@ impl AssistantPanel {
                         ids.push(id);
                     }
                 }
-                let _ = tx_init.send((items, ids));
+                let _ = tx_init.try_send((items, ids));
             });
         }
         if let Ok((items, ids)) = self.initial_sessions_rx.try_recv() {
@@ -976,7 +992,7 @@ impl AssistantPanel {
                                 )
                                 .await
                                 .map_err(|e| e.to_string());
-                                let _ = tx.send(res);
+                                let _ = tx.try_send(res);
                             });
                         }
                     });
@@ -1164,7 +1180,7 @@ impl AssistantPanel {
                                         let tx_clone = self.new_session_tx.clone();
                                         tokio::spawn(async move {
                                             let id = crate::database::assistant_chat::create_session(&model_title).await.ok();
-                                            let _ = tx_clone.send((id, model_title));
+                                            let _ = tx_clone.try_send((id, model_title));
                                         });
                                     }
                                     if ui.button("Copy").on_hover_text("Copy model id").clicked() {
@@ -1201,14 +1217,6 @@ impl AssistantPanel {
     }
 
     fn send_current_prompt(&mut self, explorer: &mut crate::ui::file_table::FileExplorer) {
-        // --- Record model usage in recent_models/last_used_model ---
-        let mut settings = self.settings.clone();
-        let model_used = self.model_override.clone().or_else(|| settings.openai_default_model.clone());
-        if let Some(model) = model_used {
-            settings.push_recent_model(&model);
-            crate::database::settings::save_settings(&settings);
-            self.settings = settings;
-        }
         self.last_reply.clear();
         self.progress = Some(String::new());
         let prompt = self.prompt.clone();
@@ -1396,6 +1404,7 @@ impl AssistantPanel {
             let prompt_owned = prompt.clone();
             let paths_for_async = paths.clone();
             // If file read fails later, we'll try to fetch DB thumbnail on-demand.
+            let model_id_for_usage = model.clone();
             let handle = tokio::spawn(async move {
                 let cfg = crate::ai::openai_compat::ProviderConfig {
                     provider: provider_clone,
@@ -1443,6 +1452,11 @@ impl AssistantPanel {
                 .await;
                 match stream_res {
                     Ok(full) => {
+                        // On successful assistant reply, record model usage as recently used
+                        if let Some(mut s) = Some(settings.clone()) {
+                            s.push_recent_model(&model_id_for_usage);
+                            crate::database::settings::save_settings(&s);
+                        }
                         if !path_for_updates.is_empty() {
                             let _ = txu.try_send(crate::ui::file_table::AIUpdate::Interim {
                                 path: path_for_updates.clone(),
@@ -1503,6 +1517,11 @@ impl AssistantPanel {
                                     },
                                 )
                                 .await;
+                                // Mark the local model as recently used (use provider name)
+                                let mut s = settings.clone();
+                                let mname = s.openai_default_model.clone().unwrap_or_else(|| "local-joycaption".into());
+                                s.push_recent_model(&mname);
+                                crate::database::settings::save_settings(&s);
                                 crate::ui::status::ASSIST_STATUS
                                     .set_state(crate::ui::status::StatusState::Idle, "Idle");
                             }
@@ -1559,6 +1578,11 @@ impl AssistantPanel {
                         origin_path: format!("query:{query}"),
                         results,
                     });
+                    // On successful local text search, treat the current default model as used
+                    let mut s = settings.clone();
+                    let mname = s.openai_default_model.clone().unwrap_or_else(|| "local-joycaption".into());
+                    s.push_recent_model(&mname);
+                    crate::database::settings::save_settings(&s);
                     crate::ui::status::ASSIST_STATUS
                         .set_state(crate::ui::status::StatusState::Idle, "Idle");
                 });

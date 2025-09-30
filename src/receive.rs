@@ -11,6 +11,7 @@ impl crate::app::SmartMediaContext {
         if self.first_run {
             egui_extras::install_image_loaders(ctx);
             let db_ready_tx = self.db_ready_tx.clone();
+            
             tokio::spawn(async move {
                 crate::ui::status::DB_STATUS.set_state(crate::ui::status::StatusState::Initializing, "Opening DB");
                 let db = crate::database::new(db_ready_tx.clone()).await;
@@ -18,8 +19,7 @@ impl crate::app::SmartMediaContext {
                 log::warn!("DB: {db:?}");
                 Ok::<(), anyhow::Error>(())
             });
-
-            self.first_run = false;
+            
             match serde_json::from_str::<eframe::egui::Style>(STYLE) {
                 Ok(mut theme) => {
                     theme.visuals.widgets.active.fg_stroke = Stroke::new(1., Color32::WHITE);
@@ -28,6 +28,13 @@ impl crate::app::SmartMediaContext {
                 }
                 Err(e) => log::info!("Error setting theme: {e:?}")
             };
+
+            tokio::spawn(async move {
+                if let Err(e) = crate::ai::mcp::serve_stdio_background().await {
+                    log::warn!("[MCP] stdio server not started: {e}");
+                }
+            });
+            self.first_run = false;
         }
 
         while let Ok((kind, msg)) = self.toast_rx.try_recv() {

@@ -105,3 +105,16 @@ pub async fn append_message(session_id: &RecordId, role: &str, content: &str, at
         .take(0)?;
     Ok(())
 }
+
+pub async fn delete_session(session_id: &RecordId) -> anyhow::Result<(), anyhow::Error> {
+    let _ga = db_activity("Delete chat session");
+    db_set_detail(format!("{session_id}"));
+    // Delete messages for this session first (by index for efficiency)
+    // Then delete the session row itself
+    let _ = DB
+        .query("DELETE assistant_messages WITH INDEX idx_assistant_session WHERE session_ref = $sid")
+        .bind(("sid", session_id.clone()))
+        .await?;
+    let _ = DB.delete::<Option<ChatSessionRow>>(session_id.clone()).await?;
+    Ok(())
+}
