@@ -745,7 +745,7 @@ impl crate::app::SmartMediaContext {
             vp_id,
             egui::ViewportBuilder::default()
             .with_title("AI Assistant")
-            .with_inner_size([800.0, 900.0]),
+            .with_inner_size([1000.0, 900.0]),
             |vcx, _class| 
                 self.assistant.ui(vcx, &mut self.file_explorer)
             );

@@ -22,16 +22,21 @@ pub use filter_groups::*;
 pub use cached_scans::*;
 
 pub static DB: LazyLock<Surreal<Db>> = LazyLock::new(Surreal::init);
+
 pub const NS: &str = "file_explorer";
 pub const DB_NAME: &str = "ai_search";
-pub const THUMBNAILS: &str = "thumbnails";
-pub const USER_SETTINGS: &str = "user_settings";
-pub const FILTER_GROUPS: &str = "filter_groups";
-pub const LOGICAL_GROUPS: &str = "logical_groups";
+
 pub const DB_DEFAULT_TABLE: &str = "./db/default.surql";
 pub const DB_BACKUP_PATH: &str = "./db/backup.surql";
 pub const DB_PATH_FILE: &str = "./db/path.txt";
 pub const DB_DEFAULT_PATH: &str = "./db/ai_search";
+
+pub const THUMBNAILS: &str = "thumbnails";
+pub const USER_SETTINGS: &str = "user_settings";
+pub const FILTER_GROUPS: &str = "filter_groups";
+pub const LOGICAL_GROUPS: &str = "logical_groups";
+pub const ASSISTANT_SESSIONS: &str = "assistant_sessions";
+pub const ASSISTANT_MESSAGES: &str = "assistant_messages";
 
 pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
     DB_STATUS.set_state(StatusState::Initializing, "Connecting DB");
@@ -75,14 +80,16 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
         DEFINE FIELD IF NOT EXISTS updated ON clip_embeddings TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS similarity_score ON clip_embeddings TYPE option<float> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS clip_similarity_score ON clip_embeddings TYPE option<float> PERMISSIONS FULL;
+
         DEFINE FIELD IF NOT EXISTS title ON assistant_sessions TYPE string PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS created ON assistant_sessions TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS updated ON assistant_sessions TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
+
         DEFINE FIELD IF NOT EXISTS session_ref ON assistant_messages TYPE record<assistant_sessions> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS role ON assistant_messages TYPE string PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS content ON assistant_messages TYPE string PERMISSIONS FULL;
-    DEFINE FIELD IF NOT EXISTS attachments ON assistant_messages TYPE option<array<string>> PERMISSIONS FULL;
-    DEFINE FIELD IF NOT EXISTS attachments_refs ON assistant_messages TYPE option<array<record<thumbnails>>> PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS attachments ON assistant_messages TYPE option<array<string>> PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS attachments_refs ON assistant_messages TYPE option<array<record<thumbnails>>> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS created ON assistant_messages TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
         
         DEFINE FIELD IF NOT EXISTS ext_enabled ON user_settings TYPE option<array<any>> PERMISSIONS FULL;

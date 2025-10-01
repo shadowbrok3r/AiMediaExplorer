@@ -79,12 +79,18 @@ pub struct AssistantPanel {
     filter_out_text: bool,
     filter_out_image: bool,
     filter_out_audio: bool,
-    // Cache-priming sentinel for current session index
-    preloaded_session_index: Option<usize>,
     // One-shot initial load control and channel
     first_run: bool,
     initial_sessions_tx: crossbeam::channel::Sender<(Vec<(String, Vec<ChatMessage>)>, Vec<surrealdb::RecordId>)>,
     initial_sessions_rx: crossbeam::channel::Receiver<(Vec<(String, Vec<ChatMessage>)>, Vec<surrealdb::RecordId>)>,
+    // Async session load upon click (index, messages)
+    session_loaded_tx: crossbeam::channel::Sender<(usize, Vec<ChatMessage>)>,
+    session_loaded_rx: crossbeam::channel::Receiver<(usize, Vec<ChatMessage>)>,
+    // Async DB thumbnail loader: (path, Some((rgba,w,h))) or None on miss
+    db_thumb_tx: crossbeam::channel::Sender<(String, Option<(Vec<u8>, u32, u32)>)>,
+    db_thumb_rx: crossbeam::channel::Receiver<(String, Option<(Vec<u8>, u32, u32)>)>,
+    // Prevent duplicate thumb fetches
+    pending_thumb_fetch: std::collections::HashSet<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,7 +122,9 @@ impl AssistantPanel {
         let (chat_tx, chat_rx) = unbounded::<String>();
         let (models_tx, models_rx) = unbounded::<Result<Vec<OpenRouterModel>, String>>();
         let (new_session_tx, new_session_rx) = unbounded::<(Option<surrealdb::RecordId>, String)>();
-        let (initial_sessions_tx, initial_sessions_rx) = bounded::<(Vec<(String, Vec<ChatMessage>)>, Vec<surrealdb::RecordId>)>(1);
+    let (initial_sessions_tx, initial_sessions_rx) = bounded::<(Vec<(String, Vec<ChatMessage>)>, Vec<surrealdb::RecordId>)>(1);
+    let (session_loaded_tx, session_loaded_rx) = unbounded::<(usize, Vec<ChatMessage>)>();
+    let (db_thumb_tx, db_thumb_rx) = unbounded::<(String, Option<(Vec<u8>, u32, u32)>)>();
         Self {
             prompt: String::new(),
             progress: None,
@@ -167,10 +175,14 @@ impl AssistantPanel {
             filter_out_text: false,
             filter_out_image: false,
             filter_out_audio: false,
-            preloaded_session_index: None,
             first_run: true,
             initial_sessions_tx,
             initial_sessions_rx,
+            session_loaded_tx,
+            session_loaded_rx,
+            db_thumb_tx,
+            db_thumb_rx,
+            pending_thumb_fetch: HashSet::new(),
         }
     }
 
@@ -494,7 +506,7 @@ impl AssistantPanel {
 
             // --- Sessions list ---
             ui.vertical_centered(|ui| ui.heading(RichText::new("Sessions").strong()));
-            let mut pending_switch: Option<usize> = None;
+            let pending_switch: &mut Option<usize> = &mut None;
             ScrollArea::vertical()
             .id_salt("Sessions")
             .auto_shrink([false, false])
@@ -504,7 +516,8 @@ impl AssistantPanel {
                         ui.horizontal(|ui| {
                             let selected = i == self.active_session;
                             if ui.selectable_label(selected, title).clicked() {
-                                pending_switch = Some(i);
+                                *pending_switch = Some(i);
+                                log::info!("Switching to session {i} '{title}'");
                             }
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 if ui.button("🗙").on_hover_text("Delete this session").clicked() {
@@ -520,10 +533,39 @@ impl AssistantPanel {
                 });
             });
 
-            if let Some(i) = pending_switch {
+            if let Some(i) = *pending_switch {
+                log::info!("got a pending switch");
                 self.active_session = i;
-                self.messages = self.sessions[i].1.clone();
-                self.preload_session_thumbs(ctx);
+                self.messages.clear();
+                // Spawn DB load for this session's messages
+                if let Some(session_id) = self.session_ids.get(i).cloned() {
+                    log::info!("got a session_id");
+                    let tx = self.session_loaded_tx.clone();
+                    tokio::spawn(async move {
+                        let mut msgs: Vec<ChatMessage> = Vec::new();
+                        match crate::database::assistant_chat::load_messages(&session_id).await {
+                            Ok(rows) => {
+                                log::error!("Got {} rows", rows.len());
+                                for r in rows.into_iter() {
+                                    let role = if r.role == "assistant" { ChatRole::Assistant } else { ChatRole::User };
+                                    let mut atts = r.attachments.clone();
+                                    if (atts.is_none() || atts.as_ref().map(|v| v.is_empty()).unwrap_or(true)) && r.attachments_refs.is_some() {
+                                        let mut paths: Vec<String> = Vec::new();
+                                        if let Some(refs) = r.attachments_refs.clone() {
+                                            for rid in refs {
+                                                if let Ok(Some(t)) = crate::Thumbnail::get_by_id(&rid).await { paths.push(t.path); }
+                                            }
+                                        }
+                                        if !paths.is_empty() { atts = Some(paths); }
+                                    }
+                                    msgs.push(ChatMessage { role, content: r.content, attachments: atts, created: r.created });
+                                }
+                            }
+                            Err(e) => log::error!("Failed to load messages for session {session_id}: {e}")
+                        }
+                        let _ = tx.try_send((i, msgs));
+                    });
+                }
             }
             
             // Apply a pending deletion if requested
@@ -762,35 +804,12 @@ impl AssistantPanel {
                     let layout = if is_user { Layout::top_down(Align::Max) } else { Layout::top_down(Align::Min) };
                     ui.with_layout(layout, |ui| {
                         ui.set_max_width(max_msg_width);
-                        // Header row: name + actions
-                        ui.horizontal(|ui| {
-                            let who = if is_user { "You" } else { "Assistant" };
-                            ui.strong(who);
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if let Some(ts) = created_clone.clone() {
-                                    let s = chrono::DateTime::<chrono::Utc>::from(ts).with_timezone(&Local).format("%m/%d @ %I:%M%p").to_string();
-                                    ui.label(RichText::new(s).weak());
-                                    ui.separator();
-                                }
-                                let is_long = content_clone.len() > 1200 || content_clone.lines().count() > 20;
-                                if is_long {
-                                    let is_collapsed = self.collapsed.contains(&idx);
-                                    let label = if is_collapsed { "Expand" } else { "Collapse" };
-                                    if ui.button(label).clicked() {
-                                        if is_collapsed { self.collapsed.remove(&idx); } else { self.collapsed.insert(idx); }
-                                    }
-                                    ui.separator();
-                                }
-                                if ui.button("Copy").clicked() { ui.ctx().copy_text(content_clone.clone()); }
-                            });
-                        });
-                        ui.add_space(2.0);
                         let is_long = content_clone.len() > 1200 || content_clone.lines().count() > 20;
                         let is_collapsed = is_long && self.collapsed.contains(&idx);
                         if is_collapsed { self.render_bubble_preview(ui, &content_clone); }
                         else {
                             let temp = ChatMessage { role: role_clone.clone(), content: content_clone.clone(), attachments: atts_clone.clone(), created: None };
-                            self.render_bubble(ui, &temp);
+                            self.render_bubble(ui, &temp, created_clone, idx, content_clone);
                         }
                     });
                     ui.add_space(8.0);
@@ -861,7 +880,14 @@ impl AssistantPanel {
             self.active_session = 0;
             if let Some((_t, msgs)) = self.sessions.get(self.active_session) {
                 self.messages = msgs.clone();
-                self.preload_session_thumbs(ctx);
+                // Kick off DB thumb requests for all attachments in the initially active session
+                let all_paths: Vec<String> = self
+                    .messages
+                    .iter()
+                    .filter_map(|m| m.attachments.clone())
+                    .flatten()
+                    .collect();
+                for p in all_paths { self.request_db_thumb(&p); }
             }
         }
 
@@ -873,6 +899,37 @@ impl AssistantPanel {
                 self.active_session = self.sessions.len() - 1;
                 self.messages.clear();
                 // Nothing to warm yet; new chat has no messages
+            }
+        }
+
+        // Drain loaded session results
+        while let Ok((idx, msgs)) = self.session_loaded_rx.try_recv() {
+            if idx < self.sessions.len() {
+                self.sessions[idx].1 = msgs.clone();
+            }
+            if idx == self.active_session {
+                self.messages = msgs.clone();
+                // Kick off DB thumb requests for all attachments in this session
+                let all_paths: Vec<String> = self
+                    .messages
+                    .iter()
+                    .filter_map(|m| m.attachments.clone())
+                    .flatten()
+                    .collect();
+                for p in all_paths { self.request_db_thumb(&p); }
+            }
+            ctx.request_repaint();
+        }
+
+        // Drain DB thumbnail results and create textures
+        while let Ok((path, opt_rgba)) = self.db_thumb_rx.try_recv() {
+            self.pending_thumb_fetch.remove(&path);
+            if let Some((rgba, w, h)) = opt_rgba {
+                let color = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
+                let name = format!("assistant_attach:{}", path);
+                let tex = ctx.load_texture(name, color, egui::TextureOptions::LINEAR);
+                self.thumb_cache.insert(path, tex);
+                ctx.request_repaint();
             }
         }
 
@@ -1625,7 +1682,7 @@ impl AssistantPanel {
         self.suppress_selected_attachment = false;
     }
 
-    fn render_bubble(&mut self, ui: &mut Ui, msg: &ChatMessage) {
+    fn render_bubble(&mut self, ui: &mut Ui, msg: &ChatMessage, created_clone: Option<surrealdb::sql::Datetime>, idx: usize, content_clone: String) {
         let is_user = matches!(msg.role, ChatRole::User);
         let rounding = 8.0;
         let rnd = egui::CornerRadius {
@@ -1656,6 +1713,48 @@ impl AssistantPanel {
             .shadow(shadow)
             .stroke(stroke)
             .show(ui, |ui| {
+                // Header row: name + actions
+                ui.horizontal(|ui| {
+                    let who = if is_user { "You" } else { "Assistant" };
+                    let layout = if is_user {
+                        Layout::left_to_right(Align::Center)
+                    } else {
+                        Layout::right_to_left(Align::Center)
+                    };
+                    ui.strong(who);
+                    ui.with_layout(layout, |ui| {
+                        if let Some(ts) = created_clone.clone() {
+                            let s = chrono::DateTime::<chrono::Utc>::from(ts).with_timezone(&Local).format("%m/%d @ %I:%M%p").to_string();
+                            ui.label(RichText::new(s).weak());
+                            ui.separator();
+                        }
+                        let is_long = content_clone.len() > 1200 || content_clone.lines().count() > 20;
+                        if is_long {
+                            let is_collapsed = self.collapsed.contains(&idx);
+                            let label = if is_collapsed { "Expand" } else { "Collapse" };
+                            if ui.button(label).clicked() {
+                                if is_collapsed { self.collapsed.remove(&idx); } else { self.collapsed.insert(idx); }
+                            }
+                            ui.separator();
+                        }
+                        if ui.button("Copy").clicked() { ui.ctx().copy_text(content_clone.clone()); }
+                        if let Some(atts) = &msg.attachments {
+                            if !atts.is_empty() {
+                                ui.add_space(6.0);
+                                ui.horizontal_wrapped(|ui| {
+                                    for p in atts.iter() {
+                                        if let Some(tex) = self.thumb_cache.get(p) {
+                                            ui.image((tex.id(), egui::vec2(40.0, 40.0))).on_hover_text(p);
+                                        } else {
+                                            ui.label(RichText::new("[att]").small()).on_hover_text(p);
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                    });
+                });
+                ui.add_space(2.0);
                 // Header row: icon/privacy and timestamp could go here if needed
                 // Content frame similar to provided sample
                 Frame::new()
@@ -1668,21 +1767,6 @@ impl AssistantPanel {
                         ui.set_width(ui.available_width());
                         self.render_message_inner(ui, &msg.content);
                     });
-
-                if let Some(atts) = &msg.attachments {
-                    if !atts.is_empty() {
-                        ui.add_space(6.0);
-                        ui.horizontal_wrapped(|ui| {
-                            for p in atts.iter() {
-                                if let Some(tex) = self.thumb_cache.get(p) {
-                                    ui.image((tex.id(), egui::vec2(40.0, 40.0))).on_hover_text(p);
-                                } else {
-                                    ui.label(RichText::new("[att]").small()).on_hover_text(p);
-                                }
-                            }
-                        });
-                    }
-                }
             });
     }
 
@@ -1691,13 +1775,13 @@ impl AssistantPanel {
         let stroke = Stroke::new(1.0, Color32::DARK_GRAY);
         let preview = {
             let mut s = String::new();
-            for (i, line) in content.lines().take(8).enumerate() {
+            for (i, line) in content.lines().take(10).enumerate() {
                 if i > 0 {
                     s.push('\n');
                 }
                 s.push_str(line);
             }
-            if content.lines().count() > 8 {
+            if content.lines().count() > 10 {
                 s.push_str("\n…");
             }
             s
@@ -1815,56 +1899,41 @@ impl AssistantPanel {
         }
     }
 
-    fn try_thumbnail(&mut self, ui: &mut Ui, path: &str) -> Option<egui::TextureId> {
-        if let Some(h) = self.thumb_cache.get(path) {
-            return Some(h.id());
-        }
-        // Read from filesystem best-effort (assistant attachments are local files)
-        if let Ok(bytes) = std::fs::read(path) {
-            if let Ok(img) = image::load_from_memory(&bytes) {
-                let rgba = img.to_rgba8();
-                let (w, h) = rgba.dimensions();
-                let color =
-                    egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
-                let name = format!("assistant_attach:{}", path);
-                let tex = ui
-                    .ctx()
-                    .load_texture(name, color, egui::TextureOptions::LINEAR);
-                let id = tex.id();
-                self.thumb_cache.insert(path.to_string(), tex);
-                return Some(id);
-            }
-        }
+    fn try_thumbnail(&mut self, _ui: &mut Ui, path: &str) -> Option<egui::TextureId> {
+        if let Some(h) = self.thumb_cache.get(path) { return Some(h.id()); }
+        // If not cached, request from DB asynchronously and return None for now
+        self.request_db_thumb(path);
         None
     }
 }
 
 impl AssistantPanel {
-    fn preload_session_thumbs(&mut self, ctx: &Context) {
-        // Skip if already warmed for this session index
-        if self.preloaded_session_index == Some(self.active_session) { return; }
-        // Iterate current messages and try to load textures for attachment paths
-        let mut warmed = 0usize;
-        for msg in self.messages.iter() {
-            if let Some(atts) = &msg.attachments {
-                for p in atts {
-                    if self.thumb_cache.contains_key(p) { continue; }
-                    // Synchronous load from disk best-effort; DB fetch is async so we avoid here
-                    if let Ok(bytes) = std::fs::read(p) {
-                        if let Ok(img) = image::load_from_memory(&bytes) {
-                            let rgba = img.to_rgba8();
-                            let (w, h) = rgba.dimensions();
-                            let color = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
-                            let name = format!("assistant_attach:{}", p);
-                            let tex = ctx.load_texture(name, color, egui::TextureOptions::LINEAR);
-                            self.thumb_cache.insert(p.clone(), tex);
-                            warmed += 1;
+    fn request_db_thumb(&mut self, path: &str) {
+        if self.thumb_cache.contains_key(path) { return; }
+        if self.pending_thumb_fetch.contains(path) { return; }
+        self.pending_thumb_fetch.insert(path.to_string());
+        let path_s = path.to_string();
+        let tx = self.db_thumb_tx.clone();
+        tokio::spawn(async move {
+            let res = match crate::Thumbnail::get_thumbnail_by_path(&path_s).await {
+                Ok(Some(t)) => {
+                    if let Some(b64) = t.thumbnail_b64 {
+                        match base64::engine::general_purpose::STANDARD.decode(b64) {
+                            Ok(bytes) => match image::load_from_memory(&bytes) {
+                                Ok(img) => {
+                                    let rgba = img.to_rgba8();
+                                    let (w, h) = rgba.dimensions();
+                                    Some((rgba.into_raw(), w, h))
+                                }
+                                Err(_) => None,
+                            },
+                            Err(_) => None,
                         }
-                    }
+                    } else { None }
                 }
-            }
-        }
-        self.preloaded_session_index = Some(self.active_session);
-        if warmed > 0 { ctx.request_repaint(); }
+                _ => None,
+            };
+            let _ = tx.try_send((path_s, res));
+        });
     }
 }
