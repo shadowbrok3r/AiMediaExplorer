@@ -1,15 +1,19 @@
-use crate::ai::openai_compat::OpenRouterModel;
-use crate::{UiSettings, ui::status::GlobalStatusIndicator};
-use base64::Engine as _;
-use crossbeam::channel::{Receiver, Sender, unbounded, bounded};
-use eframe::egui::*;
-use egui_extras::syntax_highlighting::{CodeTheme, highlight};
 use egui_json_tree::{DefaultExpand, JsonTree, JsonTreeStyle, JsonTreeVisuals, ToggleButtonsState};
-use once_cell::sync::Lazy;
+use egui::{style::StyleModifier, containers::menu::{MenuButton, MenuConfig}};
+use crossbeam::channel::{Receiver, Sender, unbounded, bounded};
+use egui_extras::syntax_highlighting::{CodeTheme, highlight};
+use crate::{UiSettings, ui::status::GlobalStatusIndicator};
+use crate::ai::openai_compat::OpenRouterModel;
 use std::collections::{HashMap, HashSet};
-use chrono::Local;
-use std::sync::Mutex;
 use tokio::task::JoinHandle;
+use once_cell::sync::Lazy;
+use base64::Engine as _;
+use std::sync::Mutex;
+use eframe::egui::*;
+use chrono::Local;
+
+// Global queue to request attaching file paths to the chat window from other UI modules
+pub static ATTACH_REQUESTS: Lazy<Mutex<Vec<Vec<String>>>> = Lazy::new(|| Mutex::new(Vec::new()));
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChatRole {
@@ -41,12 +45,7 @@ pub struct AssistantPanel {
     pub temp: f32,
     pub model_override: Option<String>,
     assistant_task: Option<JoinHandle<()>>,
-    pub ref_old_category: String,
-    pub ref_new_category: String,
-    pub ref_old_tag: String,
-    pub ref_new_tag: String,
-    pub ref_delete_tag: String,
-    pub ref_limit_tags: i32,
+
     thumb_cache: HashMap<String, egui::TextureHandle>,
     collapsed: HashSet<usize>,
     show_models_modal: bool,
@@ -66,7 +65,6 @@ pub struct AssistantPanel {
     selected_provider: String,
     model_name: String,
     open_model_opts: bool,
-    open_inference_opts: bool,
     // Async new-session creation pipe (persistent channel)
     new_session_tx: crossbeam::channel::Sender<(Option<surrealdb::RecordId>, String)>,
     new_session_rx: crossbeam::channel::Receiver<(Option<surrealdb::RecordId>, String)>,
@@ -106,9 +104,6 @@ fn env_or(opt: &Option<String>, key: &str) -> Option<String> {
     opt.clone().or_else(|| std::env::var(key).ok())
 }
 
-// Global queue to request attaching file paths to the chat window from other UI modules
-pub static ATTACH_REQUESTS: Lazy<Mutex<Vec<Vec<String>>>> = Lazy::new(|| Mutex::new(Vec::new()));
-
 /// Request to attach file paths to the chat window. Safe to call from any UI code.
 pub fn request_attach_to_chat(paths: Vec<String>) {
     if paths.is_empty() {
@@ -122,9 +117,10 @@ impl AssistantPanel {
         let (chat_tx, chat_rx) = unbounded::<String>();
         let (models_tx, models_rx) = unbounded::<Result<Vec<OpenRouterModel>, String>>();
         let (new_session_tx, new_session_rx) = unbounded::<(Option<surrealdb::RecordId>, String)>();
-    let (initial_sessions_tx, initial_sessions_rx) = bounded::<(Vec<(String, Vec<ChatMessage>)>, Vec<surrealdb::RecordId>)>(1);
-    let (session_loaded_tx, session_loaded_rx) = unbounded::<(usize, Vec<ChatMessage>)>();
-    let (db_thumb_tx, db_thumb_rx) = unbounded::<(String, Option<(Vec<u8>, u32, u32)>)>();
+        let (initial_sessions_tx, initial_sessions_rx) = bounded::<(Vec<(String, Vec<ChatMessage>)>, Vec<surrealdb::RecordId>)>(1);
+        let (session_loaded_tx, session_loaded_rx) = unbounded::<(usize, Vec<ChatMessage>)>();
+        let (db_thumb_tx, db_thumb_rx) = unbounded::<(String, Option<(Vec<u8>, u32, u32)>)>();
+        
         Self {
             prompt: String::new(),
             progress: None,
@@ -141,12 +137,6 @@ impl AssistantPanel {
             temp: 0.2,
             model_override: None,
             assistant_task: None,
-            ref_old_category: String::new(),
-            ref_new_category: String::new(),
-            ref_old_tag: String::new(),
-            ref_new_tag: String::new(),
-            ref_delete_tag: String::new(),
-            ref_limit_tags: 0,
             thumb_cache: HashMap::new(),
             collapsed: HashSet::new(),
             show_models_modal: false,
@@ -165,7 +155,6 @@ impl AssistantPanel {
             selected_provider: "local-joycaption".into(),
             model_name: String::new(),
             open_model_opts: true,
-            open_inference_opts: true,
             new_session_tx,
             new_session_rx,
             filter_text: false,
@@ -209,6 +198,145 @@ impl AssistantPanel {
                 if ui.button("Model Options").clicked() {
                     self.open_model_opts = !self.open_model_opts;
                 }
+
+                ui.with_layout(Layout::right_to_left(Align::Center), |_ui| {
+
+                });
+            });
+        });
+
+        // BOTTOM: Input bar
+        TopBottomPanel::bottom("assistant_bottom").show(&ctx, |ui| {
+            let style = StyleModifier::default();
+            style.apply(ui.style_mut());
+            let menu_cfg = MenuConfig::default().close_behavior(PopupCloseBehavior::CloseOnClickOutside).style(style.clone());
+            ui.add_space(4.);
+            MenuBar::new().config(menu_cfg).style(style).ui(ui, |ui| {
+                
+                // Plus menu to add attachments
+                ui.menu_button("➕", |ui| {
+                    if ui.button("Attach current selection").clicked() {
+                        if !explorer.current_thumb.path.is_empty() {
+                            self.suppress_selected_attachment = false;
+                        }
+                        ui.close_kind(UiKind::Menu);
+                    }
+                    if ui.button("Attach file…").clicked() {
+                        if let Some(file) = rfd::FileDialog::new()
+                            .set_title("Attach image or file")
+                            .pick_file()
+                        {
+                            self.attachments.push(file.display().to_string());
+                        }
+                        ui.close_kind(UiKind::Menu);
+                    }
+                });
+
+                ui.add_space(4.);
+                ui.separator();
+                ui.add_space(4.);
+
+                ui.menu_button("MCP Tools", |ui| {
+                    // Ping
+                    ui.label(RichText::new("Ping (util.ping)").strong());
+                    ui.horizontal(|ui| {
+                        ui.add(TextEdit::singleline(&mut self.mcp_ping_text).hint_text("message"));
+                        if ui.button("Send").clicked() {
+                            let msg = self.mcp_ping_text.clone();
+                            tokio::spawn(async move {
+                                match crate::ai::mcp::ping_tool(msg).await {
+                                    Ok(echo) => log::info!("[MCP] ping: {}", echo),
+                                    Err(e) => log::warn!("[MCP] ping failed: {e}"),
+                                }
+                            });
+                        }
+                    });
+
+                    ui.separator();
+                    // Search
+                    ui.label(RichText::new("Media Search (media.search)").strong());
+                    ui.horizontal(|ui| {
+                        ui.add(TextEdit::singleline(&mut self.mcp_search_text).hint_text("query"));
+                        if ui.button("Run").clicked() {
+                            let q = self.mcp_search_text.clone();
+                            let tx_updates = explorer.viewer.ai_update_tx.clone();
+                            tokio::spawn(async move {
+                                match crate::ai::mcp::media_search_tool(q, Some(32)).await {
+                                    Ok(hits) => {
+                                        let mut results = Vec::new();
+                                        for h in hits {
+                                            let thumb =
+                                                crate::Thumbnail::get_thumbnail_by_path(&h.path)
+                                                    .await
+                                                    .unwrap_or(None)
+                                                    .unwrap_or_default();
+                                            results.push(crate::ui::file_table::SimilarResult {
+                                                thumb,
+                                                created: None,
+                                                updated: None,
+                                                similarity_score: None,
+                                                clip_similarity_score: Some(h.score),
+                                            });
+                                        }
+                                        let _ = tx_updates.try_send(
+                                            crate::ui::file_table::AIUpdate::SimilarResults {
+                                                origin_path: "mcp:media.search".into(),
+                                                results,
+                                            },
+                                        );
+                                    }
+                                    Err(e) => log::warn!("[MCP] media.search failed: {e}"),
+                                }
+                            });
+                        }
+                    });
+
+                    ui.separator();
+                    // Describe
+                    ui.label(RichText::new("Describe Selected (media.describe)").strong());
+                    if ui.button("Describe current selection").clicked() {
+                        let path = explorer.current_thumb.path.clone();
+                        if !path.is_empty() {
+                            tokio::spawn(async move {
+                                match crate::ai::mcp::media_describe_tool(path.clone()).await {
+                                    Ok(resp) => log::info!(
+                                        "[MCP] describe ok: {} ({} tags)",
+                                        resp.caption,
+                                        resp.tags.len()
+                                    ),
+                                    Err(e) => log::warn!("[MCP] describe failed: {e}"),
+                                }
+                            });
+                        }
+                    }
+                });
+
+                ui.add_space(4.);
+                ui.separator();
+                ui.add_space(4.);
+
+                let menu_txt = RichText::new("Inference").color(ui.style().visuals.error_fg_color).strong();
+                let style = StyleModifier::default();
+                style.apply(ui.style_mut());
+                let menu_cfg = MenuConfig::default().close_behavior(PopupCloseBehavior::CloseOnClickOutside).style(style);
+                MenuButton::new(menu_txt).config(menu_cfg).ui(ui, |ui| {
+                    let mut settings = self.settings.clone();
+                    ui.label("Endpoint (OpenAI-compatible base URL)");
+                    ui.add(
+                        TextEdit::singleline(settings.openai_base_url.get_or_insert(String::new()))
+                            .hint_text("e.g. http://localhost:11434/v1"),
+                    );
+                    ui.label("Organization (optional)");
+                    ui.add(TextEdit::singleline(
+                        settings.openai_organization.get_or_insert(String::new()),
+                    ));
+                    ui.label("Temperature");
+                    ui.add(Slider::new(&mut self.temp, 0.0..=1.5).logarithmic(false));
+                    ui.add_space(6.0);
+                    if ui.button("Save Settings").clicked() {
+                        crate::database::settings::save_settings(&settings);
+                    }
+                });
 
                 ui.add_space(4.);
                 ui.separator();
@@ -286,37 +414,10 @@ impl AssistantPanel {
                     self.settings = s2;
                 }
                 
-                ui.add_space(4.);
-                ui.separator();
-                ui.add_space(4.);
-
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.button("+ New Chat").on_hover_text("Create a new chat session").clicked() {
-                        let new_title = format!("Chat {}", self.sessions.len() + 1);
-                        tokio::spawn({
-                            let title_clone = new_title.clone();
-                            let tx_clone = self.new_session_tx.clone();
-                            async move {
-                                let id = crate::database::assistant_chat::create_session(&title_clone).await.ok();
-                                let _ = tx_clone.try_send((id, title_clone));
-                            }
-                        });
-                    }
-                    if ui.button("Inference Options").clicked() {
-                        self.open_inference_opts = !self.open_inference_opts;
-                    }
-                });
-            });
-        });
-
-        // BOTTOM: Input bar
-        TopBottomPanel::bottom("assistant_bottom").show(&ctx, |ui| {
-            if !self.attachments.is_empty() {
-                // We'll track UI intents and apply to self after the closure to avoid borrow conflicts
-                let mut suppress_auto_selected = false;
-                let mut remove_index: Option<usize> = None;
-                // Attachments row (chips)
-                ui.horizontal_wrapped(|ui| {
+                if !self.attachments.is_empty() {
+                    // We'll track UI intents and apply to self after the closure to avoid borrow conflicts
+                    let mut suppress_auto_selected = false;
+                    let mut remove_index: Option<usize> = None;
                     // Auto-attachment tag for current selection
                     let selected_path = explorer.current_thumb.path.clone();
                     if !selected_path.is_empty() && !self.suppress_selected_attachment {
@@ -361,35 +462,14 @@ impl AssistantPanel {
                             });
                         });
                     }
-                });
-                // Apply UI intents after the closure
-                if suppress_auto_selected {
-                    self.suppress_selected_attachment = true;
-                }
-                if let Some(i) = remove_index {
-                    self.attachments.remove(i);
-                }
-            }
-
-            ui.horizontal(|ui| {
-                // Plus menu to add attachments
-                ui.menu_button("➕", |ui| {
-                    if ui.button("Attach current selection").clicked() {
-                        if !explorer.current_thumb.path.is_empty() {
-                            self.suppress_selected_attachment = false;
-                        }
-                        ui.close_kind(UiKind::Menu);
+                    // Apply UI intents after the closure
+                    if suppress_auto_selected {
+                        self.suppress_selected_attachment = true;
                     }
-                    if ui.button("Attach file…").clicked() {
-                        if let Some(file) = rfd::FileDialog::new()
-                            .set_title("Attach image or file")
-                            .pick_file()
-                        {
-                            self.attachments.push(file.display().to_string());
-                        }
-                        ui.close_kind(UiKind::Menu);
+                    if let Some(i) = remove_index {
+                        self.attachments.remove(i);
                     }
-                });
+                }
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     // Send / Stop / Regenerate icons
@@ -442,35 +522,11 @@ impl AssistantPanel {
         .max_width(250.)
         .min_width(200.)
         .show_animated(ctx, self.open_model_opts, |ui| {
-            ui.horizontal(|ui| {
-                if ui.button("+ New").clicked() {
-                    let new_title = format!("Chat {}", self.sessions.len() + 1);
-                    tokio::spawn({
-                        let title_clone = new_title.clone();
-                        let tx_clone = self.new_session_tx.clone();
-                        async move {
-                            let id = crate::database::assistant_chat::create_session(&title_clone).await.ok();
-                            let _ = tx_clone.try_send((id, title_clone));
-                        }
-                    });
-                }
-                if ui.button("Clear").clicked() {
-                    self.messages.clear();
-                    if let Some((title, store)) = self.sessions.get_mut(self.active_session) {
-                        *store = self.messages.clone();
-                        *title = format!("Chat {}", self.active_session + 1);
-                    }
-                }
-            });
-
             // --- Recent Models UI ---
             let recent_models = &self.settings.recent_models;
             let last_used_model = self.settings.last_used_model.as_deref();
             if !recent_models.is_empty() || last_used_model.is_some() {
-                ui.add_space(6.0);
-                ui.separator();
-                ui.add_space(6.0);
-                ui.vertical_centered(|ui| ui.heading(RichText::new("Recent Models").strong()));
+                ui.vertical_centered(|ui| ui.heading(RichText::new("Recent Models").color(ui.style().visuals.error_fg_color)));
                 if let Some(last) = last_used_model {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("Last used:").weak());
@@ -484,7 +540,7 @@ impl AssistantPanel {
                     });
                 }
                 if !recent_models.is_empty() {
-                    ScrollArea::vertical().id_salt("Recent Models").max_height(80.0).show(ui, |ui| {
+                    ScrollArea::vertical().id_salt("Recent Models").max_height(150.0).show(ui, |ui| {
                         ui.vertical_centered_justified(|ui| {
                             for m in recent_models {
                                 if ui.button(m).clicked() {
@@ -505,7 +561,29 @@ impl AssistantPanel {
             ui.add_space(6.0);
 
             // --- Sessions list ---
-            ui.vertical_centered(|ui| ui.heading(RichText::new("Sessions").strong()));
+            ui.horizontal(|ui| {
+                ui.heading(RichText::new("Sessions").color(ui.style().visuals.error_fg_color));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.button(RichText::new("🗙").color(ui.style().visuals.error_fg_color)).on_hover_text("Double Click to Clear ALL Sessions").double_clicked() {
+                        self.messages.clear();
+                        if let Some((title, store)) = self.sessions.get_mut(self.active_session) {
+                            *store = self.messages.clone();
+                            *title = format!("Chat {}", self.active_session + 1);
+                        }
+                    }
+                    if ui.button("➕").on_hover_text("Create a new chat session").clicked() {
+                        let new_title = format!("Chat {}", self.sessions.len() + 1);
+                        tokio::spawn({
+                            let title_clone = new_title.clone();
+                            let tx_clone = self.new_session_tx.clone();
+                            async move {
+                                let id = crate::database::assistant_chat::create_session(&title_clone).await.ok();
+                                let _ = tx_clone.try_send((id, title_clone));
+                            }
+                        });
+                    }
+                });
+            });
             let pending_switch: &mut Option<usize> = &mut None;
             ScrollArea::vertical()
             .id_salt("Sessions")
@@ -515,7 +593,7 @@ impl AssistantPanel {
                     for (i, (title, _)) in self.sessions.iter().enumerate() {
                         ui.horizontal(|ui| {
                             let selected = i == self.active_session;
-                            if ui.selectable_label(selected, title).clicked() {
+                            if Button::selectable(selected, title).min_size(vec2(ui.available_width(), 25.)).ui(ui).clicked() {
                                 *pending_switch = Some(i);
                                 log::info!("Switching to session {i} '{title}'");
                             }
@@ -591,197 +669,6 @@ impl AssistantPanel {
                 // Clear the temp marker
                 ctx.data_mut(|d| d.remove::<usize>(Id::new("assistant_delete_idx")));
             }
-        });
-
-        // RIGHT: Inference settings
-        SidePanel::right("assistant_right")
-        .default_width(280.)
-        .show_animated(ctx, self.open_inference_opts, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.heading(
-                    RichText::new("Inference Settings")
-                        .color(ui.style().visuals.error_fg_color)
-                        .strong(),
-                )
-            });
-            ui.separator();
-            let mut settings = self.settings.clone();
-            ui.label("Endpoint (OpenAI-compatible base URL)");
-            ui.add(
-                TextEdit::singleline(settings.openai_base_url.get_or_insert(String::new()))
-                    .hint_text("e.g. http://localhost:11434/v1"),
-            );
-            ui.label("Organization (optional)");
-            ui.add(TextEdit::singleline(
-                settings.openai_organization.get_or_insert(String::new()),
-            ));
-            ui.label("Temperature");
-            ui.add(Slider::new(&mut self.temp, 0.0..=1.5).logarithmic(false));
-            ui.add_space(6.0);
-            if ui.button("Save Settings").clicked() {
-                crate::database::settings::save_settings(&settings);
-            }
-            ui.separator();
-            CollapsingHeader::new("Refine Categories and Tags").show(ui, |ui| {
-                // Moved existing refine tools here
-                ui.label("Rename / merge Category");
-                ui.horizontal(|ui| {
-                    ui.add_sized(
-                        [220.0, 20.0],
-                        TextEdit::singleline(&mut self.ref_old_category)
-                            .hint_text("Old category"),
-                    );
-                    ui.add_sized(
-                        [220.0, 20.0],
-                        TextEdit::singleline(&mut self.ref_new_category)
-                            .hint_text("New category"),
-                    );
-                    if ui.button("Apply").clicked() {
-                        let old = self.ref_old_category.clone();
-                        let newc = self.ref_new_category.clone();
-                        tokio::spawn(async move {
-                            match crate::Thumbnail::rename_category(&old, &newc).await {
-                                Ok(n) => log::info!(
-                                    "Renamed category '{old}' -> '{newc}' ({n} rows)"
-                                ),
-                                Err(e) => log::error!("Category rename failed: {e}"),
-                            }
-                        });
-                    }
-                });
-                ui.separator();
-                ui.label("Rename / merge Tag");
-                ui.horizontal(|ui| {
-                    ui.add_sized(
-                        [220.0, 20.0],
-                        TextEdit::singleline(&mut self.ref_old_tag).hint_text("Old tag"),
-                    );
-                    ui.add_sized(
-                        [220.0, 20.0],
-                        TextEdit::singleline(&mut self.ref_new_tag).hint_text("New tag"),
-                    );
-                    if ui.button("Apply").clicked() {
-                        let old = self.ref_old_tag.clone();
-                        let newt = self.ref_new_tag.clone();
-                        tokio::spawn(async move {
-                            match crate::Thumbnail::rename_tag(&old, &newt).await {
-                                Ok(n) => {
-                                    log::info!("Renamed tag '{old}' -> '{newt}' ({n} rows)")
-                                }
-                                Err(e) => log::error!("Tag rename failed: {e}"),
-                            }
-                        });
-                    }
-                });
-                ui.separator();
-                ui.label("Delete Tag");
-                ui.horizontal(|ui| {
-                    ui.add_sized(
-                        [220.0, 20.0],
-                        TextEdit::singleline(&mut self.ref_delete_tag)
-                            .hint_text("Tag to delete"),
-                    );
-                    if ui.button("Delete").clicked() {
-                        let tag = self.ref_delete_tag.clone();
-                        tokio::spawn(async move {
-                            match crate::Thumbnail::delete_tag(&tag).await {
-                                Ok(n) => log::info!("Deleted tag '{tag}' from {n} rows"),
-                                Err(e) => log::error!("Delete tag failed: {e}"),
-                            }
-                        });
-                    }
-                });
-                ui.separator();
-                ui.label("Limit number of tags per item");
-                ui.horizontal(|ui| {
-                    ui.add(DragValue::new(&mut self.ref_limit_tags).range(0..=64));
-                    if ui.button("Prune").clicked() {
-                        let limit = self.ref_limit_tags as i64;
-                        tokio::spawn(async move {
-                            match crate::Thumbnail::prune_tags(limit).await {
-                                Ok(n) => log::info!("Pruned tags to {limit} on {n} rows"),
-                                Err(e) => log::error!("Prune tags failed: {e}"),
-                            }
-                        });
-                    }
-                });
-            });
-
-            ui.separator();
-            CollapsingHeader::new("MCP Tools").show(ui, |ui| {
-                // Ping
-                ui.label(RichText::new("Ping (util.ping)").strong());
-                ui.horizontal(|ui| {
-                    ui.add(TextEdit::singleline(&mut self.mcp_ping_text).hint_text("message"));
-                    if ui.button("Send").clicked() {
-                        let msg = self.mcp_ping_text.clone();
-                        tokio::spawn(async move {
-                            match crate::ai::mcp::ping_tool(msg).await {
-                                Ok(echo) => log::info!("[MCP] ping: {}", echo),
-                                Err(e) => log::warn!("[MCP] ping failed: {e}"),
-                            }
-                        });
-                    }
-                });
-
-                ui.separator();
-                // Search
-                ui.label(RichText::new("Media Search (media.search)").strong());
-                ui.horizontal(|ui| {
-                    ui.add(TextEdit::singleline(&mut self.mcp_search_text).hint_text("query"));
-                    if ui.button("Run").clicked() {
-                        let q = self.mcp_search_text.clone();
-                        let tx_updates = explorer.viewer.ai_update_tx.clone();
-                        tokio::spawn(async move {
-                            match crate::ai::mcp::media_search_tool(q, Some(32)).await {
-                                Ok(hits) => {
-                                    let mut results = Vec::new();
-                                    for h in hits {
-                                        let thumb =
-                                            crate::Thumbnail::get_thumbnail_by_path(&h.path)
-                                                .await
-                                                .unwrap_or(None)
-                                                .unwrap_or_default();
-                                        results.push(crate::ui::file_table::SimilarResult {
-                                            thumb,
-                                            created: None,
-                                            updated: None,
-                                            similarity_score: None,
-                                            clip_similarity_score: Some(h.score),
-                                        });
-                                    }
-                                    let _ = tx_updates.try_send(
-                                        crate::ui::file_table::AIUpdate::SimilarResults {
-                                            origin_path: "mcp:media.search".into(),
-                                            results,
-                                        },
-                                    );
-                                }
-                                Err(e) => log::warn!("[MCP] media.search failed: {e}"),
-                            }
-                        });
-                    }
-                });
-
-                ui.separator();
-                // Describe
-                ui.label(RichText::new("Describe Selected (media.describe)").strong());
-                if ui.button("Describe current selection").clicked() {
-                    let path = explorer.current_thumb.path.clone();
-                    if !path.is_empty() {
-                        tokio::spawn(async move {
-                            match crate::ai::mcp::media_describe_tool(path.clone()).await {
-                                Ok(resp) => log::info!(
-                                    "[MCP] describe ok: {} ({} tags)",
-                                    resp.caption,
-                                    resp.tags.len()
-                                ),
-                                Err(e) => log::warn!("[MCP] describe failed: {e}"),
-                            }
-                        });
-                    }
-                }
-            });
         });
 
         // CENTER: Messages list
@@ -874,6 +761,7 @@ impl AssistantPanel {
                 let _ = tx_init.try_send((items, ids));
             });
         }
+        
         if let Ok((items, ids)) = self.initial_sessions_rx.try_recv() {
             self.sessions = items;
             self.session_ids = ids;
@@ -1208,8 +1096,7 @@ impl AssistantPanel {
                                 let btn = Button::selectable(is_open, label_text)
                                     .min_size([ui.available_width() / 1.1, 15.].into())
                                     .right_text(
-                                        RichText::new(prices)
-                                            .color(ui.style().visuals.error_fg_color),
+                                        RichText::new(prices).color(ui.style().visuals.error_fg_color),
                                     )
                                     .ui(ui);
                                 if btn.clicked() {
@@ -1746,7 +1633,9 @@ impl AssistantPanel {
                                         if let Some(tex) = self.thumb_cache.get(p) {
                                             ui.image((tex.id(), egui::vec2(40.0, 40.0))).on_hover_text(p);
                                         } else {
-                                            ui.label(RichText::new("[att]").small()).on_hover_text(p);
+                                            if ui.button(RichText::new("[att]").small()).on_hover_text(p).clicked() {
+                                                self.request_db_thumb(p);
+                                            }
                                         }
                                     }
                                 });

@@ -58,6 +58,12 @@ pub struct SmartMediaContext {
     pub refine_rx: Receiver<Vec<crate::ui::refine::RefinementProposal>>,
     // Currently focused tab title (updated by TabViewer::ui)
     pub active_tab_title: Option<String>,
+    pub ref_old_category: String,
+    pub ref_new_category: String,
+    pub ref_old_tag: String,
+    pub ref_new_tag: String,
+    pub ref_delete_tag: String,
+    pub ref_limit_tags: i32,
 }
 
 #[derive(PartialEq, Debug, Serialize, Deserialize, Default)]
@@ -119,6 +125,12 @@ impl SmartMediaApp {
             refine_tx,
             refine_rx,
             active_tab_title: None,
+            ref_old_category: String::new(),
+            ref_new_category: String::new(),
+            ref_old_tag: String::new(),
+            ref_new_tag: String::new(),
+            ref_delete_tag: String::new(),
+            ref_limit_tags: 0,
         };
 
         Self {

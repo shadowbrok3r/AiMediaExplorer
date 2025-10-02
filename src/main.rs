@@ -113,6 +113,18 @@ fn uniquify_title(open_tabs: &std::collections::HashSet<String>, base: &str) -> 
     }
 }
 
+/* lib.rs
+pub mod utilities;
+pub mod database;
+pub mod ai;
+pub mod app;
+pub mod ui;
+pub mod receive;
+
+// Re-exports to mirror main.rs so tests using the lib crate can access items like `crate::Thumbnail`.
+pub use utilities::{explorer::*, scan::*, thumbs::*, types::*};
+pub use database::*;
+*/
 #[tokio::main]
 async fn main() -> eframe::Result<()> {
     #[cfg(target_os = "windows")]
