@@ -523,11 +523,21 @@ impl AssistantPanel {
         .min_width(200.)
         .show_animated(ctx, self.open_model_opts, |ui| {
             // --- Recent Models UI ---
-            let recent_models = &self.settings.recent_models;
-            let last_used_model = self.settings.last_used_model.as_deref();
-            if !recent_models.is_empty() || last_used_model.is_some() {
+            let recent_models_vec = self.settings.recent_models.clone();
+            let last_used_model_opt = self.settings.last_used_model.clone();
+            if !recent_models_vec.is_empty() || last_used_model_opt.is_some() {
                 ui.vertical_centered(|ui| ui.heading(RichText::new("Recent Models").color(ui.style().visuals.error_fg_color)));
-                if let Some(last) = last_used_model {
+                ui.horizontal(|ui| {
+                    if ui.button("Clear Recent Models").on_hover_text("Remove all stored recent models").clicked() {
+                        let mut s2 = self.settings.clone();
+                        s2.recent_models.clear();
+                        // Optionally also clear last_used_model; keep it if you want separate
+                        s2.last_used_model = None;
+                        crate::database::settings::save_settings(&s2);
+                        self.settings = s2;
+                    }
+                });
+                if let Some(last) = last_used_model_opt.as_deref() {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("Last used:").weak());
                         if ui.button(last).clicked() {
@@ -539,10 +549,10 @@ impl AssistantPanel {
                         }
                     });
                 }
-                if !recent_models.is_empty() {
+                if !recent_models_vec.is_empty() {
                     ScrollArea::vertical().id_salt("Recent Models").max_height(150.0).show(ui, |ui| {
                         ui.vertical_centered_justified(|ui| {
-                            for m in recent_models {
+                            for m in &recent_models_vec {
                                 if ui.button(m).clicked() {
                                     self.model_override = Some(m.clone());
                                     self.model_name = m.clone();
