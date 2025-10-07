@@ -178,7 +178,7 @@ impl ProposalGenerator {
             let mut desc_cands: Vec<String> = Vec::new();
             if let Some(qv) = self.embed_text(&query_text).await {
                 if let Ok(neigh) =
-                    crate::database::ClipEmbeddingRow::find_similar_by_embedding(&qv, 64, 128).await
+                    crate::database::ClipEmbeddingRow::find_similar_by_embedding(&qv, 64, 128, 0).await
                 {
                     for hit in neigh.into_iter().take(50) {
                         if let Some(t) = hit.thumb_ref {
@@ -367,7 +367,7 @@ impl ProposalGenerator {
             let mut desc_cands: Vec<String> = Vec::new();
             if let Some(qv) = self.embed_text(&query_text).await {
                 if let Ok(neigh) =
-                    crate::database::ClipEmbeddingRow::find_similar_by_embedding(&qv, 64, 128).await
+                    crate::database::ClipEmbeddingRow::find_similar_by_embedding(&qv, 64, 128, 0).await
                 {
                     for hit in neigh.into_iter().take(50) {
                         if let Some(t) = hit.thumb_ref {

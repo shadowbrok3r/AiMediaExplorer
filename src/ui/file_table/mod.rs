@@ -257,6 +257,7 @@ pub struct FileExplorer {
     // Similarity incremental append state
     #[serde(skip)]
     similarity_origin_path: Option<String>,
+    similarity_query_offset: usize,
     #[serde(skip)]
     similarity_batch_size: usize,
     #[serde(skip)]
@@ -419,6 +420,7 @@ impl FileExplorer {
             perf_last_total: None,
             perf_show_per_1k: false,
             similarity_origin_path: None,
+            similarity_query_offset: 0,
             similarity_batch_size: 50,
             recursive_page_size: 5_000,
             recursive_current_page: 0,
@@ -802,12 +804,46 @@ impl FileExplorer {
         let batch = self.similarity_batch_size;
         let tx_updates = self.viewer.ai_update_tx.clone();
         let existing: std::collections::HashSet<String> = self.table.iter().map(|r| r.path.clone()).collect();
+        // If this is a text query (origin starts with query:) embed that text; otherwise treat origin as a path to embed its image
+        if let Some(qtext) = origin.strip_prefix("query:") {
+            let qtext = qtext.to_string();
+            let start = self.similarity_query_offset;
+            let batch = batch; // capture
+            let offset_tx = self.viewer.ai_update_tx.clone(); // reuse update channel to bump after UI merge if needed
+            tokio::spawn(async move {
+                // Ensure engine
+                let _ = crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await;
+                let embed_opt = {
+                    let mut guard = crate::ai::GLOBAL_AI_ENGINE.clip_engine.lock().await;
+                    if let Some(engine) = guard.as_mut() { engine.embed_text(&qtext).ok() } else { None }
+                };
+                if let Some(embed_vec) = embed_opt {
+                    let k = batch * 2; // oversample
+                    if let Ok(hits) = crate::database::ClipEmbeddingRow::find_similar_by_embedding(&embed_vec, k, 256, start).await {
+                        let mut results: Vec<crate::ui::file_table::SimilarResult> = Vec::new();
+                        for hit in hits.into_iter() {
+                            if existing.contains(&hit.path) { continue; }
+                            let thumb = if let Some(t) = hit.thumb_ref { t } else { crate::Thumbnail::get_thumbnail_by_path(&hit.path).await.unwrap_or(None).unwrap_or_default() };
+                            let cosine_sim = 1.0 - hit.dist;
+                            let norm_sim = ((cosine_sim + 1.0) / 2.0).clamp(0.0, 1.0);
+                            results.push(crate::ui::file_table::SimilarResult { thumb: thumb.clone(), created: None, updated: None, similarity_score: Some(norm_sim), clip_similarity_score: Some(norm_sim) });
+                            if results.len() >= batch { break; }
+                        }
+                        if !results.is_empty() { let _ = tx_updates.try_send(crate::ui::file_table::AIUpdate::SimilarResults { origin_path: format!("query:{qtext}"), results }); }
+                    }
+                }
+            });
+            // Increment offset immediately for next batch
+            self.similarity_query_offset += batch;
+            return;
+        }
+        // Fallback: original behavior using origin path's embedding
         tokio::spawn(async move {
             if let Ok(Some(thumb)) = crate::Thumbnail::get_thumbnail_by_path(&origin).await {
                 let embed_vec = thumb.get_embedding().await.unwrap_or_default().embedding.clone();
                 if embed_vec.is_empty() { return; }
                 let k = existing.len() + batch * 4; // oversample to get enough new uniques
-                if let Ok(hits) = crate::database::ClipEmbeddingRow::find_similar_by_embedding(&embed_vec, k, 256).await {
+                if let Ok(hits) = crate::database::ClipEmbeddingRow::find_similar_by_embedding(&embed_vec, k, 256, 0).await {
                     let mut results: Vec<crate::ui::file_table::SimilarResult> = Vec::new();
                     for hit in hits.into_iter() {
                         if existing.contains(&hit.path) { continue; }

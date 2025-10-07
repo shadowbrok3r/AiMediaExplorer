@@ -450,7 +450,7 @@ impl super::FileExplorer {
                                         if let Some(q) = q_vec_opt {
                                             
                                             // Try DB-side KNN first
-                                            match crate::database::ClipEmbeddingRow::find_similar_by_embedding(&q, 24, 64).await {
+                                            match crate::database::ClipEmbeddingRow::find_similar_by_embedding(&q, 24, 64, 0).await {
                                                 Ok(hits) => {
                                                     for hit in hits.into_iter() {
                                                         // Get thumbnail record (prefer embedded thumb_ref)

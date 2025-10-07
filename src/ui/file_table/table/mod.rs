@@ -1088,7 +1088,7 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                             if let Ok(embed_row) = thumb.clone().get_embedding().await {
                                 let embed_vec = embed_row.embedding.clone();
                                 if embed_vec.is_empty() { return; }
-                                if let Ok(hits) = crate::database::ClipEmbeddingRow::find_similar_by_embedding(&embed_vec, 256, 256).await {
+                                if let Ok(hits) = crate::database::ClipEmbeddingRow::find_similar_by_embedding(&embed_vec, 256, 256, 0).await {
                                     let mut rows_out = Vec::new();
                                     let mut scores_out = std::collections::HashMap::new();
                                     for hit in hits.into_iter() {

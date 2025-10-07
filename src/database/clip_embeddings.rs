@@ -41,6 +41,7 @@ impl super::ClipEmbeddingRow {
         query_vec: &[f32],
         k: usize,
         ef: usize,
+        start: usize,
     ) -> anyhow::Result<Vec<SimilarHit>, anyhow::Error> {
         log::info!("find_similar_by_embedding");
         let _ga = db_activity("KNN clip_embeddings");
@@ -53,12 +54,13 @@ impl super::ClipEmbeddingRow {
                 FROM clip_embeddings
                 WHERE embedding <| 64, 64 |> $vec
                 ORDER BY dist
-                
+                LIMIT $limit START $start
                 FETCH thumb_ref
-                "#, // LIMIT $k
+                "#,
             )
             .bind(("vec", query_vec.to_vec()))
-            .bind(("k", k as i64))
+            .bind(("limit", k as i64))
+            .bind(("start", start as i64))
             .bind(("ef", ef as i64))
             .await?
             .take(0)?;

@@ -72,7 +72,7 @@ impl MCPServer {
         drop(guard);
 
         let ef = (top_k * 4).clamp(32, 256);
-        let hits = crate::database::ClipEmbeddingRow::find_similar_by_embedding(&q, top_k, ef)
+            let hits = crate::database::ClipEmbeddingRow::find_similar_by_embedding(&q, top_k, ef, 0)
             .await
             .map_err(|e| e.to_string())?;
         let results = hits

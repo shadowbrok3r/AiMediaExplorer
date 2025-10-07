@@ -44,13 +44,9 @@ impl super::FileExplorer {
                 }
                 ui.separator();
                 let path_edit = TextEdit::singleline(&mut self.current_path)
-                .hint_text(if self.viewer.mode == super::table::ExplorerMode::Database {
-                    if self.ai_search_enabled { "AI Search (text prompt)" } else { "Path Prefix Filter" }
-                } else {
-                    "Current Directory"
-                })
-                .desired_width(400.)
-                .ui(ui);
+                    .hint_text("Current Directory")
+                    .desired_width(400.)
+                    .ui(ui);
 
                 match self.viewer.mode {
                     super::table::ExplorerMode::FileSystem => {
@@ -66,14 +62,22 @@ impl super::FileExplorer {
                             || ui.button("Apply Filter").clicked()
                         {
                             if self.ai_search_enabled {
-                                // Run AI semantic search over the whole DB using text prompt in current_path
-                                let query = self.current_path.trim().to_string();
+                                // Run AI semantic search using the 'Search for files' field as the semantic prompt
+                                let query = self.viewer.filter.trim().to_string();
                                 if !query.is_empty() {
                                     let tx_updates = self.viewer.ai_update_tx.clone();
+                                    // Reset similarity state for new query
+                                    self.viewer.showing_similarity = true;
+                                    self.similarity_origin_path = Some(format!("query:{query}"));
+                                    self.table.clear();
+                                    self.table_index.clear();
                                     let types_show_images = self.viewer.types_show_images;
                                     let types_show_videos = self.viewer.types_show_videos;
                                     let minb = self.viewer.ui_settings.db_min_size_bytes;
                                     let maxb = self.viewer.ui_settings.db_max_size_bytes;
+                                    self.similarity_query_offset = 0;
+                                    let batch_size = self.similarity_batch_size;
+                                    let query_clone = query.clone();
                                     tokio::spawn(async move {
                                         // Ensure engine ready
                                         let _ = crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await;
@@ -86,7 +90,7 @@ impl super::FileExplorer {
                                         };
                                         if let Some(q) = q_vec_opt {
                                             let mut results: Vec<crate::ui::file_table::SimilarResult> = Vec::new();
-                                            match crate::database::ClipEmbeddingRow::find_similar_by_embedding(&q, 48, 96).await {
+                                            match crate::database::ClipEmbeddingRow::find_similar_by_embedding(&q, batch_size * 2, 256, self.similarity_query_offset).await {
                                                 Ok(hits) => {
                                                     for hit in hits.into_iter() {
                                                         // Get thumbnail record (prefer embedded thumb_ref on hit)
@@ -120,11 +124,12 @@ impl super::FileExplorer {
                                                         let norm_sim = ((cosine_sim + 1.0)/2.0).clamp(0.0, 1.0);
                                                         let final_sim = clip_sim.unwrap_or(norm_sim);
                                                         results.push(crate::ui::file_table::SimilarResult { thumb, created, updated, similarity_score: Some(final_sim), clip_similarity_score: Some(final_sim) });
+                                                        if results.len() >= batch_size { break; }
                                                     }
                                                 }
                                                 Err(e) => log::error!("[AI] text knn failed: {e:?}"),
                                             }
-                                            let _ = tx_updates.try_send(crate::ui::file_table::AIUpdate::SimilarResults { origin_path: format!("query:{query}"), results });
+                                            let _ = tx_updates.try_send(crate::ui::file_table::AIUpdate::SimilarResults { origin_path: format!("query:{query_clone}"), results });
                                         }
                                     });
                                 }

@@ -1502,7 +1502,7 @@ impl AssistantPanel {
                     };
                     if let Some(q) = q_vec_opt {
                         match crate::database::ClipEmbeddingRow::find_similar_by_embedding(
-                            &q, 64, 128,
+                            &q, 64, 128, 0,
                         )
                         .await
                         {

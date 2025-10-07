@@ -9,6 +9,10 @@ pub struct RefinementsPanel {
     pub reranker_choice: crate::ai::refine::RerankerType,
     pub updates_tx: Sender<Vec<RefinementProposal>>,
     pub toast_tx: Sender<(egui_toast::ToastKind, String)>,
+    // Cloud (OpenAI-compatible) refinement options
+    pub use_cloud_model: bool,
+    pub cloud_model_name: String,
+    pub cloud_provider: String,
     
 }
 
@@ -20,7 +24,10 @@ impl RefinementsPanel {
             filter_text: String::new(), 
             reranker_choice: Default::default(), 
             updates_tx, 
-            toast_tx
+            toast_tx,
+            use_cloud_model: false,
+            cloud_model_name: String::new(),
+            cloud_provider: "openrouter".into(),
         }
     }
 }
@@ -42,9 +49,29 @@ pub struct RefinementProposal {
 
 impl RefinementsPanel {
     pub fn ui(&mut self, ui: &mut Ui) {
-        ui.heading("AI Refinements (DB-only)");
-        ui.label("Generate proposed improvements for categories/tags/captions/descriptions from the database.");
+        ui.heading("AI Refinements");
+        ui.label("Generate proposed improvements for categories/tags/captions/descriptions from the database. Optionally use a cloud LLM.");
         ui.separator();
+        CollapsingHeader::new("Cloud Model Options").show(ui, |ui| {
+            ui.checkbox(&mut self.use_cloud_model, "Use cloud model (OpenAI-compatible)");
+            ui.horizontal(|ui| {
+                ui.label("Provider");
+                egui::ComboBox::new("cloud-refine-provider", "")
+                    .selected_text(&self.cloud_provider)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.cloud_provider, "openai".into(), "openai");
+                        ui.selectable_value(&mut self.cloud_provider, "openrouter".into(), "openrouter");
+                        ui.selectable_value(&mut self.cloud_provider, "groq".into(), "groq");
+                        ui.selectable_value(&mut self.cloud_provider, "gemini".into(), "gemini");
+                        ui.selectable_value(&mut self.cloud_provider, "custom".into(), "custom");
+                    });
+            });
+            ui.horizontal(|ui| {
+                ui.label("Model");
+                ui.text_edit_singleline(&mut self.cloud_model_name);
+            });
+            ui.label(RichText::new("Will fall back to app default model if blank").weak());
+        });
         ui.horizontal(|ui| {
             egui::ComboBox::new("reranker-choice", "Reranker")
             .selected_text(match self.reranker_choice { 
@@ -63,11 +90,80 @@ impl RefinementsPanel {
                 self.proposals.clear();
                 let sel = self.reranker_choice; // capture
                 let tx = self.updates_tx.clone();
+                let use_cloud = self.use_cloud_model;
+                let cloud_model = self.cloud_model_name.clone();
+                let provider = self.cloud_provider.clone();
                 crate::ui::status::RERANK_STATUS.set_state(crate::ui::status::StatusState::Running, "Generating proposals");
                 tokio::spawn(async move {
                     // Free memory from other heavy models to ensure reranker can load comfortably
                     crate::ai::unload_heavy_models_except("RERANK").await;
                     let generator = crate::ai::refine::ProposalGenerator::new(&crate::ai::GLOBAL_AI_ENGINE);
+                    if use_cloud {
+                        // Collect candidate rows (small cap)
+                        let mut batch: Vec<RefinementProposal> = Vec::new();
+                        // For simplicity reuse heuristic generation to gather raw data, then send each to cloud model for enhancement
+                        let mut rer = crate::ai::refine::HeuristicReranker;
+                        generator.stream_proposals(120, &mut rer, |p| {
+                            batch.push(RefinementProposal {
+                                path: p.path.clone(),
+                                current_category: p.current_category.clone(),
+                                current_tags: p.current_tags.clone(),
+                                current_caption: p.current_caption.clone(),
+                                current_description: p.current_description.clone(),
+                                new_category: None,
+                                new_tags: Vec::new(),
+                                new_caption: None,
+                                new_description: None,
+                                selected: true,
+                                generator: "cloud-seed".into(),
+                            });
+                        });
+                        // Prepare provider config (reuse assistant logic-lite)
+                        let settings = crate::database::settings::load_settings().unwrap_or_default();
+                        let model_to_use = if cloud_model.trim().is_empty() {
+                            settings.openai_default_model.clone().unwrap_or_else(|| "gpt-5-mini".into())
+                        } else { cloud_model.clone() };
+                        let env_or = |opt: &Option<String>, key: &str| opt.clone().or_else(|| std::env::var(key).ok());
+                        let (api_key, base_url, org) = match provider.as_str() {
+                            "openai" => (env_or(&settings.openai_api_key, "OPENAI_API_KEY"), settings.openai_base_url.clone(), settings.openai_organization.clone()),
+                            "openrouter" => (env_or(&settings.openrouter_api_key, "OPENROUTER_API_KEY"), Some("https://openrouter.ai/api/v1".into()), None),
+                            "groq" => (env_or(&settings.groq_api_key, "GROQ_API_KEY"), settings.openai_base_url.clone(), None),
+                            "gemini" => (env_or(&settings.gemini_api_key, "GEMINI_API_KEY"), settings.openai_base_url.clone(), None),
+                            _ => (env_or(&settings.openai_api_key, "OPENAI_API_KEY"), settings.openai_base_url.clone(), settings.openai_organization.clone()),
+                        };
+                        let cfg = crate::ai::openai_compat::ProviderConfig { provider: provider.clone(), api_key, base_url, model: model_to_use.clone(), organization: org, temperature: Some(0.2), zdr: true };
+                        // For each proposal seed, ask model for improvements (batch sequentially for now)
+                        let mut enriched: Vec<RefinementProposal> = Vec::new();
+                        for seed in batch.into_iter().take(64) { // cap to avoid huge cost
+                            let prompt = format!(
+                                "You are refining media metadata. Given existing data:\nPath: {path}\nCategory: {cat}\nTags: {tags}\nCaption: {cap}\nDescription: {desc}\nReturn JSON with keys new_category,new_tags,new_caption,new_description. Use arrays for tags.",
+                                path = seed.path,
+                                cat = seed.current_category.clone().unwrap_or_default(),
+                                tags = seed.current_tags.join(", "),
+                                cap = seed.current_caption.clone().unwrap_or_default(),
+                                desc = seed.current_description.clone().unwrap_or_default()
+                            );
+                            let reply_res = crate::ai::openai_compat::simple_text_completion(cfg.clone(), &prompt).await;
+                            match reply_res {
+                                Ok(text) => {
+                                    // naive JSON extraction
+                                    let mut rp = seed.clone();
+                                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                                        if let Some(s) = val.get("new_category").and_then(|v| v.as_str()) { rp.new_category = Some(s.to_string()); }
+                                        if let Some(arr) = val.get("new_tags").and_then(|v| v.as_array()) { rp.new_tags = arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect(); }
+                                        if let Some(s) = val.get("new_caption").and_then(|v| v.as_str()) { rp.new_caption = Some(s.to_string()); }
+                                        if let Some(s) = val.get("new_description").and_then(|v| v.as_str()) { rp.new_description = Some(s.to_string()); }
+                                        rp.generator = format!("cloud:{provider}");
+                                        enriched.push(rp);
+                                    }
+                                }
+                                Err(e) => log::warn!("[Refine/Cloud] completion failed: {e}"),
+                            }
+                        }
+                        if !enriched.is_empty() { let _ = tx.send(enriched); }
+                        crate::ui::status::RERANK_STATUS.set_state(crate::ui::status::StatusState::Idle, "Done");
+                        return;
+                    }
                     // Build reranker based on selection
                     // Choose reranker impl
                     enum Rk { Heu, Jina }

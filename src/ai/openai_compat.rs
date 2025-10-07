@@ -138,6 +138,13 @@ pub async fn stream_multimodal_reply(
     stream_openai_compatible(cfg, prompt, images, on_token).await
 }
 
+/// Simple non-streaming convenience wrapper around stream_multimodal_reply for text-only prompts.
+pub async fn simple_text_completion(cfg: ProviderConfig, prompt: &str) -> Result<String> {
+    let mut acc = String::new();
+    let _ = stream_multimodal_reply(cfg, prompt, &[], |tok| { acc.push_str(tok); });
+    Ok(acc)
+}
+
 async fn stream_openai_compatible(
     cfg: ProviderConfig,
     prompt: &str,
