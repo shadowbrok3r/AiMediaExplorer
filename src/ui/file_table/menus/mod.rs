@@ -78,6 +78,7 @@ impl super::FileExplorer {
                                     self.similarity_query_offset = 0;
                                     let batch_size = self.similarity_batch_size;
                                     let query_clone = query.clone();
+                                    let similarity_offset = self.similarity_query_offset;
                                     tokio::spawn(async move {
                                         // Ensure engine ready
                                         let _ = crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await;
@@ -90,7 +91,12 @@ impl super::FileExplorer {
                                         };
                                         if let Some(q) = q_vec_opt {
                                             let mut results: Vec<crate::ui::file_table::SimilarResult> = Vec::new();
-                                            match crate::database::ClipEmbeddingRow::find_similar_by_embedding(&q, batch_size * 2, 256, self.similarity_query_offset).await {
+                                            match crate::database::ClipEmbeddingRow::find_similar_by_embedding(
+                                                &q, 
+                                                batch_size * 2, 
+                                                256, 
+                                                similarity_offset
+                                            ).await {
                                                 Ok(hits) => {
                                                     for hit in hits.into_iter() {
                                                         // Get thumbnail record (prefer embedded thumb_ref on hit)

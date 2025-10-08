@@ -809,7 +809,7 @@ impl FileExplorer {
             let qtext = qtext.to_string();
             let start = self.similarity_query_offset;
             let batch = batch; // capture
-            let offset_tx = self.viewer.ai_update_tx.clone(); // reuse update channel to bump after UI merge if needed
+            let offset_tx = self.viewer.ai_update_tx.clone(); 
             tokio::spawn(async move {
                 // Ensure engine
                 let _ = crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await;
