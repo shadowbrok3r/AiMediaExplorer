@@ -131,8 +131,22 @@ impl RefinementsPanel {
                     crate::ai::unload_heavy_models_except("RERANK").await;
                     let generator = crate::ai::refine::ProposalGenerator::new(&crate::ai::GLOBAL_AI_ENGINE);
                     if use_cloud {
+                        log::info!("[Refine/Cloud] Enter cloud refinement path (provider={provider}, selection_scope={} items)", limit_paths.as_ref().map(|s| s.len()).unwrap_or(0));
                         // Collect candidate rows (small cap)
                         let mut batch: Vec<RefinementProposal> = Vec::new();
+                        // If we have a small explicit selection (<= 16), bypass heuristic streaming & embedding KNN to avoid log spam
+                        if let Some(sel) = limit_paths.as_ref() {
+                            if sel.len() > 0 && sel.len() <= 16 {
+                                log::info!("[Refine/Cloud] Small selection ({}); bypassing heuristic stream", sel.len());
+                                for path in sel.iter() {
+                                    if let Ok(opt_thumb) = crate::Thumbnail::get_thumbnail_by_path(path).await { if let Some(t) = opt_thumb {
+                                        if t.caption.is_none() && t.description.is_none() && t.category.is_none() && t.tags.is_empty() { continue; }
+                                        batch.push(RefinementProposal { path: t.path.clone(), current_category: t.category.clone(), current_tags: t.tags.clone(), current_caption: t.caption.clone(), current_description: t.description.clone(), new_category: None, new_tags: Vec::new(), new_caption: None, new_description: None, selected: true, generator: "cloud-direct".into() });
+                                    }}
+                                }
+                            }
+                        }
+                        if batch.is_empty() {
                         // For simplicity reuse heuristic generation to gather raw data, then send each to cloud model for enhancement
                         let mut rer = crate::ai::refine::HeuristicReranker;
                         generator.stream_proposals(120, &mut rer, |p| {
@@ -150,7 +164,51 @@ impl RefinementsPanel {
                                 selected: true,
                                 generator: "cloud-seed".into(),
                             });
-                        }).await;
+                        }).await; }
+                        // Fallback: if heuristic stream produced no seeds (e.g. no local changes), still seed using raw selected rows
+                        if batch.is_empty() {
+                            log::info!("[Refine/Cloud] No heuristic seeds; falling back to direct row enumeration");
+                            if let Some(limit) = limit_paths.as_ref() {
+                                // Enumerate each selected path; load thumbnail metadata
+                                for path in limit.iter().take(240) { // hard cap safety
+                                    if let Ok(opt_thumb) = crate::Thumbnail::get_thumbnail_by_path(path).await { if let Some(t) = opt_thumb {
+                                        // Require at least one piece of base metadata so prompt has context
+                                        if t.caption.is_some() || t.description.is_some() || t.category.is_some() || !t.tags.is_empty() {
+                                            batch.push(RefinementProposal {
+                                                path: t.path.clone(),
+                                                current_category: t.category.clone(),
+                                                current_tags: t.tags.clone(),
+                                                current_caption: t.caption.clone(),
+                                                current_description: t.description.clone(),
+                                                new_category: None,
+                                                new_tags: Vec::new(),
+                                                new_caption: None,
+                                                new_description: None,
+                                                selected: true,
+                                                generator: "cloud-seed-fallback".into(),
+                                            });
+                                        }
+                                    }}
+                                }
+                            } else {
+                                // No explicit selection; enumerate rich rows directly (already filtered by DB query)
+                                let rows = generator.engine.list_rich_thumbnail_rows(120).await;
+                                for r in rows.into_iter() { batch.push(RefinementProposal {
+                                    path: r.path.clone(),
+                                    current_category: r.category.clone(),
+                                    current_tags: r.tags.clone(),
+                                    current_caption: r.caption.clone(),
+                                    current_description: r.description.clone(),
+                                    new_category: None,
+                                    new_tags: Vec::new(),
+                                    new_caption: None,
+                                    new_description: None,
+                                    selected: true,
+                                    generator: "cloud-seed-fallback".into(),
+                                }); }
+                            }
+                            log::info!("[Refine/Cloud] Fallback produced {} seed rows", batch.len());
+                        }
                         // Prepare provider config (reuse assistant logic-lite)
                         let settings = crate::database::settings::load_settings().unwrap_or_default();
                         let model_to_use = if cloud_model.trim().is_empty() {
@@ -165,11 +223,13 @@ impl RefinementsPanel {
                             _ => (env_or(&settings.openai_api_key, "OPENAI_API_KEY"), settings.openai_base_url.clone(), settings.openai_organization.clone()),
                         };
                         let cfg = crate::ai::openai_compat::ProviderConfig { provider: provider.clone(), api_key, base_url, model: model_to_use.clone(), organization: org, temperature: Some(0.2), zdr: true };
+                        crate::ui::status::RERANK_STATUS.set_model(&format!("{}:{}", provider, model_to_use));
+                        log::info!("[Refine/Cloud] Enriching {} seed rows with {}:{}", batch.len(), provider, model_to_use);
                         // For each proposal seed, ask model for improvements (batch sequentially for now)
                         let mut enriched: Vec<RefinementProposal> = Vec::new();
                         for seed in batch.into_iter().take(64) { // cap to avoid huge cost
                             let prompt = format!(
-                                "You are refining media metadata. Given existing data:\nPath: {path}\nCategory: {cat}\nTags: {tags}\nCaption: {cap}\nDescription: {desc}\nReturn JSON with keys new_category,new_tags,new_caption,new_description. Use arrays for tags.",
+                                "You are an assistant that refines existing media metadata.\nReturn ONLY a compact JSON object with exactly these keys: new_category (string or null), new_tags (array of strings), new_caption (string or null), new_description (string or null).\nIf you cannot confidently improve a field, set it to null (or empty array for tags). Do not include explanatory text.\nCurrent data:\nPath: {path}\nCategory: {cat}\nTags: {tags}\nCaption: {cap}\nDescription: {desc}\nJSON:",
                                 path = seed.path,
                                 cat = seed.current_category.clone().unwrap_or_default(),
                                 tags = seed.current_tags.join(", "),
@@ -179,6 +239,7 @@ impl RefinementsPanel {
                             let reply_res = crate::ai::openai_compat::simple_text_completion(cfg.clone(), &prompt).await;
                             match reply_res {
                                 Ok(text) => {
+                                    log::debug!("[Refine/Cloud] Raw model reply for {}: {}", seed.path, text);
                                     // naive JSON extraction
                                     let mut rp = seed.clone();
                                     if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
@@ -194,6 +255,7 @@ impl RefinementsPanel {
                             }
                         }
                         if !enriched.is_empty() { let _ = tx.send(enriched); }
+                        else { log::info!("[Refine/Cloud] No enriched proposals produced"); }
                         crate::ui::status::RERANK_STATUS.set_state(crate::ui::status::StatusState::Idle, "Done");
                         return;
                     }
