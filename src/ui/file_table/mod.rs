@@ -1,23 +1,23 @@
-use std::{borrow::Cow, collections::HashMap, sync::Arc};
-use crossbeam::channel::{Receiver, Sender};
 use crate::{ScanEnvelope, Thumbnail};
-use std::sync::{Mutex, OnceLock};
+use crossbeam::channel::{Receiver, Sender};
+use eframe::egui::*;
 use egui::style::StyleModifier;
 use egui_data_table::Renderer;
-use table::FileTableViewer;
 use humansize::DECIMAL;
 use serde::Serialize;
-use eframe::egui::*;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc as StdArc;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Mutex, OnceLock};
+use std::{borrow::Cow, collections::HashMap, sync::Arc};
+use table::FileTableViewer;
 
-pub mod quick_access_pane;
-pub mod preview_pane;
 pub mod explorer;
+pub mod load;
+pub mod menus;
+pub mod preview_pane;
+pub mod quick_access_pane;
 pub mod receive;
 pub mod table;
-pub mod menus;
-pub mod load;
 
 // Global accessor for the current active logical group name to be used by viewer context menu actions.
 static ACTIVE_GROUP_NAME: OnceLock<Mutex<Option<String>>> = OnceLock::new();
@@ -32,16 +32,16 @@ pub fn active_group_name() -> Option<String> {
 // Request to open a new filtered tab in the dock
 #[derive(Clone, Debug)]
 pub enum FilterRequest {
-    NewTab { 
-        title: String, 
+    NewTab {
+        title: String,
         rows: Vec<crate::database::Thumbnail>,
         // Optional: mark this tab as a similarity-results view and attach scores
         showing_similarity: bool,
         similar_scores: Option<std::collections::HashMap<String, f32>>,
         // For similarity tabs, the origin that generated results (e.g., image path or "query:<text>")
         origin_path: Option<String>,
-    // Open without focusing the new tab
-    background: bool,
+        // Open without focusing the new tab
+        background: bool,
     },
     // Open a new tab that loads the entire database (DB mode, not filtered by current_path)
     OpenDatabaseAll {
@@ -53,8 +53,8 @@ pub enum FilterRequest {
         title: String,
         path: String,
         recursive: bool,
-    // Open without focusing the new tab
-    background: bool,
+        // Open without focusing the new tab
+        background: bool,
     },
 }
 
@@ -248,12 +248,12 @@ pub struct FileExplorer {
     perf_scan_started: Option<std::time::Instant>,
     #[serde(skip)]
     perf_last_batch_at: Option<std::time::Instant>,
-        #[serde(skip)]
-        perf_batches: Vec<(usize, std::time::Duration, std::time::Duration)>, // (batch_len, recv_gap, ui_processing)
+    #[serde(skip)]
+    perf_batches: Vec<(usize, std::time::Duration, std::time::Duration)>, // (batch_len, recv_gap, ui_processing)
     #[serde(skip)]
     perf_last_total: Option<std::time::Duration>,
-        #[serde(skip)]
-        perf_show_per_1k: bool,
+    #[serde(skip)]
+    perf_show_per_1k: bool,
     // Similarity incremental append state
     #[serde(skip)]
     similarity_origin_path: Option<String>,
@@ -312,7 +312,9 @@ pub struct FileExplorer {
 }
 
 impl FileExplorer {
-    pub fn is_recursive_scan(&self) -> bool { self.recursive_scan }
+    pub fn is_recursive_scan(&self) -> bool {
+        self.recursive_scan
+    }
     // New constructor that optionally skips initial directory scan/population
     pub fn new(skip_initial_scan: bool) -> Self {
         let (thumbnail_tx, thumbnail_rx) = crossbeam::channel::unbounded();
@@ -329,11 +331,15 @@ impl FileExplorer {
             .unwrap()
             .to_string_lossy()
             .to_string();
-        
+
         let mut this = Self {
             table: Default::default(),
             table_index: std::collections::HashMap::new(),
-            viewer: FileTableViewer::new(thumbnail_tx.clone(), ai_update_tx, clip_embedding_tx.clone()),
+            viewer: FileTableViewer::new(
+                thumbnail_tx.clone(),
+                ai_update_tx,
+                clip_embedding_tx.clone(),
+            ),
             files: Default::default(),
             open_preview_pane: false,
             open_quick_access: false,
@@ -343,7 +349,7 @@ impl FileExplorer {
             scan_done: false,
             excluded_term_input: String::new(),
             excluded_terms: Vec::new(),
-            current_thumb: Thumbnail::new("") ,
+            current_thumb: Thumbnail::new(""),
             thumbnail_tx,
             thumbnail_rx,
             scan_tx,
@@ -439,7 +445,9 @@ impl FileExplorer {
             let tx = this.filter_groups_tx.clone();
             tokio::spawn(async move {
                 match crate::database::list_filter_groups().await {
-                    Ok(groups) => { let _ = tx.try_send(groups); },
+                    Ok(groups) => {
+                        let _ = tx.try_send(groups);
+                    }
                     Err(e) => log::warn!("No filter groups yet or failed to load: {e:?}"),
                 }
             });
@@ -449,7 +457,9 @@ impl FileExplorer {
             let tx = this.logical_groups_tx.clone();
             tokio::spawn(async move {
                 match crate::database::LogicalGroup::list_all().await {
-                    Ok(groups) => { let _ = tx.try_send(groups); },
+                    Ok(groups) => {
+                        let _ = tx.try_send(groups);
+                    }
                     Err(e) => log::warn!("No logical groups yet or failed to load: {e:?}"),
                 }
             });
@@ -462,7 +472,10 @@ impl FileExplorer {
 
     pub fn ui(&mut self, ui: &mut Ui) {
         self.receive(ui.ctx());
-        if self.repaint_next { ui.ctx().request_repaint(); self.repaint_next = false; }
+        if self.repaint_next {
+            ui.ctx().request_repaint();
+            self.repaint_next = false;
+        }
         self.preview_pane(ui);
         self.quick_access_pane(ui);
         self.navbar(ui);
@@ -483,32 +496,70 @@ impl FileExplorer {
                 ui.horizontal(|ui| {
                     let total = self.recursive_total_pages.max(1);
                     let first_enabled = self.recursive_current_page > 0;
-                    if ui.add_enabled(first_enabled, egui::Button::new("First")).clicked() {
+                    if ui
+                        .add_enabled(first_enabled, egui::Button::new("First"))
+                        .clicked()
+                    {
                         log::info!("Pagination: First clicked");
-                        self.recursive_current_page = 0; self.rebuild_recursive_page();
+                        self.recursive_current_page = 0;
+                        self.rebuild_recursive_page();
                     }
                     let prev_enabled = self.recursive_current_page > 0;
-                    if ui.add_enabled(prev_enabled, egui::Button::new("Prev")).clicked() {
-                        log::info!("Pagination: Prev clicked (from {})", self.recursive_current_page);
-                        if self.recursive_current_page > 0 { self.recursive_current_page -= 1; self.rebuild_recursive_page(); }
+                    if ui
+                        .add_enabled(prev_enabled, egui::Button::new("Prev"))
+                        .clicked()
+                    {
+                        log::info!(
+                            "Pagination: Prev clicked (from {})",
+                            self.recursive_current_page
+                        );
+                        if self.recursive_current_page > 0 {
+                            self.recursive_current_page -= 1;
+                            self.rebuild_recursive_page();
+                        }
                     }
-                    ui.label(format!("Page {} / {}", self.recursive_current_page + 1, total));
+                    ui.label(format!(
+                        "Page {} / {}",
+                        self.recursive_current_page + 1,
+                        total
+                    ));
                     let next_enabled = self.recursive_current_page + 1 < total;
-                    if ui.add_enabled(next_enabled, egui::Button::new("Next")).clicked() {
-                        log::info!("Pagination: Next clicked (from {})", self.recursive_current_page);
-                        if self.recursive_current_page + 1 < total { self.recursive_current_page += 1; self.rebuild_recursive_page(); }
+                    if ui
+                        .add_enabled(next_enabled, egui::Button::new("Next"))
+                        .clicked()
+                    {
+                        log::info!(
+                            "Pagination: Next clicked (from {})",
+                            self.recursive_current_page
+                        );
+                        if self.recursive_current_page + 1 < total {
+                            self.recursive_current_page += 1;
+                            self.rebuild_recursive_page();
+                        }
                     }
                     let last_enabled = self.recursive_current_page + 1 < total;
-                    if ui.add_enabled(last_enabled, egui::Button::new("Last")).clicked() {
+                    if ui
+                        .add_enabled(last_enabled, egui::Button::new("Last"))
+                        .clicked()
+                    {
                         log::info!("Pagination: Last clicked (target {}-1)", total);
-                        if total > 0 { self.recursive_current_page = total - 1; self.rebuild_recursive_page(); }
+                        if total > 0 {
+                            self.recursive_current_page = total - 1;
+                            self.rebuild_recursive_page();
+                        }
                     }
                     ui.separator();
-                    ui.label(format!("Showing {} of {} (page size {})", self.table.len(), self.last_scan_rows.len(), self.recursive_page_size));
+                    ui.label(format!(
+                        "Showing {} of {} (page size {})",
+                        self.table.len(),
+                        self.last_scan_rows.len(),
+                        self.recursive_page_size
+                    ));
                     // Display the current row range (1-based) for clarity
                     if self.recursive_page_size > 0 && !self.recursive_filtered_rows.is_empty() {
                         let start_idx = self.recursive_current_page * self.recursive_page_size;
-                        let end_idx = (start_idx + self.recursive_page_size).min(self.recursive_filtered_rows.len());
+                        let end_idx = (start_idx + self.recursive_page_size)
+                            .min(self.recursive_filtered_rows.len());
                         ui.separator();
                         ui.label(format!("Rows {}-{}", start_idx + 1, end_idx));
                     }
@@ -516,16 +567,25 @@ impl FileExplorer {
                 ui.separator();
             }
             // Database mode pagination (directory and All DB views)
-            if self.viewer.mode == table::ExplorerMode::Database && !self.viewer.showing_similarity {
+            if self.viewer.mode == table::ExplorerMode::Database && !self.viewer.showing_similarity
+            {
                 ui.horizontal(|ui| {
                     let current_page = self.db_current_page;
                     let next_page = current_page + 1;
                     let can_prev = current_page > 0 && !self.db_loading;
-                    let can_next = if self.db_loading { false } else {
-                        if self.db_reached_end && next_page > self.db_max_loaded_page { false }
-                        else { true }
+                    let can_next = if self.db_loading {
+                        false
+                    } else {
+                        if self.db_reached_end && next_page > self.db_max_loaded_page {
+                            false
+                        } else {
+                            true
+                        }
                     };
-                    if ui.add_enabled(can_prev, egui::Button::new("Prev Page")).clicked() {
+                    if ui
+                        .add_enabled(can_prev, egui::Button::new("Prev Page"))
+                        .clicked()
+                    {
                         // Target previous page index and offset
                         let target_page = current_page.saturating_sub(1);
                         let new_off = target_page * self.db_limit;
@@ -547,10 +607,17 @@ impl FileExplorer {
                             self.table.clear();
                             self.table_index.clear();
                             self.db_loading_page = Some(target_page);
-                            if self.db_all_view { self.load_all_database_rows(); } else { self.load_database_rows(); }
+                            if self.db_all_view {
+                                self.load_all_database_rows();
+                            } else {
+                                self.load_database_rows();
+                            }
                         }
                     }
-                    if ui.add_enabled(can_next, egui::Button::new("Next Page")).clicked() {
+                    if ui
+                        .add_enabled(can_next, egui::Button::new("Next Page"))
+                        .clicked()
+                    {
                         self.db_last_batch_len = 0;
                         let target_page = current_page + 1;
                         self.db_offset = target_page * self.db_limit;
@@ -569,11 +636,16 @@ impl FileExplorer {
                             self.table.clear();
                             self.table_index.clear();
                             self.db_loading_page = Some(target_page);
-                            if self.db_all_view { self.load_all_database_rows(); } else { self.load_database_rows(); }
+                            if self.db_all_view {
+                                self.load_all_database_rows();
+                            } else {
+                                self.load_database_rows();
+                            }
                         }
                     }
                     ui.separator();
-                    ui.label(format!("Page {} · Offset {} · Page size {}{}",
+                    ui.label(format!(
+                        "Page {} · Offset {} · Page size {}{}",
                         current_page + 1,
                         self.db_offset,
                         self.db_limit,
@@ -588,8 +660,16 @@ impl FileExplorer {
                     ui.label(RichText::new(format!("Preset: {}", name)).strong());
                     let types = format!(
                         "Types: {}{}{}",
-                        if self.viewer.types_show_images { "I" } else { "" },
-                        if self.viewer.types_show_videos { "V" } else { "" },
+                        if self.viewer.types_show_images {
+                            "I"
+                        } else {
+                            ""
+                        },
+                        if self.viewer.types_show_videos {
+                            "V"
+                        } else {
+                            ""
+                        },
                         if self.viewer.types_show_dirs { "D" } else { "" }
                     );
                     ui.separator();
@@ -599,13 +679,28 @@ impl FileExplorer {
                     let maxb = self.viewer.ui_settings.db_max_size_bytes;
                     let size_str = match (minb, maxb) {
                         (None, None) => "Size: any".to_string(),
-                        (Some(mn), None) => format!("Size: ≥{}", humansize::format_size(mn, DECIMAL)),
-                        (None, Some(mx)) => format!("Size: ≤{}", humansize::format_size(mx, DECIMAL)),
-                        (Some(mn), Some(mx)) => format!("Size: {}..{}", humansize::format_size(mn, DECIMAL), humansize::format_size(mx, DECIMAL)),
+                        (Some(mn), None) => {
+                            format!("Size: ≥{}", humansize::format_size(mn, DECIMAL))
+                        }
+                        (None, Some(mx)) => {
+                            format!("Size: ≤{}", humansize::format_size(mx, DECIMAL))
+                        }
+                        (Some(mn), Some(mx)) => format!(
+                            "Size: {}..{}",
+                            humansize::format_size(mn, DECIMAL),
+                            humansize::format_size(mx, DECIMAL)
+                        ),
                     };
                     ui.label(size_str);
                     ui.separator();
-                    ui.label(format!("Skip icons: {}", if self.viewer.ui_settings.filter_skip_icons { "on" } else { "off" }));
+                    ui.label(format!(
+                        "Skip icons: {}",
+                        if self.viewer.ui_settings.filter_skip_icons {
+                            "on"
+                        } else {
+                            "off"
+                        }
+                    ));
                     if !self.excluded_terms.is_empty() {
                         ui.separator();
                         ui.label(format!("Excluded: {}", self.excluded_terms.len()));
@@ -615,25 +710,33 @@ impl FileExplorer {
             }
             // Check if we have a single empty default row and remove it
             if self.table.len() == 1 {
-                let should_remove_empty = self.table.iter().next().map(|row| {
-                    row.filename.is_empty() && row.path.is_empty() && row.size == 0 && 
-                    row.file_type.is_empty() && row.thumbnail_b64.is_none()
-                }).unwrap_or(false);
-                
+                let should_remove_empty = self
+                    .table
+                    .iter()
+                    .next()
+                    .map(|row| {
+                        row.filename.is_empty()
+                            && row.path.is_empty()
+                            && row.size == 0
+                            && row.file_type.is_empty()
+                            && row.thumbnail_b64.is_none()
+                    })
+                    .unwrap_or(false);
+
                 if should_remove_empty {
                     self.table.clear();
                     self.table_index.clear();
                 }
             }
-            
+
             Renderer::new(&mut self.table, &mut self.viewer)
-            .with_style_modify(|s| {
-                s.scroll_bar_visibility = scroll_area::ScrollBarVisibility::AlwaysVisible;
-                s.single_click_edit_mode = true;
-                s.table_row_height = Some(75.0);
-                s.auto_shrink = [false, false].into();
-            })
-            .ui(ui);
+                .with_style_modify(|s| {
+                    s.scroll_bar_visibility = scroll_area::ScrollBarVisibility::AlwaysVisible;
+                    s.single_click_edit_mode = true;
+                    s.table_row_height = Some(75.0);
+                    s.auto_shrink = [false, false].into();
+                })
+                .ui(ui);
 
             // Modal password prompt (appears at end of scans or when browsing encrypted archives)
             if self.show_zip_modal {
@@ -643,7 +746,9 @@ impl FileExplorer {
                     .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
                     .show(ui.ctx(), |ui| {
                         let current = self.active_zip_prompt.clone().unwrap_or_default();
-                        ui.label("One or more encrypted archives were found. Please enter the password.");
+                        ui.label(
+                            "One or more encrypted archives were found. Please enter the password.",
+                        );
                         ui.separator();
                         ui.label(format!("Archive: {}", current));
                         let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -653,7 +758,8 @@ impl FileExplorer {
                             .desired_width(240.)
                             .ui(ui);
                         ui.horizontal(|ui| {
-                            if (resp.lost_focus() && enter_pressed) || ui.button("Submit").clicked() {
+                            if (resp.lost_focus() && enter_pressed) || ui.button("Submit").clicked()
+                            {
                                 // Store in-memory for this session and refresh any open view for that archive
                                 let pw = std::mem::take(&mut self.zip_password_input);
                                 if !current.is_empty() {
@@ -663,14 +769,24 @@ impl FileExplorer {
                                 self.populate_current_directory();
                                 // Advance the queue
                                 if let Some(_) = self.pending_zip_passwords.pop_front() {}
-                                self.active_zip_prompt = self.pending_zip_passwords.front().cloned();
-                                if self.active_zip_prompt.is_none() { self.show_zip_modal = false; }
+                                self.active_zip_prompt =
+                                    self.pending_zip_passwords.front().cloned();
+                                if self.active_zip_prompt.is_none() {
+                                    self.show_zip_modal = false;
+                                }
                             }
-                            if ui.button("Skip").on_hover_text("Skip this archive").clicked() {
+                            if ui
+                                .button("Skip")
+                                .on_hover_text("Skip this archive")
+                                .clicked()
+                            {
                                 self.zip_password_input.clear();
                                 if let Some(_) = self.pending_zip_passwords.pop_front() {}
-                                self.active_zip_prompt = self.pending_zip_passwords.front().cloned();
-                                if self.active_zip_prompt.is_none() { self.show_zip_modal = false; }
+                                self.active_zip_prompt =
+                                    self.pending_zip_passwords.front().cloned();
+                                if self.active_zip_prompt.is_none() {
+                                    self.show_zip_modal = false;
+                                }
                             }
                             if ui.button("Cancel All").clicked() {
                                 self.pending_zip_passwords.clear();
@@ -681,7 +797,7 @@ impl FileExplorer {
                         });
                     });
             }
-            
+
             // Check for tag/category open-tab actions requested by the viewer
             if !self.viewer.requested_tabs.is_empty() {
                 let actions = std::mem::take(&mut self.viewer.requested_tabs);
@@ -696,19 +812,35 @@ impl FileExplorer {
                                 .filter(|r| r.category.as_deref() == Some(cat.as_str()))
                                 .cloned()
                                 .collect();
-                            if rows_in_view.is_empty() || matches!(self.viewer.mode, table::ExplorerMode::Database) {
+                            if rows_in_view.is_empty()
+                                || matches!(self.viewer.mode, table::ExplorerMode::Database)
+                            {
                                 tokio::spawn(async move {
-                                    let fetched = crate::Thumbnail::fetch_by_category(&cat).await.unwrap_or_default();
-                                    crate::app::OPEN_TAB_REQUESTS
-                                        .lock()
-                                        .unwrap()
-                                        .push(crate::ui::file_table::FilterRequest::NewTab { title, rows: fetched, showing_similarity: false, similar_scores: None, origin_path: None, background: false });
+                                    let fetched = crate::Thumbnail::fetch_by_category(&cat)
+                                        .await
+                                        .unwrap_or_default();
+                                    crate::app::OPEN_TAB_REQUESTS.lock().unwrap().push(
+                                        crate::ui::file_table::FilterRequest::NewTab {
+                                            title,
+                                            rows: fetched,
+                                            showing_similarity: false,
+                                            similar_scores: None,
+                                            origin_path: None,
+                                            background: false,
+                                        },
+                                    );
                                 });
                             } else {
-                                crate::app::OPEN_TAB_REQUESTS
-                                    .lock()
-                                    .unwrap()
-                                    .push(crate::ui::file_table::FilterRequest::NewTab { title, rows: rows_in_view, showing_similarity: false, similar_scores: None, origin_path: None, background: false });
+                                crate::app::OPEN_TAB_REQUESTS.lock().unwrap().push(
+                                    crate::ui::file_table::FilterRequest::NewTab {
+                                        title,
+                                        rows: rows_in_view,
+                                        showing_similarity: false,
+                                        similar_scores: None,
+                                        origin_path: None,
+                                        background: false,
+                                    },
+                                );
                             }
                         }
                         crate::ui::file_table::table::TabAction::OpenTag(tag) => {
@@ -719,39 +851,69 @@ impl FileExplorer {
                                 .filter(|r| r.tags.iter().any(|t| t.eq_ignore_ascii_case(&tag)))
                                 .cloned()
                                 .collect();
-                            if rows_in_view.is_empty() || matches!(self.viewer.mode, table::ExplorerMode::Database) {
+                            if rows_in_view.is_empty()
+                                || matches!(self.viewer.mode, table::ExplorerMode::Database)
+                            {
                                 tokio::spawn(async move {
-                                    let fetched = crate::Thumbnail::fetch_by_tag(&tag).await.unwrap_or_default();
-                                    crate::app::OPEN_TAB_REQUESTS
-                                        .lock()
-                                        .unwrap()
-                                        .push(crate::ui::file_table::FilterRequest::NewTab { title, rows: fetched, showing_similarity: false, similar_scores: None, origin_path: None, background: false });
+                                    let fetched = crate::Thumbnail::fetch_by_tag(&tag)
+                                        .await
+                                        .unwrap_or_default();
+                                    crate::app::OPEN_TAB_REQUESTS.lock().unwrap().push(
+                                        crate::ui::file_table::FilterRequest::NewTab {
+                                            title,
+                                            rows: fetched,
+                                            showing_similarity: false,
+                                            similar_scores: None,
+                                            origin_path: None,
+                                            background: false,
+                                        },
+                                    );
                                 });
                             } else {
-                                crate::app::OPEN_TAB_REQUESTS
-                                    .lock()
-                                    .unwrap()
-                                    .push(crate::ui::file_table::FilterRequest::NewTab { title, rows: rows_in_view, showing_similarity: false, similar_scores: None, origin_path: None, background: false });
+                                crate::app::OPEN_TAB_REQUESTS.lock().unwrap().push(
+                                    crate::ui::file_table::FilterRequest::NewTab {
+                                        title,
+                                        rows: rows_in_view,
+                                        showing_similarity: false,
+                                        similar_scores: None,
+                                        origin_path: None,
+                                        background: false,
+                                    },
+                                );
                             }
                         }
                         crate::ui::file_table::table::TabAction::OpenArchive(path_clicked) => {
                             // Choose scheme based on extension (zip or tar family)
-                            let is_virtual = path_clicked.starts_with("zip://") || path_clicked.starts_with("tar://") || path_clicked.starts_with("7z://");
+                            let is_virtual = path_clicked.starts_with("zip://")
+                                || path_clicked.starts_with("tar://")
+                                || path_clicked.starts_with("7z://");
                             let vpath = if is_virtual {
                                 path_clicked
                             } else {
                                 let ext = std::path::Path::new(&path_clicked)
-                                    .extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()).unwrap_or_default();
+                                    .extension()
+                                    .and_then(|e| e.to_str())
+                                    .map(|s| s.to_ascii_lowercase())
+                                    .unwrap_or_default();
                                 let name = path_clicked.to_ascii_lowercase();
-                                let is_tar_family = ext == "tar" || ext == "gz" || ext == "bz" || ext == "bz2" || ext == "xz"
-                                    || name.ends_with(".tgz") || name.ends_with(".tbz") || name.ends_with(".tbz2") || name.ends_with(".txz")
-                                    || name.ends_with(".tar.gz") || name.ends_with(".tar.bz2") || name.ends_with(".tar.xz");
-                                if is_tar_family { 
-                                    format!("tar://{}!/", path_clicked) 
-                                } else if ext == "7z" { 
-                                    format!("7z://{}!/", path_clicked) 
-                                } else { 
-                                    format!("zip://{}!/", path_clicked) 
+                                let is_tar_family = ext == "tar"
+                                    || ext == "gz"
+                                    || ext == "bz"
+                                    || ext == "bz2"
+                                    || ext == "xz"
+                                    || name.ends_with(".tgz")
+                                    || name.ends_with(".tbz")
+                                    || name.ends_with(".tbz2")
+                                    || name.ends_with(".txz")
+                                    || name.ends_with(".tar.gz")
+                                    || name.ends_with(".tar.bz2")
+                                    || name.ends_with(".tar.xz");
+                                if is_tar_family {
+                                    format!("tar://{}!/", path_clicked)
+                                } else if ext == "7z" {
+                                    format!("7z://{}!/", path_clicked)
+                                } else {
+                                    format!("zip://{}!/", path_clicked)
                                 }
                             };
                             self.current_path = vpath;
@@ -760,31 +922,46 @@ impl FileExplorer {
                         crate::ui::file_table::table::TabAction::OpenSimilar(filename) => {
                             let title = format!("Similar to {filename}");
                             // If similar results are present, use them; else fallback to current table (no filtering)
-                            let rows: Vec<crate::database::Thumbnail> = if self.viewer.showing_similarity && !self.viewer.similar_scores.is_empty() {
-                                self.table.iter().cloned().collect()
-                            } else {
-                                Vec::new()
-                            };
-                            crate::app::OPEN_TAB_REQUESTS
-                                .lock()
-                                .unwrap()
-                                .push(crate::ui::file_table::FilterRequest::NewTab { title, rows, showing_similarity: true, similar_scores: Some(self.viewer.similar_scores.clone()), origin_path: Some(filename), background: false });
+                            let rows: Vec<crate::database::Thumbnail> =
+                                if self.viewer.showing_similarity
+                                    && !self.viewer.similar_scores.is_empty()
+                                {
+                                    self.table.iter().cloned().collect()
+                                } else {
+                                    Vec::new()
+                                };
+                            crate::app::OPEN_TAB_REQUESTS.lock().unwrap().push(
+                                crate::ui::file_table::FilterRequest::NewTab {
+                                    title,
+                                    rows,
+                                    showing_similarity: true,
+                                    similar_scores: Some(self.viewer.similar_scores.clone()),
+                                    origin_path: Some(filename),
+                                    background: false,
+                                },
+                            );
                         }
                     }
                 }
             }
-            
+
             // Summary inline (counts) if selection active
             if !self.viewer.selected.is_empty() {
                 ui.separator();
                 ui.label(format!("Selected: {}", self.viewer.selected.len()));
             }
-            
-            if self.viewer.mode == table::ExplorerMode::Database && !self.viewer.showing_similarity {
+
+            if self.viewer.mode == table::ExplorerMode::Database && !self.viewer.showing_similarity
+            {
                 ui.separator();
                 ui.horizontal(|ui| {
-                    if self.db_all_view { ui.colored_label(Color32::LIGHT_BLUE, "All DB"); ui.separator(); }
-                    if self.db_loading { ui.label(RichText::new("Loading page ...").italics()); }
+                    if self.db_all_view {
+                        ui.colored_label(Color32::LIGHT_BLUE, "All DB");
+                        ui.separator();
+                    }
+                    if self.db_loading {
+                        ui.label(RichText::new("Loading page ...").italics());
+                    }
                     ui.label(format!("Loaded: {} rows", self.table.len()));
                 });
             }
@@ -799,37 +976,76 @@ impl FileExplorer {
     }
 
     pub fn append_more_similar(&mut self) {
-        if !self.viewer.showing_similarity { return; }
-        let origin = if let Some(o) = self.similarity_origin_path.clone() { o } else { return; };
+        if !self.viewer.showing_similarity {
+            return;
+        }
+        let origin = if let Some(o) = self.similarity_origin_path.clone() {
+            o
+        } else {
+            return;
+        };
         let batch = self.similarity_batch_size;
         let tx_updates = self.viewer.ai_update_tx.clone();
-        let existing: std::collections::HashSet<String> = self.table.iter().map(|r| r.path.clone()).collect();
+        let existing: std::collections::HashSet<String> =
+            self.table.iter().map(|r| r.path.clone()).collect();
         // If this is a text query (origin starts with query:) embed that text; otherwise treat origin as a path to embed its image
         if let Some(qtext) = origin.strip_prefix("query:") {
             let qtext = qtext.to_string();
             let start = self.similarity_query_offset;
             let batch = batch; // capture
-            let offset_tx = self.viewer.ai_update_tx.clone(); 
+            let offset_tx = self.viewer.ai_update_tx.clone();
             tokio::spawn(async move {
                 // Ensure engine
                 let _ = crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await;
                 let embed_opt = {
                     let mut guard = crate::ai::GLOBAL_AI_ENGINE.clip_engine.lock().await;
-                    if let Some(engine) = guard.as_mut() { engine.embed_text(&qtext).ok() } else { None }
+                    if let Some(engine) = guard.as_mut() {
+                        engine.embed_text(&qtext).ok()
+                    } else {
+                        None
+                    }
                 };
                 if let Some(embed_vec) = embed_opt {
                     let k = batch * 2; // oversample
-                    if let Ok(hits) = crate::database::ClipEmbeddingRow::find_similar_by_embedding(&embed_vec, k, 256, start).await {
+                    if let Ok(hits) = crate::database::ClipEmbeddingRow::find_similar_by_embedding(
+                        &embed_vec, k, 256, start,
+                    )
+                    .await
+                    {
                         let mut results: Vec<crate::ui::file_table::SimilarResult> = Vec::new();
                         for hit in hits.into_iter() {
-                            if existing.contains(&hit.path) { continue; }
-                            let thumb = if let Some(t) = hit.thumb_ref { t } else { crate::Thumbnail::get_thumbnail_by_path(&hit.path).await.unwrap_or(None).unwrap_or_default() };
+                            if existing.contains(&hit.path) {
+                                continue;
+                            }
+                            let thumb = if let Some(t) = hit.thumb_ref {
+                                t
+                            } else {
+                                crate::Thumbnail::get_thumbnail_by_path(&hit.path)
+                                    .await
+                                    .unwrap_or(None)
+                                    .unwrap_or_default()
+                            };
                             let cosine_sim = 1.0 - hit.dist;
                             let norm_sim = ((cosine_sim + 1.0) / 2.0).clamp(0.0, 1.0);
-                            results.push(crate::ui::file_table::SimilarResult { thumb: thumb.clone(), created: None, updated: None, similarity_score: Some(norm_sim), clip_similarity_score: Some(norm_sim) });
-                            if results.len() >= batch { break; }
+                            results.push(crate::ui::file_table::SimilarResult {
+                                thumb: thumb.clone(),
+                                created: None,
+                                updated: None,
+                                similarity_score: Some(norm_sim),
+                                clip_similarity_score: Some(norm_sim),
+                            });
+                            if results.len() >= batch {
+                                break;
+                            }
                         }
-                        if !results.is_empty() { let _ = tx_updates.try_send(crate::ui::file_table::AIUpdate::SimilarResults { origin_path: format!("query:{qtext}"), results }); }
+                        if !results.is_empty() {
+                            let _ = tx_updates.try_send(
+                                crate::ui::file_table::AIUpdate::SimilarResults {
+                                    origin_path: format!("query:{qtext}"),
+                                    results,
+                                },
+                            );
+                        }
                     }
                 }
             });
@@ -840,20 +1056,54 @@ impl FileExplorer {
         // Fallback: original behavior using origin path's embedding
         tokio::spawn(async move {
             if let Ok(Some(thumb)) = crate::Thumbnail::get_thumbnail_by_path(&origin).await {
-                let embed_vec = thumb.get_embedding().await.unwrap_or_default().embedding.clone();
-                if embed_vec.is_empty() { return; }
+                let embed_vec = thumb
+                    .get_embedding()
+                    .await
+                    .unwrap_or_default()
+                    .embedding
+                    .clone();
+                if embed_vec.is_empty() {
+                    return;
+                }
                 let k = existing.len() + batch * 4; // oversample to get enough new uniques
-                if let Ok(hits) = crate::database::ClipEmbeddingRow::find_similar_by_embedding(&embed_vec, k, 256, 0).await {
+                if let Ok(hits) = crate::database::ClipEmbeddingRow::find_similar_by_embedding(
+                    &embed_vec, k, 256, 0,
+                )
+                .await
+                {
                     let mut results: Vec<crate::ui::file_table::SimilarResult> = Vec::new();
                     for hit in hits.into_iter() {
-                        if existing.contains(&hit.path) { continue; }
-                        let thumb = if let Some(t) = hit.thumb_ref { t } else { crate::Thumbnail::get_thumbnail_by_path(&hit.path).await.unwrap_or(None).unwrap_or_default() };
+                        if existing.contains(&hit.path) {
+                            continue;
+                        }
+                        let thumb = if let Some(t) = hit.thumb_ref {
+                            t
+                        } else {
+                            crate::Thumbnail::get_thumbnail_by_path(&hit.path)
+                                .await
+                                .unwrap_or(None)
+                                .unwrap_or_default()
+                        };
                         let cosine_sim = 1.0 - hit.dist;
                         let norm_sim = ((cosine_sim + 1.0) / 2.0).clamp(0.0, 1.0);
-                        results.push(crate::ui::file_table::SimilarResult { thumb: thumb.clone(), created: None, updated: None, similarity_score: Some(norm_sim), clip_similarity_score: Some(norm_sim) });
-                        if results.len() >= batch { break; }
+                        results.push(crate::ui::file_table::SimilarResult {
+                            thumb: thumb.clone(),
+                            created: None,
+                            updated: None,
+                            similarity_score: Some(norm_sim),
+                            clip_similarity_score: Some(norm_sim),
+                        });
+                        if results.len() >= batch {
+                            break;
+                        }
                     }
-                    if !results.is_empty() { let _ = tx_updates.try_send(crate::ui::file_table::AIUpdate::SimilarResults { origin_path: origin.clone(), results }); }
+                    if !results.is_empty() {
+                        let _ =
+                            tx_updates.try_send(crate::ui::file_table::AIUpdate::SimilarResults {
+                                origin_path: origin.clone(),
+                                results,
+                            });
+                    }
                 }
             }
         });
@@ -861,10 +1111,16 @@ impl FileExplorer {
 
     // Recompute total pages for current recursive snapshot
     fn update_recursive_total_pages(&mut self) {
-        if self.recursive_page_size == 0 { self.recursive_total_pages = 0; return; }
+        if self.recursive_page_size == 0 {
+            self.recursive_total_pages = 0;
+            return;
+        }
         let total_rows = self.last_scan_rows.len();
-        self.recursive_total_pages = (total_rows + self.recursive_page_size - 1) / self.recursive_page_size;
-        if self.recursive_current_page >= self.recursive_total_pages && self.recursive_total_pages > 0 {
+        self.recursive_total_pages =
+            (total_rows + self.recursive_page_size - 1) / self.recursive_page_size;
+        if self.recursive_current_page >= self.recursive_total_pages
+            && self.recursive_total_pages > 0
+        {
             self.recursive_current_page = self.recursive_total_pages - 1;
         }
     }
@@ -880,12 +1136,23 @@ impl FileExplorer {
         if self.recursive_page_size == 0 {
             self.recursive_current_page = 0;
         } else {
-            let max_pages = if total_rows == 0 { 0 } else { (total_rows + self.recursive_page_size - 1) / self.recursive_page_size };
-            if max_pages == 0 { self.recursive_current_page = 0; }
-            else if self.recursive_current_page >= max_pages { self.recursive_current_page = max_pages - 1; }
+            let max_pages = if total_rows == 0 {
+                0
+            } else {
+                (total_rows + self.recursive_page_size - 1) / self.recursive_page_size
+            };
+            if max_pages == 0 {
+                self.recursive_current_page = 0;
+            } else if self.recursive_current_page >= max_pages {
+                self.recursive_current_page = max_pages - 1;
+            }
         }
-        let start = self.recursive_current_page.saturating_mul(self.recursive_page_size);
-        if start >= total_rows { return; }
+        let start = self
+            .recursive_current_page
+            .saturating_mul(self.recursive_page_size);
+        if start >= total_rows {
+            return;
+        }
         let end = (start + self.recursive_page_size).min(total_rows);
         log::warn!(
             "rebuild_recursive_page: total_rows={}, page_size={}, current_page={}, slice={}..{}",
@@ -898,8 +1165,12 @@ impl FileExplorer {
         // Prune cache to rows in slice
         if !self.viewer.thumb_cache.is_empty() {
             let mut keep: std::collections::HashSet<String> = std::collections::HashSet::new();
-            for r in self.recursive_filtered_rows[start..end].iter() { keep.insert(r.path.clone()); }
-            self.viewer.thumb_cache.retain(|k, _| keep.contains(k) || k.starts_with("preview::"));
+            for r in self.recursive_filtered_rows[start..end].iter() {
+                keep.insert(r.path.clone());
+            }
+            self.viewer
+                .thumb_cache
+                .retain(|k, _| keep.contains(k) || k.starts_with("preview::"));
         }
         for row in self.recursive_filtered_rows[start..end].iter().cloned() {
             let idx = self.table.len();
@@ -915,11 +1186,25 @@ impl FileExplorer {
 
     fn apply_recursive_filter_and_sort(&mut self) {
         // Build signature (filter text + type toggles) to avoid unnecessary rebuild work
-        let sig = format!("{}|i{}|v{}|d{}", self.viewer.filter, self.viewer.types_show_images as u8, self.viewer.types_show_videos as u8, self.viewer.types_show_dirs as u8);
-        let changed = self.recursive_filter_sig.as_ref().map(|p| p != &sig).unwrap_or(true);
+        let sig = format!(
+            "{}|i{}|v{}|d{}",
+            self.viewer.filter,
+            self.viewer.types_show_images as u8,
+            self.viewer.types_show_videos as u8,
+            self.viewer.types_show_dirs as u8
+        );
+        let changed = self
+            .recursive_filter_sig
+            .as_ref()
+            .map(|p| p != &sig)
+            .unwrap_or(true);
         // If unchanged and we already have filtered rows, skip recompute
-        if !changed && !self.recursive_filtered_rows.is_empty() { return; }
-        if changed { self.recursive_current_page = 0; }
+        if !changed && !self.recursive_filtered_rows.is_empty() {
+            return;
+        }
+        if changed {
+            self.recursive_current_page = 0;
+        }
         self.recursive_filter_sig = Some(sig.clone());
         let mut out: Vec<Thumbnail> = self
             .last_scan_rows
@@ -930,9 +1215,9 @@ impl FileExplorer {
         // Optional sort (basic keys; can expand)
         if let Some(key) = self.recursive_sort_key {
             match key {
-                "name" => out.sort_by(|a,b| a.filename.cmp(&b.filename)),
-                "modified" => out.sort_by(|a,b| a.modified.cmp(&b.modified)),
-                "size" => out.sort_by(|a,b| a.size.cmp(&b.size)),
+                "name" => out.sort_by(|a, b| a.filename.cmp(&b.filename)),
+                "modified" => out.sort_by(|a, b| a.modified.cmp(&b.modified)),
+                "size" => out.sort_by(|a, b| a.size.cmp(&b.size)),
                 _ => {}
             }
         }
@@ -941,32 +1226,67 @@ impl FileExplorer {
     }
 
     // Public helpers used by navbar for global counts
-    pub fn recursive_total_unfiltered(&self) -> usize { self.last_scan_rows.len() }
-    pub fn recursive_total_filtered(&self) -> usize { if self.recursive_filtered_rows.is_empty() { self.last_scan_rows.len() } else { self.recursive_filtered_rows.len() } }
+    pub fn recursive_total_unfiltered(&self) -> usize {
+        self.last_scan_rows.len()
+    }
+    pub fn recursive_total_filtered(&self) -> usize {
+        if self.recursive_filtered_rows.is_empty() {
+            self.last_scan_rows.len()
+        } else {
+            self.recursive_filtered_rows.len()
+        }
+    }
 
     fn prefetch_next_page_thumbs(&mut self) {
-        if !self.recursive_prefetch_enabled { return; }
-        if self.recursive_page_size == 0 { return; }
+        if !self.recursive_prefetch_enabled {
+            return;
+        }
+        if self.recursive_page_size == 0 {
+            return;
+        }
         // Limit concurrent prefetch waves
-        if self.recursive_prefetch_inflight > 0 { return; }
+        if self.recursive_prefetch_inflight > 0 {
+            return;
+        }
         let total = self.recursive_filtered_rows.len();
         let next_page = self.recursive_current_page + 1;
-        if next_page * self.recursive_page_size >= total { return; }
+        if next_page * self.recursive_page_size >= total {
+            return;
+        }
         let start = next_page * self.recursive_page_size;
         let end = (start + self.recursive_page_size).min(total);
         // Collect a small subset (e.g., first 128 of next page) to avoid wasting work
         let mut candidates: Vec<String> = Vec::new();
         for row in self.recursive_filtered_rows[start..end].iter() {
-            if candidates.len() >= 128 { break; }
-            if row.thumbnail_b64.is_some() { continue; }
-            if row.file_type == "<DIR>" || row.file_type == "<ARCHIVE>" { continue; }
+            if candidates.len() >= 128 {
+                break;
+            }
+            if row.thumbnail_b64.is_some() {
+                continue;
+            }
+            if row.file_type == "<DIR>" || row.file_type == "<ARCHIVE>" {
+                continue;
+            }
             // Skip if already scheduled or cached
-            if self.viewer.thumb_cache.contains_key(&row.path) { continue; }
-            if self.thumb_scheduled.contains(&row.path) { continue; }
-            let ext_opt = std::path::Path::new(&row.path).extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase());
-            if let Some(ext) = ext_opt { if crate::is_image(ext.as_str()) || crate::is_video(ext.as_str()) { candidates.push(row.path.clone()); } }
+            if self.viewer.thumb_cache.contains_key(&row.path) {
+                continue;
+            }
+            if self.thumb_scheduled.contains(&row.path) {
+                continue;
+            }
+            let ext_opt = std::path::Path::new(&row.path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|s| s.to_ascii_lowercase());
+            if let Some(ext) = ext_opt {
+                if crate::is_image(ext.as_str()) || crate::is_video(ext.as_str()) {
+                    candidates.push(row.path.clone());
+                }
+            }
         }
-        if candidates.is_empty() { return; }
+        if candidates.is_empty() {
+            return;
+        }
         self.recursive_prefetch_inflight = candidates.len();
         let sem = self.thumb_semaphore.clone();
         let scan_tx = self.scan_tx.clone();
@@ -982,12 +1302,34 @@ impl FileExplorer {
                 let _permit = permit_fut.await.ok();
                 let pbuf = std::path::PathBuf::from(&path_str);
                 let mut thumb_b64: Option<String> = None;
-                if let Some(ext) = pbuf.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()) {
-                    if crate::is_image(ext.as_str()) { thumb_b64 = crate::utilities::thumbs::generate_image_thumb_data(&pbuf).ok(); }
-                    else if crate::is_video(ext.as_str()) { thumb_b64 = crate::utilities::thumbs::generate_video_thumb_data(&pbuf).ok(); }
+                if let Some(ext) = pbuf
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|s| s.to_ascii_lowercase())
+                {
+                    if crate::is_image(ext.as_str()) {
+                        thumb_b64 = crate::utilities::thumbs::generate_image_thumb_data(&pbuf).ok();
+                    } else if crate::is_video(ext.as_str()) {
+                        thumb_b64 = crate::utilities::thumbs::generate_video_thumb_data(&pbuf).ok();
+                    }
                 }
-                if let Some(b64) = thumb_b64 { let _ = tx_clone.try_send(crate::ScanEnvelope { scan_id: owning_scan_id, msg: crate::utilities::scan::ScanMsg::UpdateThumb { path: pbuf.clone(), thumb: b64 } }); }
-                else { let _ = tx_clone.try_send(crate::ScanEnvelope { scan_id: owning_scan_id, msg: crate::utilities::scan::ScanMsg::ThumbFailed { path: pbuf.clone(), error: "prefetch thumbnail generation failed".to_string() } }); }
+                if let Some(b64) = thumb_b64 {
+                    let _ = tx_clone.try_send(crate::ScanEnvelope {
+                        scan_id: owning_scan_id,
+                        msg: crate::utilities::scan::ScanMsg::UpdateThumb {
+                            path: pbuf.clone(),
+                            thumb: b64,
+                        },
+                    });
+                } else {
+                    let _ = tx_clone.try_send(crate::ScanEnvelope {
+                        scan_id: owning_scan_id,
+                        msg: crate::utilities::scan::ScanMsg::ThumbFailed {
+                            path: pbuf.clone(),
+                            error: "prefetch thumbnail generation failed".to_string(),
+                        },
+                    });
+                }
                 // SAFETY: UI thread only mutation; this async block executes on runtime thread. To avoid unsafe, we skip decrement here; rely on natural replacement (simplify).
                 // (If precise tracking needed, implement atomic counter.)
                 let _ = inflight_counter; // suppress unused warning for placeholder.
@@ -997,22 +1339,39 @@ impl FileExplorer {
 
     // Schedule thumbnail generation for visible page rows that lack thumbnail_b64 and are images/videos.
     fn schedule_missing_thumbs_for_current_page(&mut self) {
-        if self.table.is_empty() { return; }
+        if self.table.is_empty() {
+            return;
+        }
         // Collect paths needing generation
         let mut to_gen: Vec<String> = Vec::new();
         for row in self.table.iter() {
-            if row.thumbnail_b64.is_some() { continue; }
+            if row.thumbnail_b64.is_some() {
+                continue;
+            }
             // Skip dirs / archives
-            if row.file_type == "<DIR>" || row.file_type == "<ARCHIVE>" { continue; }
-            let ext_opt = std::path::Path::new(&row.path).extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase());
+            if row.file_type == "<DIR>" || row.file_type == "<ARCHIVE>" {
+                continue;
+            }
+            let ext_opt = std::path::Path::new(&row.path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|s| s.to_ascii_lowercase());
             if let Some(ext) = ext_opt {
-                if !(crate::is_image(ext.as_str()) || crate::is_video(ext.as_str())) { continue; }
-            } else { continue; }
+                if !(crate::is_image(ext.as_str()) || crate::is_video(ext.as_str())) {
+                    continue;
+                }
+            } else {
+                continue;
+            }
             // Avoid rescheduling same path
-            if !self.thumb_scheduled.insert(row.path.clone()) { continue; }
+            if !self.thumb_scheduled.insert(row.path.clone()) {
+                continue;
+            }
             to_gen.push(row.path.clone());
         }
-        if to_gen.is_empty() { return; }
+        if to_gen.is_empty() {
+            return;
+        }
         let sem = self.thumb_semaphore.clone();
         let scan_tx = self.scan_tx.clone();
         let owning_scan_id = self.owning_scan_id.or(self.current_scan_id).unwrap_or(0);
@@ -1023,15 +1382,34 @@ impl FileExplorer {
                 let _permit = permit_fut.await.expect("thumb semaphore closed");
                 let p = std::path::PathBuf::from(&path_str);
                 let mut thumb_b64: Option<String> = None;
-                if let Some(ext) = p.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()) {
+                if let Some(ext) = p
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|s| s.to_ascii_lowercase())
+                {
                     if crate::is_image(ext.as_str()) {
                         thumb_b64 = crate::utilities::thumbs::generate_image_thumb_data(&p).ok();
                     } else if crate::is_video(ext.as_str()) {
                         thumb_b64 = crate::utilities::thumbs::generate_video_thumb_data(&p).ok();
                     }
                 }
-                if let Some(b64) = thumb_b64 { let _ = tx_clone.try_send(crate::ScanEnvelope { scan_id: owning_scan_id, msg: crate::utilities::scan::ScanMsg::UpdateThumb { path: p.clone(), thumb: b64 } }); }
-                else { let _ = tx_clone.try_send(crate::ScanEnvelope { scan_id: owning_scan_id, msg: crate::utilities::scan::ScanMsg::ThumbFailed { path: p.clone(), error: "thumbnail generation failed".to_string() } }); }
+                if let Some(b64) = thumb_b64 {
+                    let _ = tx_clone.try_send(crate::ScanEnvelope {
+                        scan_id: owning_scan_id,
+                        msg: crate::utilities::scan::ScanMsg::UpdateThumb {
+                            path: p.clone(),
+                            thumb: b64,
+                        },
+                    });
+                } else {
+                    let _ = tx_clone.try_send(crate::ScanEnvelope {
+                        scan_id: owning_scan_id,
+                        msg: crate::utilities::scan::ScanMsg::ThumbFailed {
+                            path: p.clone(),
+                            error: "thumbnail generation failed".to_string(),
+                        },
+                    });
+                }
             });
         }
     }
@@ -1048,13 +1426,12 @@ pub fn get_img_ui(
             bytes: eframe::egui::load::Bytes::Shared(bytes_arc.clone()),
         };
         Image::new(img_src)
-            .max_size(ui.available_size()/1.3)
+            .max_size(ui.available_size() / 1.3)
             .ui(ui)
     } else {
         ui.label("No Image")
     }
 }
-
 
 pub fn insert_thumbnail(thumb_cache: &mut HashMap<String, Arc<[u8]>>, thumbnail: Thumbnail) {
     use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
@@ -1063,12 +1440,14 @@ pub fn insert_thumbnail(thumb_cache: &mut HashMap<String, Arc<[u8]>>, thumbnail:
     if let Some(mut b64) = thumb_b64 {
         if !thumb_cache.contains_key(cache_key) {
             if b64.starts_with("data:image/png;base64,") {
-                let (_, end) =
-                b64.split_once("data:image/png;base64,").unwrap_or_default();
+                let (_, end) = b64.split_once("data:image/png;base64,").unwrap_or_default();
                 b64 = end.to_string();
             }
             let decoded_bytes = B64.decode(b64.as_bytes()).unwrap_or_default();
-            thumb_cache.insert(cache_key.clone(), Arc::from(decoded_bytes.into_boxed_slice()));
+            thumb_cache.insert(
+                cache_key.clone(),
+                Arc::from(decoded_bytes.into_boxed_slice()),
+            );
         }
     }
 }

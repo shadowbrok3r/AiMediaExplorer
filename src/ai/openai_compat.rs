@@ -141,7 +141,7 @@ pub async fn stream_multimodal_reply(
 /// Simple non-streaming convenience wrapper around stream_multimodal_reply for text-only prompts.
 pub async fn simple_text_completion(cfg: ProviderConfig, prompt: &str) -> Result<String> {
     let mut acc = String::new();
-    let _ = stream_multimodal_reply(cfg, prompt, &[], |tok| { acc.push_str(tok); });
+    let _ = stream_multimodal_reply(cfg, prompt, &[], |tok| { acc.push_str(tok); }).await;
     Ok(acc)
 }
 

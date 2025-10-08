@@ -129,6 +129,16 @@ impl crate::ui::file_table::FileExplorer {
                             }
                         }
                     }
+                    if ui.button(RichText::new("Refine selection").color(ui.style().visuals.warn_fg_color)).on_hover_text("Send current selection to AI Refinements tab").clicked() {
+                        let paths: Vec<String> = self
+                            .table
+                            .iter()
+                            .filter(|r| r.file_type != "<DIR>" && self.viewer.selected.contains(&r.path))
+                            .map(|r| r.path.clone())
+                            .collect();
+                        crate::ui::refine::request_refine_for_paths(paths);
+                        ui.close();
+                    }
                 });
             }
         });

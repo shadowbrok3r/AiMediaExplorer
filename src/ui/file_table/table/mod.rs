@@ -855,6 +855,10 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                 "find_similar",
                 "Find Similar (CLIP)"
             ).icon("🔍").enabled(!selection.selected_rows.is_empty()),
+            CustomMenuItem::new(
+                "refine_selection",
+                "Refine Selection"
+            ).icon("🛠").enabled(!selection.selected_rows.is_empty()),
             // Future: rerank actions (category / tags) can be added once sorting hook in FileExplorer is exposed.
         ];
         // In Database mode, allow attaching to chat window
@@ -1112,6 +1116,11 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                         }
                     });
                 }
+            }
+            "refine_selection" => {
+                // Collect paths (non-dirs)
+                let paths: Vec<String> = ctx.selection.selected_rows.iter().filter(|(_, r)| r.file_type != "<DIR>").map(|(_, r)| r.path.clone()).collect();
+                if !paths.is_empty() { crate::ui::refine::request_refine_for_paths(paths); }
             }
             _ => {},
         }

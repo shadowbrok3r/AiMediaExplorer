@@ -1,6 +1,8 @@
 use eframe::egui::*;
 use crate::ui::status::GlobalStatusIndicator;
 use crossbeam::channel::Sender;
+use once_cell::sync::Lazy;
+use std::sync::Mutex;
 
 pub struct RefinementsPanel {
     pub generating: bool,
@@ -13,6 +15,8 @@ pub struct RefinementsPanel {
     pub use_cloud_model: bool,
     pub cloud_model_name: String,
     pub cloud_provider: String,
+    // Optional restriction: only refine these paths when present
+    limit_paths: Option<std::collections::HashSet<String>>,
     
 }
 
@@ -28,8 +32,17 @@ impl RefinementsPanel {
             use_cloud_model: false,
             cloud_model_name: String::new(),
             cloud_provider: "openrouter".into(),
+            limit_paths: None,
         }
     }
+}
+
+// Global queue to accept refine selection requests from other UI modules
+pub static REFINE_SELECTION_REQUESTS: Lazy<Mutex<Vec<Vec<String>>>> = Lazy::new(|| Mutex::new(Vec::new()));
+
+pub fn request_refine_for_paths(paths: Vec<String>) {
+    if paths.is_empty() { return; }
+    REFINE_SELECTION_REQUESTS.lock().unwrap().push(paths);
 }
 
 #[derive(Clone, Debug)]
@@ -49,8 +62,26 @@ pub struct RefinementProposal {
 
 impl RefinementsPanel {
     pub fn ui(&mut self, ui: &mut Ui) {
+        // Drain queued selection scope requests
+        {
+            let mut q = REFINE_SELECTION_REQUESTS.lock().unwrap();
+            if !q.is_empty() {
+                let mut set: std::collections::HashSet<String> = self.limit_paths.take().unwrap_or_default();
+                for batch in q.drain(..) { for p in batch { set.insert(p); } }
+                if set.is_empty() { self.limit_paths = None; } else { self.limit_paths = Some(set); }
+            }
+        }
         ui.heading("AI Refinements");
-        ui.label("Generate proposed improvements for categories/tags/captions/descriptions from the database. Optionally use a cloud LLM.");
+        ui.label("Generate proposed improvements for categories/tags/captions/descriptions. If a selection scope is active, only those files are processed.");
+        if let Some(set) = self.limit_paths.as_ref() {
+            let scope_len = set.len();
+            let mut clear = false;
+            ui.horizontal(|ui| {
+                ui.colored_label(ui.style().visuals.warn_fg_color, format!("Selection scope: {} items", scope_len));
+                if ui.button("Clear Scope").clicked() { clear = true; }
+            });
+            if clear { self.limit_paths = None; }
+        }
         ui.separator();
         CollapsingHeader::new("Cloud Model Options").show(ui, |ui| {
             ui.checkbox(&mut self.use_cloud_model, "Use cloud model (OpenAI-compatible)");
@@ -93,6 +124,7 @@ impl RefinementsPanel {
                 let use_cloud = self.use_cloud_model;
                 let cloud_model = self.cloud_model_name.clone();
                 let provider = self.cloud_provider.clone();
+                let limit_paths = self.limit_paths.clone();
                 crate::ui::status::RERANK_STATUS.set_state(crate::ui::status::StatusState::Running, "Generating proposals");
                 tokio::spawn(async move {
                     // Free memory from other heavy models to ensure reranker can load comfortably
@@ -104,6 +136,7 @@ impl RefinementsPanel {
                         // For simplicity reuse heuristic generation to gather raw data, then send each to cloud model for enhancement
                         let mut rer = crate::ai::refine::HeuristicReranker;
                         generator.stream_proposals(120, &mut rer, |p| {
+                            if let Some(limit) = limit_paths.as_ref() { if !limit.contains(&p.path) { return; } }
                             batch.push(RefinementProposal {
                                 path: p.path.clone(),
                                 current_category: p.current_category.clone(),
@@ -117,7 +150,7 @@ impl RefinementsPanel {
                                 selected: true,
                                 generator: "cloud-seed".into(),
                             });
-                        });
+                        }).await;
                         // Prepare provider config (reuse assistant logic-lite)
                         let settings = crate::database::settings::load_settings().unwrap_or_default();
                         let model_to_use = if cloud_model.trim().is_empty() {
@@ -185,6 +218,7 @@ impl RefinementsPanel {
                         Rk::Heu => {
                             let mut rer = crate::ai::refine::HeuristicReranker;
                             generator.stream_proposals(200, &mut rer, |p| {
+                                if let Some(limit) = limit_paths.as_ref() { if !limit.contains(&p.path) { return; } }
                                 if p.new_category.is_none() && p.new_tags.is_empty() && p.new_caption.is_none() && p.new_description.is_none() { return; }
                                 batch.push(RefinementProposal {
                                     path: p.path,
@@ -250,6 +284,7 @@ impl RefinementsPanel {
                             }
                             let mut rer = Adapter;
                             generator.stream_proposals(200, &mut rer, |p| {
+                                if let Some(limit) = limit_paths.as_ref() { if !limit.contains(&p.path) { return; } }
                                 if p.new_category.is_none() && p.new_tags.is_empty() && p.new_caption.is_none() && p.new_description.is_none() { return; }
                                 batch.push(RefinementProposal {
                                     path: p.path,
