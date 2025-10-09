@@ -240,15 +240,17 @@ impl RefinementsPanel {
                             match reply_res {
                                 Ok(text) => {
                                     log::debug!("[Refine/Cloud] Raw model reply for {}: {}", seed.path, text);
-                                    // naive JSON extraction
+                                    // Robust JSON extraction: try direct parse, fenced blocks, or braces slice
                                     let mut rp = seed.clone();
-                                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                                    if let Some(val) = parse_jsonish(&text) {
                                         if let Some(s) = val.get("new_category").and_then(|v| v.as_str()) { rp.new_category = Some(s.to_string()); }
                                         if let Some(arr) = val.get("new_tags").and_then(|v| v.as_array()) { rp.new_tags = arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect(); }
                                         if let Some(s) = val.get("new_caption").and_then(|v| v.as_str()) { rp.new_caption = Some(s.to_string()); }
                                         if let Some(s) = val.get("new_description").and_then(|v| v.as_str()) { rp.new_description = Some(s.to_string()); }
                                         rp.generator = format!("cloud:{provider}");
                                         enriched.push(rp);
+                                    } else {
+                                        log::warn!("[Refine/Cloud] Failed to parse JSON for {}", seed.path);
                                     }
                                 }
                                 Err(e) => log::warn!("[Refine/Cloud] completion failed: {e}"),
@@ -516,4 +518,29 @@ impl RefinementsPanel {
             }
         });
     }
+}
+
+/// Try to parse a JSON object from a potentially noisy LLM reply.
+fn parse_jsonish(text: &str) -> Option<serde_json::Value> {
+    // 1) Direct parse
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) { return Some(v); }
+    let t = text.trim();
+    // 2) Fenced code block ```json ... ``` or ``` ... ```
+    if let Some(start) = t.find("```") {
+        let rest = &t[start + 3..];
+        // Skip optional language tag
+        let rest = if rest.to_ascii_lowercase().starts_with("json") { &rest[4..] } else { rest };
+        if let Some(end) = rest.find("```") {
+            let block = &rest[..end];
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(block) { return Some(v); }
+        }
+    }
+    // 3) Extract substring between first '{' and last '}'
+    if let (Some(i), Some(j)) = (t.find('{'), t.rfind('}')) {
+        if i < j {
+            let slice = &t[i..=j];
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(slice) { return Some(v); }
+        }
+    }
+    None
 }
