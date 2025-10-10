@@ -120,8 +120,8 @@ impl crate::ui::file_table::FileExplorer {
         self.last_scan_rows.clear();
         self.last_scan_paths.clear();
         self.last_scan_root = Some(self.current_path.clone());
-            self.table.clear();
-            self.table_index.clear();
+        self.table.clear();
+        self.table_index.clear();
         self.files.clear();
         let excluded: Vec<String> = self
             .excluded_terms

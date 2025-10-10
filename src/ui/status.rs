@@ -376,7 +376,7 @@ impl GearSpinner {
         );
         let angle = ui.input(|i| i.time as f32) * std::f32::consts::TAU * 0.6; // rotation speed factor
         // Build rotated text shape using egui font system.
-        let shape = ui.ctx().fonts(|f| {
+        let shape = ui.ctx().fonts_mut(|f| {
             let mut s = Shape::text(
                 f,
                 gear_rect.center(),

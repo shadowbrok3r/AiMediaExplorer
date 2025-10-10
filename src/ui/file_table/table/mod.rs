@@ -165,9 +165,7 @@ impl FileTableViewer {
  * ------------------------------------------------------------------------------------------- */
 
 impl RowViewer<Thumbnail> for FileTableViewer {
-    fn try_create_codec(&mut self, _copy_full_row: bool) -> Option<impl RowCodec<Thumbnail>> {
-        Some(ThumbCodec)
-    }
+    fn try_create_codec(&mut self, _copy_full_row: bool) -> Option<impl RowCodec<Thumbnail>> { Some(ThumbCodec) }
 
     fn num_columns(&mut self) -> usize {
         // New base ordering (FS):
@@ -192,17 +190,11 @@ impl RowViewer<Thumbnail> for FileTableViewer {
         vec[column].clone()
     }
 
-    fn is_sortable_column(&mut self, column: usize) -> bool {
-        column < self.num_columns()
-    }
+    fn is_sortable_column(&mut self, column: usize) -> bool { column < self.num_columns() }
 
-    fn row_filter_hash(&mut self) -> &impl std::hash::Hash {
-        &self.filter
-    }
+    fn row_filter_hash(&mut self) -> &impl std::hash::Hash { &self.filter }
 
-    fn filter_row(&mut self, row: &Thumbnail) -> bool {
-        self.row_passes_filter(row)
-    }
+    fn filter_row(&mut self, row: &Thumbnail) -> bool { self.row_passes_filter(row) }
 
     fn hotkeys(&mut self, context: &UiActionContext) -> Vec<(KeyboardShortcut, UiAction)> {
         let hot = default_hotkeys(context);
@@ -210,12 +202,7 @@ impl RowViewer<Thumbnail> for FileTableViewer {
         hot
     }
 
-    fn is_editable_cell(&mut self, _column: usize, _row: usize, _row_value: &Thumbnail) -> bool {
-        // Only allow editing for Category (3) and Tags (4) regardless of mode.
-        // matches!(column, 3 | 4)
-        false
-    }
-
+    fn is_editable_cell(&mut self, _column: usize, _row: usize, _row_value: &Thumbnail) -> bool { false }
 
     fn show_cell_view(&mut self, ui: &mut egui::Ui, row: &Thumbnail, column: usize) {
         // CLIP is now column 5. Similarity (if shown) is appended at the end.

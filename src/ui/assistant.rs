@@ -1780,7 +1780,7 @@ impl AssistantPanel {
                                 let mut job =
                                     highlight(&ctx_clone, &style_clone, &theme, &lang_clone, s);
                                 job.wrap.max_width = wrap_width;
-                                ui.fonts(|f| f.layout_job(job))
+                                ui.fonts_mut(|f| f.layout_job(job))
                             };
                         let rows = (code.lines().count().max(3) as f32).min(18.0);
                         let mut code_mut = code.clone();
