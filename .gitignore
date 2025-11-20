@@ -2,3 +2,5 @@
 .fastembed_cache
 /db
 *.log
+backup.surql
+llama-joycaption-beta-one-hf-llava/

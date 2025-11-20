@@ -12,7 +12,7 @@ use egui_toast::Toasts;
 pub static OPEN_SETTINGS_REQUEST: Lazy<std::sync::atomic::AtomicBool> = Lazy::new(|| std::sync::atomic::AtomicBool::new(false));
 // Global queue for dynamic tab open requests
 pub static OPEN_TAB_REQUESTS: Lazy<Mutex<Vec<crate::ui::file_table::FilterRequest>>> = Lazy::new(|| Mutex::new(Vec::new()));
-pub const DEFAULT_JOYCAPTION_PATH: &str = r#"G:\Users\Owner\Desktop\llama-joycaption-beta-one-hf-llava"#;
+pub const DEFAULT_JOYCAPTION_PATH: &str = r#"G:\Users\Owner\Documents\1-MyStuff\TechStuff\GitHub\smart-media\llama-joycaption-beta-one-hf-llava"#;
 pub const MAX_NEW_TOKENS: usize = 200;
 pub const TEMPERATURE: f32 = 0.5;
 
