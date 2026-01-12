@@ -25,8 +25,8 @@ directories = "6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"
-surrealdb = { version = "2", features = ["kv-mem", "kv-surrealkv"] }
-# surrealdb-alpha = { version = "3", features = ["kv-mem", "kv-surrealkv"] }
+surrealdb = { git = "https://github.com/surrealdb/surrealdb", tag = "v3.0.0-beta.1", features = ["kv-mem", "kv-surrealkv", "protocol-ws"] }
+surrealdb-types = { git = "https://github.com/surrealdb/surrealdb", tag = "v3.0.0-beta.1" }
 anyhow = {  version = "1" }
 simplelog = "0.12"
 regex = "1.12"
@@ -41,7 +41,6 @@ candle-core = { git = "https://github.com/huggingface/candle.git", features = ["
 candle-nn = { git = "https://github.com/huggingface/candle.git", features = ["cuda"] }
 candle-transformers = { git = "https://github.com/huggingface/candle.git", features = ["cuda"] }
 candle-examples = { git = "https://github.com/huggingface/candle.git", features = ["cuda"] }
-
 tokenizers = { version = "0.22", default-features = false, features = ["http", "progressbar", "onig"] }
 hf-hub = { version = "0.4", default-features = false, features = ["tokio", "rustls-tls"] }
 zip = "7.0.0"
@@ -108,16 +107,11 @@ strip = true
 panic = "unwind"
 debug = false
 opt-level = 3
-# codegen-units = 1
 
 [profile.dev]
 strip = false
 debug = true
 
 
-# Force vendored OpenSSL to avoid system library compatibility issues on Linux
 [target.'cfg(target_os = "linux")'.dependencies]
 openssl = { version = "0.10", features = ["vendored"] }
-
-# [patch.crates-io]
-# cudarc = { git = "https://github.com/chelsea0x3b/cudarc", tag = "v0.18.2" }

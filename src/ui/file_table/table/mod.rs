@@ -1029,7 +1029,7 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                     tokio::spawn(async move {
                         if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&group_name).await {
                             // Load ids for given paths
-                            let mut ids: Vec<surrealdb::RecordId> = Vec::new();
+                            let mut ids: Vec<surrealdb::types::RecordId> = Vec::new();
                             for p in paths.into_iter() {
                                 if let Ok(Some(id)) = crate::Thumbnail::get_thumbnail_id_by_path(&p).await {
                                     ids.push(id);

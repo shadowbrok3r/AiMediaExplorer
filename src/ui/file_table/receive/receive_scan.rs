@@ -458,7 +458,7 @@ impl crate::ui::file_table::FileExplorer {
                             let group_name = self.active_logical_group_name.clone();
                             if self.viewer.ui_settings.auto_save_to_database {
                                 tokio::spawn(async move {
-                                    let mut ids: Vec<surrealdb::RecordId> = Vec::new();
+                                    let mut ids: Vec<surrealdb::types::RecordId> = Vec::new();
                                     for meta in batch.into_iter() {
                                         match crate::database::upsert_row_and_get_id(meta).await {
                                             Ok(Some(id)) => ids.push(id),
@@ -498,7 +498,7 @@ impl crate::ui::file_table::FileExplorer {
                         let auto_save = self.viewer.ui_settings.auto_save_to_database;
                         let group_name = self.active_logical_group_name.clone();
                         tokio::spawn(async move {
-                            let mut ids: Vec<surrealdb::RecordId> = Vec::new();
+                            let mut ids: Vec<surrealdb::types::RecordId> = Vec::new();
                             if auto_save {
                                 for meta in to_index.iter().cloned() {
                                     match crate::database::upsert_row_and_get_id(meta.clone()).await {

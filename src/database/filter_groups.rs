@@ -1,10 +1,11 @@
 use serde::{Deserialize, Serialize};
+use surrealdb::types::{RecordId, Datetime, SurrealValue};
 use crate::database::{db_activity, db_set_detail, db_set_error};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 pub struct FilterGroup {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<surrealdb::RecordId>,
+    pub id: Option<RecordId>,
     pub name: String,
     pub include_images: bool,
     pub include_videos: bool,
@@ -14,9 +15,9 @@ pub struct FilterGroup {
     pub max_size_bytes: Option<u64>,
     pub excluded_terms: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub created: Option<surrealdb::sql::Datetime>,
+    pub created: Option<Datetime>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub updated: Option<surrealdb::sql::Datetime>,
+    pub updated: Option<Datetime>,
 }
 
 fn slugify_name(name: &str) -> String {
@@ -41,7 +42,7 @@ pub async fn save_filter_group(mut g: FilterGroup) -> anyhow::Result<FilterGroup
     let _ga = db_activity("Upsert filter_group");
     db_set_detail(format!("Saving filter group '{}'", g.name));
     let key = slugify_name(&g.name);
-    let rid = surrealdb::RecordId::from_table_key(super::FILTER_GROUPS, key);
+    let rid = RecordId::new(super::FILTER_GROUPS, key);
     g.id = Some(rid.clone());
     super::DB
         .upsert::<Option<FilterGroup>>(rid)
@@ -62,7 +63,7 @@ pub async fn delete_filter_group_by_name(name: &str) -> anyhow::Result<(), anyho
     let _ga = db_activity("Delete filter_group by name");
     db_set_detail(format!("Deleting filter group '{}'", name));
     let key = slugify_name(name);
-    let rid = surrealdb::RecordId::from_table_key(super::FILTER_GROUPS, key);
+    let rid = RecordId::new(super::FILTER_GROUPS, key);
     let _deleted: Option<FilterGroup> = super::DB.delete(rid).await
         .map_err(|e| { db_set_error(format!("Delete filter group failed: {e}")); e })?;
     Ok(())

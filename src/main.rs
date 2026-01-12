@@ -1,3 +1,4 @@
+#![recursion_limit = "512"]
 pub mod utilities;
 pub mod database;
 pub mod ai;

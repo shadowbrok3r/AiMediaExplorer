@@ -136,7 +136,7 @@ impl crate::ui::file_table::FileExplorer {
                                         let ids = crate::Thumbnail::fetch_ids_by_logical_group_id(&src_g.id).await.unwrap_or_default();
                                         if !ids.is_empty() {
                                             // Ensure destination exists and get its id
-                                            let dst_gid: Option<surrealdb::RecordId> = match crate::database::LogicalGroup::get_by_name(&dst).await {
+                                            let dst_gid: Option<surrealdb::types::RecordId> = match crate::database::LogicalGroup::get_by_name(&dst).await {
                                                 Ok(Some(g)) => Some(g.id),
                                                 _ => {
                                                     let _ = crate::database::LogicalGroup::create(&dst).await;
@@ -169,7 +169,7 @@ impl crate::ui::file_table::FileExplorer {
                                             log::info!("Thumbnails without a group: {}", ids.len());
                                             if !ids.is_empty() {
                                                 // ensure destination group exists
-                                                let gid_opt: Option<surrealdb::RecordId> = match crate::database::LogicalGroup::get_by_name(&target).await {
+                                                let gid_opt: Option<surrealdb::types::RecordId> = match crate::database::LogicalGroup::get_by_name(&target).await {
                                                     Ok(Some(g)) => Some(g.id),
                                                     _ => {
                                                         let _ = crate::database::LogicalGroup::create(&target).await;
@@ -194,7 +194,7 @@ impl crate::ui::file_table::FileExplorer {
                                         Ok(ids) => {
                                             if ids.is_empty() { return; }
                                             // Ensure group exists then add
-                                            let gid_opt: Option<surrealdb::RecordId> = match crate::database::LogicalGroup::get_by_name(&target).await {
+                                            let gid_opt: Option<surrealdb::types::RecordId> = match crate::database::LogicalGroup::get_by_name(&target).await {
                                                 Ok(Some(g)) => Some(g.id),
                                                 _ => {
                                                     let _ = crate::database::LogicalGroup::create(&target).await;

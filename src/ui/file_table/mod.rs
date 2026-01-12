@@ -81,8 +81,8 @@ pub enum AIUpdate {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SimilarResult {
     pub thumb: crate::database::Thumbnail,
-    pub created: Option<surrealdb::sql::Datetime>,
-    pub updated: Option<surrealdb::sql::Datetime>,
+    pub created: Option<surrealdb::types::Datetime>,
+    pub updated: Option<surrealdb::types::Datetime>,
     pub similarity_score: Option<f32>,
     pub clip_similarity_score: Option<f32>,
 }
@@ -237,7 +237,7 @@ pub struct FileExplorer {
     owning_scan_id: Option<u64>,
     // The cached_scan id for the currently running recursive scan (DB record)
     #[serde(skip)]
-    _cached_scan_id: Option<surrealdb::RecordId>,
+    _cached_scan_id: Option<surrealdb::types::RecordId>,
     // Cached WSL data to avoid recomputing every frame
     #[serde(skip)]
     cached_wsl_distros: Option<Vec<String>>,

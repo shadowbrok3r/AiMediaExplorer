@@ -1,16 +1,16 @@
 use crate::{ASSISTANT_MESSAGES, ASSISTANT_SESSIONS, DB, database::{db_activity, db_set_detail, db_set_error}};
 use serde::{Deserialize, Serialize};
-use surrealdb::{RecordId, Uuid};
+use surrealdb::types::{RecordId, Datetime, SurrealValue};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 pub struct AssistantSession {
     pub id: RecordId,
     pub title: String,
-    pub created: Option<surrealdb::sql::Datetime>,
-    pub updated: Option<surrealdb::sql::Datetime>,
+    pub created: Option<Datetime>,
+    pub updated: Option<Datetime>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 pub struct AssistantMessage {
     pub id: RecordId,
     pub session_ref: RecordId,
@@ -18,7 +18,7 @@ pub struct AssistantMessage {
     pub content: String,
     pub attachments: Option<Vec<String>>,
     pub attachments_refs: Option<Vec<RecordId>>,
-    pub created: Option<surrealdb::sql::Datetime>,
+    pub created: Option<Datetime>,
 }
 
 pub async fn create_session(title: &str) -> anyhow::Result<RecordId, anyhow::Error> {
@@ -26,7 +26,7 @@ pub async fn create_session(title: &str) -> anyhow::Result<RecordId, anyhow::Err
     db_set_detail(format!("{title}"));
     let new_row = AssistantSession { 
         title: title.to_string(),
-        id: RecordId::from_table_key(ASSISTANT_SESSIONS, Uuid::new_v4().to_string()),
+        id: RecordId::new(ASSISTANT_SESSIONS, surrealdb_types::Uuid::new_v4().to_string()),
         created: Some(chrono::Utc::now().into()),
         updated: Some(chrono::Utc::now().into()), 
     };
@@ -80,7 +80,7 @@ pub async fn append_message(session_id: &RecordId, role: &str, content: &str, at
         content: content.to_string(),
         attachments,
         attachments_refs,
-        id: RecordId::from_table_key(ASSISTANT_MESSAGES, Uuid::new_v4().to_string()),
+        id: RecordId::new(ASSISTANT_MESSAGES, surrealdb_types::Uuid::new_v4().to_string()),
         created: Some(chrono::Utc::now().into()),
     };
     let _: Option<AssistantMessage> = DB
@@ -94,7 +94,7 @@ pub async fn append_message(session_id: &RecordId, role: &str, content: &str, at
 
 pub async fn delete_session(session_id: &RecordId) -> anyhow::Result<(), anyhow::Error> {
     let _ga = db_activity("Delete chat session");
-    db_set_detail(format!("{session_id}"));
+    db_set_detail(format!("{session_id:?}"));
     // Delete messages for this session first (by index for efficiency)
     // Then delete the session row itself
     let _ = DB

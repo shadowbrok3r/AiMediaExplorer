@@ -26,7 +26,7 @@ pub struct ChatMessage {
     pub role: ChatRole,
     pub content: String,
     pub attachments: Option<Vec<String>>,
-    pub created: Option<surrealdb::sql::Datetime>,
+    pub created: Option<surrealdb::types::Datetime>,
 }
 
 pub struct AssistantPanel {
@@ -41,7 +41,7 @@ pub struct AssistantPanel {
     chat_streaming: bool,
     pub sessions: Vec<(String, Vec<ChatMessage>)>,
     pub active_session: usize,
-    pub session_ids: Vec<surrealdb::RecordId>,
+    pub session_ids: Vec<surrealdb::types::RecordId>,
     pub temp: f32,
     pub model_override: Option<String>,
     assistant_task: Option<JoinHandle<()>>,
@@ -66,8 +66,8 @@ pub struct AssistantPanel {
     model_name: String,
     open_model_opts: bool,
     // Async new-session creation pipe (persistent channel)
-    new_session_tx: crossbeam::channel::Sender<(Option<surrealdb::RecordId>, String)>,
-    new_session_rx: crossbeam::channel::Receiver<(Option<surrealdb::RecordId>, String)>,
+    new_session_tx: crossbeam::channel::Sender<(Option<surrealdb::types::RecordId>, String)>,
+    new_session_rx: crossbeam::channel::Receiver<(Option<surrealdb::types::RecordId>, String)>,
     // OpenRouter filters
     filter_text: bool,
     filter_image: bool,
@@ -79,8 +79,8 @@ pub struct AssistantPanel {
     filter_out_audio: bool,
     // One-shot initial load control and channel
     first_run: bool,
-    initial_sessions_tx: crossbeam::channel::Sender<(Vec<(String, Vec<ChatMessage>)>, Vec<surrealdb::RecordId>)>,
-    initial_sessions_rx: crossbeam::channel::Receiver<(Vec<(String, Vec<ChatMessage>)>, Vec<surrealdb::RecordId>)>,
+    initial_sessions_tx: crossbeam::channel::Sender<(Vec<(String, Vec<ChatMessage>)>, Vec<surrealdb::types::RecordId>)>,
+    initial_sessions_rx: crossbeam::channel::Receiver<(Vec<(String, Vec<ChatMessage>)>, Vec<surrealdb::types::RecordId>)>,
     // Async session load upon click (index, messages)
     session_loaded_tx: crossbeam::channel::Sender<(usize, Vec<ChatMessage>)>,
     session_loaded_rx: crossbeam::channel::Receiver<(usize, Vec<ChatMessage>)>,
@@ -116,8 +116,8 @@ impl AssistantPanel {
     pub fn new() -> Self {
         let (chat_tx, chat_rx) = unbounded::<String>();
         let (models_tx, models_rx) = unbounded::<Result<Vec<OpenRouterModel>, String>>();
-        let (new_session_tx, new_session_rx) = unbounded::<(Option<surrealdb::RecordId>, String)>();
-        let (initial_sessions_tx, initial_sessions_rx) = bounded::<(Vec<(String, Vec<ChatMessage>)>, Vec<surrealdb::RecordId>)>(1);
+        let (new_session_tx, new_session_rx) = unbounded::<(Option<surrealdb::types::RecordId>, String)>();
+        let (initial_sessions_tx, initial_sessions_rx) = bounded::<(Vec<(String, Vec<ChatMessage>)>, Vec<surrealdb::types::RecordId>)>(1);
         let (session_loaded_tx, session_loaded_rx) = unbounded::<(usize, Vec<ChatMessage>)>();
         let (db_thumb_tx, db_thumb_rx) = unbounded::<(String, Option<(Vec<u8>, u32, u32)>)>();
         
@@ -649,7 +649,7 @@ impl AssistantPanel {
                                     msgs.push(ChatMessage { role, content: r.content, attachments: atts, created: r.created });
                                 }
                             }
-                            Err(e) => log::error!("Failed to load messages for session {session_id}: {e}")
+                            Err(e) => log::error!("Failed to load messages for session {session_id:?}: {e}")
                         }
                         let _ = tx.try_send((i, msgs));
                     });
@@ -735,7 +735,7 @@ impl AssistantPanel {
             let tx_init = self.initial_sessions_tx.clone();
             tokio::spawn(async move {
                 let mut items: Vec<(String, Vec<ChatMessage>)> = Vec::new();
-                let mut ids: Vec<surrealdb::RecordId> = Vec::new();
+                let mut ids: Vec<surrealdb::types::RecordId> = Vec::new();
                 match crate::database::assistant_chat::list_sessions().await {
                     Ok(list) => {
                         for (id, title) in list.into_iter() {
@@ -1579,7 +1579,7 @@ impl AssistantPanel {
         self.suppress_selected_attachment = false;
     }
 
-    fn render_bubble(&mut self, ui: &mut Ui, msg: &ChatMessage, created_clone: Option<surrealdb::sql::Datetime>, idx: usize, content_clone: String) {
+    fn render_bubble(&mut self, ui: &mut Ui, msg: &ChatMessage, created_clone: Option<surrealdb::types::Datetime>, idx: usize, content_clone: String) {
         let is_user = matches!(msg.role, ChatRole::User);
         let rounding = 8.0;
         let rnd = egui::CornerRadius {

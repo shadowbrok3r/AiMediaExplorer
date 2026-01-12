@@ -112,7 +112,7 @@ impl crate::ui::file_table::FileExplorer {
                                 .set_buttons(rfd::MessageButtons::YesNo)
                                 .show() == rfd::MessageDialogResult::Yes
                             {
-                                let paths: Vec<surrealdb::RecordId> = self
+                                let paths: Vec<surrealdb::types::RecordId> = self
                                     .table
                                     .iter()
                                     .filter(|r| r.file_type != "<DIR>")

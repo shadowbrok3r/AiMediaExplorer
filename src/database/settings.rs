@@ -3,9 +3,51 @@ use egui::Options;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
-use surrealdb::RecordId;
+use surrealdb::types::{RecordId, SurrealValue};
 use tokio::task;
 use crate::database::{db_activity, db_set_detail, db_set_error};
+
+/// Inner struct for database storage (without egui::Options which doesn't implement SurrealValue)
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
+struct UiSettingsDb {
+    pub id: RecordId,
+    pub ext_enabled: Option<Vec<(String, bool)>>,
+    pub excluded_dirs: Option<Vec<String>>,
+    pub group_by_category: bool,
+    pub auto_indexing: bool,
+    pub ai_prompt_template: String,
+    pub overwrite_descriptions: bool,
+    pub filter_modified_after: Option<String>,
+    pub filter_modified_before: Option<String>,
+    pub filter_skip_icons: bool,
+    pub db_min_size_bytes: Option<u64>,
+    pub db_max_size_bytes: Option<u64>,
+    pub db_excluded_exts: Option<Vec<String>>,
+    pub auto_clip_embeddings: bool,
+    pub clip_augment_with_text: bool,
+    pub clip_overwrite_embeddings: bool,
+    pub clip_model: Option<String>,
+    pub recent_paths: Vec<String>,
+    pub recent_models: Vec<String>,
+    pub last_used_model: Option<String>,
+    pub auto_save_to_database: bool,
+    pub joycaption_model_dir: Option<String>,
+    pub reranker_model: Option<String>,
+    pub jina_max_length: Option<usize>,
+    pub jina_doc_type: Option<String>,
+    pub jina_query_type: Option<String>,
+    pub jina_enable_multimodal: Option<bool>,
+    pub scan_found_batch_max: Option<usize>,
+    pub ai_chat_provider: Option<String>,
+    pub openai_api_key: Option<String>,
+    pub grok_api_key: Option<String>,
+    pub gemini_api_key: Option<String>,
+    pub groq_api_key: Option<String>,
+    pub openrouter_api_key: Option<String>,
+    pub openai_base_url: Option<String>,
+    pub openai_default_model: Option<String>,
+    pub openai_organization: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UiSettings {
@@ -71,13 +113,104 @@ pub struct UiSettings {
     pub openai_default_model: Option<String>,
     // Optional OpenAI organization header
     pub openai_organization: Option<String>,
+    // egui preferences - kept in memory only, not persisted to DB
+    #[serde(skip)]
     pub egui_preferences: Options
+}
+
+impl From<UiSettingsDb> for UiSettings {
+    fn from(db: UiSettingsDb) -> Self {
+        Self {
+            id: db.id,
+            ext_enabled: db.ext_enabled,
+            excluded_dirs: db.excluded_dirs,
+            group_by_category: db.group_by_category,
+            auto_indexing: db.auto_indexing,
+            ai_prompt_template: db.ai_prompt_template,
+            overwrite_descriptions: db.overwrite_descriptions,
+            filter_modified_after: db.filter_modified_after,
+            filter_modified_before: db.filter_modified_before,
+            filter_skip_icons: db.filter_skip_icons,
+            db_min_size_bytes: db.db_min_size_bytes,
+            db_max_size_bytes: db.db_max_size_bytes,
+            db_excluded_exts: db.db_excluded_exts,
+            auto_clip_embeddings: db.auto_clip_embeddings,
+            clip_augment_with_text: db.clip_augment_with_text,
+            clip_overwrite_embeddings: db.clip_overwrite_embeddings,
+            clip_model: db.clip_model,
+            recent_paths: db.recent_paths,
+            recent_models: db.recent_models,
+            last_used_model: db.last_used_model,
+            auto_save_to_database: db.auto_save_to_database,
+            joycaption_model_dir: db.joycaption_model_dir,
+            reranker_model: db.reranker_model,
+            jina_max_length: db.jina_max_length,
+            jina_doc_type: db.jina_doc_type,
+            jina_query_type: db.jina_query_type,
+            jina_enable_multimodal: db.jina_enable_multimodal,
+            scan_found_batch_max: db.scan_found_batch_max,
+            ai_chat_provider: db.ai_chat_provider,
+            openai_api_key: db.openai_api_key,
+            grok_api_key: db.grok_api_key,
+            gemini_api_key: db.gemini_api_key,
+            groq_api_key: db.groq_api_key,
+            openrouter_api_key: db.openrouter_api_key,
+            openai_base_url: db.openai_base_url,
+            openai_default_model: db.openai_default_model,
+            openai_organization: db.openai_organization,
+            egui_preferences: Options::default(),
+        }
+    }
+}
+
+impl From<&UiSettings> for UiSettingsDb {
+    fn from(s: &UiSettings) -> Self {
+        Self {
+            id: s.id.clone(),
+            ext_enabled: s.ext_enabled.clone(),
+            excluded_dirs: s.excluded_dirs.clone(),
+            group_by_category: s.group_by_category,
+            auto_indexing: s.auto_indexing,
+            ai_prompt_template: s.ai_prompt_template.clone(),
+            overwrite_descriptions: s.overwrite_descriptions,
+            filter_modified_after: s.filter_modified_after.clone(),
+            filter_modified_before: s.filter_modified_before.clone(),
+            filter_skip_icons: s.filter_skip_icons,
+            db_min_size_bytes: s.db_min_size_bytes,
+            db_max_size_bytes: s.db_max_size_bytes,
+            db_excluded_exts: s.db_excluded_exts.clone(),
+            auto_clip_embeddings: s.auto_clip_embeddings,
+            clip_augment_with_text: s.clip_augment_with_text,
+            clip_overwrite_embeddings: s.clip_overwrite_embeddings,
+            clip_model: s.clip_model.clone(),
+            recent_paths: s.recent_paths.clone(),
+            recent_models: s.recent_models.clone(),
+            last_used_model: s.last_used_model.clone(),
+            auto_save_to_database: s.auto_save_to_database,
+            joycaption_model_dir: s.joycaption_model_dir.clone(),
+            reranker_model: s.reranker_model.clone(),
+            jina_max_length: s.jina_max_length,
+            jina_doc_type: s.jina_doc_type.clone(),
+            jina_query_type: s.jina_query_type.clone(),
+            jina_enable_multimodal: s.jina_enable_multimodal,
+            scan_found_batch_max: s.scan_found_batch_max,
+            ai_chat_provider: s.ai_chat_provider.clone(),
+            openai_api_key: s.openai_api_key.clone(),
+            grok_api_key: s.grok_api_key.clone(),
+            gemini_api_key: s.gemini_api_key.clone(),
+            groq_api_key: s.groq_api_key.clone(),
+            openrouter_api_key: s.openrouter_api_key.clone(),
+            openai_base_url: s.openai_base_url.clone(),
+            openai_default_model: s.openai_default_model.clone(),
+            openai_organization: s.openai_organization.clone(),
+        }
+    }
 }
 
 impl Default for UiSettings {
     fn default() -> Self {
         Self {
-            id: RecordId::from_table_key(USER_SETTINGS, "ShadowbrokerPC"),
+            id: RecordId::new(USER_SETTINGS, "ShadowbrokerPC"),
             ext_enabled: None,
             excluded_dirs: None,
             group_by_category: false,
@@ -174,9 +307,10 @@ pub fn save_settings(s: &UiSettings) {
 pub async fn save_settings_in_db(s: UiSettings) -> anyhow::Result<(), anyhow::Error> {
     let _ga = db_activity("UPSERT user settings");
     db_set_detail("Saving user settings".to_string());
+    let db_settings: UiSettingsDb = (&s).into();
     super::DB
-        .upsert::<Option<UiSettings>>(UiSettings::default().id)
-        .content::<UiSettings>(s)
+        .upsert::<Option<UiSettingsDb>>(UiSettings::default().id)
+        .content::<UiSettingsDb>(db_settings)
         .await
         .map_err(|e| { db_set_error(format!("Save settings failed: {e}")); e })?;
     Ok(())
@@ -185,10 +319,9 @@ pub async fn save_settings_in_db(s: UiSettings) -> anyhow::Result<(), anyhow::Er
 pub async fn get_settings() -> anyhow::Result<UiSettings, anyhow::Error> {
     let _ga = db_activity("SELECT user settings");
     db_set_detail("Loading user settings".to_string());
-    let settings_res: Option<UiSettings> = super::DB.select(UiSettings::default().id).await?;
-    // log::info!("Got settings: {:?}", settings_res.is_some());
+    let settings_res: Option<UiSettingsDb> = super::DB.select(UiSettings::default().id).await?;
     if let Some(settings) = settings_res {
-        return Ok(settings);
+        return Ok(settings.into());
     } else {
         Ok(UiSettings::default())
     }

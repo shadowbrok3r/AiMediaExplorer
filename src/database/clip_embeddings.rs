@@ -1,14 +1,13 @@
 use chrono::Utc;
-use surrealdb::RecordId;
+use surrealdb::types::{RecordId, SurrealValue};
 use crate::database::{db_activity, db_set_detail, db_set_error};
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, SurrealValue)]
 pub struct SimilarHit {
     pub id: RecordId,
     pub thumb_ref: Option<crate::Thumbnail>,
     pub path: String,
     pub dist: f32, // cosine distance from Surreal (lower is better)
-
 }
 
 impl super::ClipEmbeddingRow {
@@ -94,7 +93,7 @@ pub async fn upsert_clip_embedding(
         "SELECT VALUE id FROM clip_embeddings WHERE path = $path"
     };
 
-    let existing: Option<surrealdb::RecordId> = super::DB.query(query).await
+    let existing: Option<RecordId> = super::DB.query(query).await
         .map_err(|e| { db_set_error(format!("Embedding lookup failed: {e}")); e })?
         .take(0)?;
 

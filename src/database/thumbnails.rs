@@ -2,14 +2,14 @@ use std::time::Instant;
 
 use crate::{LogicalGroup, DB};
 use crate::database::{db_activity, db_set_progress, db_set_detail, db_set_error};
-use surrealdb::RecordId;
+use surrealdb::types::{RecordId, SurrealValue};
 use chrono::Utc;
 use crossbeam::channel::Sender as CrossbeamSender;
 
 impl Default for crate::Thumbnail {
     fn default() -> Self {
         Self { 
-            id: RecordId::from_table_key(super::THUMBNAILS, surrealdb::sql::Uuid::new_v4().0.to_string()), 
+            id: RecordId::new(super::THUMBNAILS, surrealdb_types::Uuid::new_v4().to_string()), 
             db_created: Default::default(), 
             path: Default::default(), 
             filename: Default::default(), 
@@ -38,9 +38,9 @@ impl crate::Thumbnail {
         // plus update_or_create_thumbnail() logic to keep rows in sync. Existing rows with
         // filename-based IDs remain valid; new inserts will use UUIDs avoiding collisions.
         Self {
-            id: RecordId::from_table_key(
+            id: RecordId::new(
                 super::THUMBNAILS,
-                surrealdb::sql::Uuid::new_v4().0.to_string(),
+                surrealdb_types::Uuid::new_v4().to_string(),
             ),
             db_created: Default::default(),
             path: Default::default(),
@@ -312,7 +312,7 @@ impl crate::Thumbnail {
 
     /// List categories with their counts.
     pub async fn list_category_counts() -> anyhow::Result<Vec<(String, i64)>, anyhow::Error> {
-        #[derive(Debug, serde::Deserialize)]
+        #[derive(Debug, serde::Deserialize, SurrealValue)]
         struct Row { category: Option<String>, cnt: i64 }
         let _ga = db_activity("Count categories");
         db_set_detail("Counting categories".to_string());

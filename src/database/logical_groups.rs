@@ -1,22 +1,22 @@
 use serde::{Deserialize, Serialize};
-use surrealdb::RecordId;
+use surrealdb::types::{RecordId, SurrealValue};
 
 use crate::{DB, LOGICAL_GROUPS};
 use crate::database::{db_activity, db_set_detail, db_set_error};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 pub struct LogicalGroup {
     pub id: RecordId,
     pub name: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, SurrealValue)]
 struct LogicalGroupNew { name: String }
 
 impl Default for LogicalGroup {
     fn default() -> Self {
         Self { 
-            id: RecordId::from_table_key(LOGICAL_GROUPS, "Default"), 
+            id: RecordId::new(LOGICAL_GROUPS, "Default"), 
             name: "Default".to_string()
         }
     }
