@@ -1198,24 +1198,37 @@ impl FileExplorer {
     }
 
     fn apply_recursive_filter_and_sort(&mut self) {
-        // Build signature (filter text + type toggles) to avoid unnecessary rebuild work
+        // Build signature (filter text + type toggles + source row count) to avoid unnecessary rebuild work
+        // Include last_scan_rows.len() so we recompute when new rows arrive during a scan
         let sig = format!(
-            "{}|i{}|v{}|d{}",
+            "{}|i{}|v{}|d{}|n{}",
             self.viewer.filter,
             self.viewer.types_show_images as u8,
             self.viewer.types_show_videos as u8,
-            self.viewer.types_show_dirs as u8
+            self.viewer.types_show_dirs as u8,
+            self.last_scan_rows.len()
         );
         let changed = self
             .recursive_filter_sig
             .as_ref()
             .map(|p| p != &sig)
             .unwrap_or(true);
-        // If unchanged and we already have filtered rows, skip recompute
+        // If unchanged (including row count) and we already have filtered rows, skip recompute
         if !changed && !self.recursive_filtered_rows.is_empty() {
             return;
         }
-        if changed {
+        // Only reset page if filter settings changed (not just row count)
+        let filter_changed = self
+            .recursive_filter_sig
+            .as_ref()
+            .map(|p| {
+                // Compare without the row count suffix
+                let old_parts: Vec<&str> = p.splitn(5, '|').collect();
+                let new_parts: Vec<&str> = sig.splitn(5, '|').collect();
+                old_parts.get(..4) != new_parts.get(..4)
+            })
+            .unwrap_or(true);
+        if filter_changed {
             self.recursive_current_page = 0;
         }
         self.recursive_filter_sig = Some(sig.clone());

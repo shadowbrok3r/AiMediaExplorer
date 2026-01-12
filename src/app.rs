@@ -30,6 +30,12 @@ pub struct SmartMediaContext {
     pub db_ready_tx: Sender<()>,
     pub db_ready_rx: Receiver<()>,
     pub db_ready: bool,
+    // Database selection modal state (shown when no database is found)
+    pub show_db_select_modal: bool,
+    pub db_select_mode: DbSelectMode,
+    pub db_websocket_url: String,
+    pub db_local_path: String,
+    pub db_connection_error: Option<String>,
     // UI State
     pub open_settings_modal: bool,
     // AI init status flags
@@ -72,6 +78,13 @@ pub enum Page {
     Main
 }
 
+#[derive(PartialEq, Debug, Clone, Default)]
+pub enum DbSelectMode {
+    #[default]
+    Local,
+    WebSocket,
+}
+
 impl SmartMediaApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         setup_custom_fonts(&cc.egui_ctx);
@@ -106,6 +119,11 @@ impl SmartMediaApp {
             ui_settings_tx, ui_settings_rx,
             db_ready_tx, db_ready_rx,
             db_ready: false,
+            show_db_select_modal: false,
+            db_select_mode: DbSelectMode::Local,
+            db_websocket_url: "ws://localhost:8000".to_string(),
+            db_local_path: crate::database::DB_DEFAULT_PATH.to_string(),
+            db_connection_error: None,
             open_settings_modal: false,
             ai_initializing: false,
             ai_ready: false,

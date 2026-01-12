@@ -10,15 +10,27 @@ impl crate::app::SmartMediaContext {
         
         if self.first_run {
             egui_extras::install_image_loaders(ctx);
-            let db_ready_tx = self.db_ready_tx.clone();
             
-            tokio::spawn(async move {
-                crate::ui::status::DB_STATUS.set_state(crate::ui::status::StatusState::Initializing, "Opening DB");
-                let db = crate::database::new(db_ready_tx.clone()).await;
-                crate::ui::status::DB_STATUS.set_state(crate::ui::status::StatusState::Running, "Loading settings");
-                log::warn!("DB: {db:?}");
-                Ok::<(), anyhow::Error>(())
-            });
+            // Check if a database exists at the configured path
+            let db_path = crate::database::get_db_path();
+            let db_exists = std::path::Path::new(&db_path).exists();
+            
+            if db_exists {
+                // Database exists, connect normally
+                let db_ready_tx = self.db_ready_tx.clone();
+                tokio::spawn(async move {
+                    crate::ui::status::DB_STATUS.set_state(crate::ui::status::StatusState::Initializing, "Opening DB");
+                    let db = crate::database::new(db_ready_tx.clone()).await;
+                    crate::ui::status::DB_STATUS.set_state(crate::ui::status::StatusState::Running, "Loading settings");
+                    log::warn!("DB: {db:?}");
+                    Ok::<(), anyhow::Error>(())
+                });
+            } else {
+                // No database found - show selection modal
+                self.show_db_select_modal = true;
+                self.db_local_path = db_path;
+                log::info!("No database found at configured path, showing selection modal");
+            }
             
             match serde_json::from_str::<eframe::egui::Style>(STYLE) {
                 Ok(mut theme) => {
@@ -815,6 +827,140 @@ impl crate::app::SmartMediaContext {
             if res.response.should_close() {
                 self.open_ui_settings = false;
             }
+        }
+
+        // Database selection modal (shown when no database is found on startup)
+        if self.show_db_select_modal {
+            Window::new("Database Setup")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.set_min_width(450.0);
+                    ui.vertical_centered(|ui| {
+                        ui.heading("Welcome to Smart Media Explorer");
+                        ui.add_space(8.0);
+                        ui.label("No database was found. Please choose how to connect:");
+                        ui.add_space(16.0);
+                    });
+
+                    // Connection mode selection
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut self.db_select_mode, crate::app::DbSelectMode::Local, "📁 Local Database");
+                        ui.selectable_value(&mut self.db_select_mode, crate::app::DbSelectMode::WebSocket, "🌐 WebSocket Server");
+                    });
+                    ui.separator();
+
+                    match self.db_select_mode {
+                        crate::app::DbSelectMode::Local => {
+                            ui.label("Database folder path:");
+                            ui.horizontal(|ui| {
+                                ui.text_edit_singleline(&mut self.db_local_path);
+                                if ui.button("Browse…").clicked() {
+                                    if let Some(dir) = rfd::FileDialog::new()
+                                        .set_title("Choose database folder")
+                                        .pick_folder()
+                                    {
+                                        self.db_local_path = dir.display().to_string();
+                                    }
+                                }
+                            });
+                            ui.add_space(8.0);
+                            ui.label(egui::RichText::new("A new database will be created if the folder is empty.").weak().italics());
+                        }
+                        crate::app::DbSelectMode::WebSocket => {
+                            ui.label("WebSocket URL:");
+                            ui.text_edit_singleline(&mut self.db_websocket_url);
+                            ui.add_space(8.0);
+                            ui.label(egui::RichText::new("Example: ws://localhost:8000 or wss://your-server.com").weak().italics());
+                        }
+                    }
+
+                    // Show any connection error
+                    if let Some(ref err) = self.db_connection_error {
+                        ui.add_space(8.0);
+                        ui.colored_label(Color32::RED, format!("❌ Connection failed: {}", err));
+                    }
+
+                    ui.add_space(16.0);
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("Connect").clicked() {
+                            self.db_connection_error = None;
+                            match self.db_select_mode {
+                                crate::app::DbSelectMode::Local => {
+                                    let path = self.db_local_path.clone();
+                                    // Save the path and attempt to connect
+                                    if let Err(e) = crate::database::set_db_path(&path) {
+                                        self.db_connection_error = Some(e.to_string());
+                                    } else {
+                                        let db_ready_tx = self.db_ready_tx.clone();
+                                        self.show_db_select_modal = false;
+                                        tokio::spawn(async move {
+                                            crate::ui::status::DB_STATUS.set_state(
+                                                crate::ui::status::StatusState::Initializing,
+                                                format!("Creating/Opening DB at {}", path)
+                                            );
+                                            match crate::database::new(db_ready_tx.clone()).await {
+                                                Ok(_) => {
+                                                    crate::ui::status::DB_STATUS.set_state(
+                                                        crate::ui::status::StatusState::Running,
+                                                        "Loading settings"
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    log::error!("Database connection failed: {e}");
+                                                    crate::ui::status::DB_STATUS.set_state(
+                                                        crate::ui::status::StatusState::Error,
+                                                        format!("Connection failed: {e}")
+                                                    );
+                                                }
+                                            }
+                                            Ok::<(), anyhow::Error>(())
+                                        });
+                                    }
+                                }
+                                crate::app::DbSelectMode::WebSocket => {
+                                    // WebSocket connection - not yet fully implemented
+                                    // For now just show a message
+                                    self.db_connection_error = Some(
+                                        "WebSocket connections require SurrealDB server running. This feature is coming soon.".to_string()
+                                    );
+                                    // TODO: Implement WebSocket connection when ready
+                                    // let ws_url = self.db_websocket_url.clone();
+                                    // let db_ready_tx = self.db_ready_tx.clone();
+                                    // self.show_db_select_modal = false;
+                                    // tokio::spawn(async move { ... });
+                                }
+                            }
+                        }
+                        ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Use Default").on_hover_text("Create a new database in the default location").clicked() {
+                                self.db_local_path = crate::database::DB_DEFAULT_PATH.to_string();
+                                let db_ready_tx = self.db_ready_tx.clone();
+                                self.show_db_select_modal = false;
+                                tokio::spawn(async move {
+                                    crate::ui::status::DB_STATUS.set_state(
+                                        crate::ui::status::StatusState::Initializing,
+                                        "Creating default database"
+                                    );
+                                    match crate::database::new(db_ready_tx.clone()).await {
+                                        Ok(_) => {
+                                            crate::ui::status::DB_STATUS.set_state(
+                                                crate::ui::status::StatusState::Running,
+                                                "Loading settings"
+                                            );
+                                        }
+                                        Err(e) => {
+                                            log::error!("Database connection failed: {e}");
+                                        }
+                                    }
+                                    Ok::<(), anyhow::Error>(())
+                                });
+                            }
+                        });
+                    });
+                });
         }
 
         // Show AI Assistant in its own viewport window (independent of the dock) when enabled via View menu
