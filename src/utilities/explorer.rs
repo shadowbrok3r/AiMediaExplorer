@@ -1,6 +1,6 @@
 use crate::utilities::types::QuickAccess;
 use directories::UserDirs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub fn quick_access() -> Vec<QuickAccess> {
     let mut v = Vec::new();

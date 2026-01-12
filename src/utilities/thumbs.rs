@@ -1,5 +1,6 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
+#[cfg(windows)]
 use image::DynamicImage;
 use image::GenericImageView;
 use std::path::Path;
@@ -98,6 +99,13 @@ pub fn generate_image_thumb_data(path: &Path) -> Result<String, String> {
 #[cfg(windows)]
 pub fn generate_video_thumb_data(path: &Path) -> Result<String, String> {
     generate_shell_thumb_data(path)
+}
+
+/// On non-Windows platforms, video thumbnail generation is not supported via shell.
+/// Returns an error indicating the feature is unavailable.
+#[cfg(not(windows))]
+pub fn generate_video_thumb_data(path: &Path) -> Result<String, String> {
+    Err(format!("Video thumbnail generation not supported on this platform for: {}", path.display()))
 }
 
 // Windows Shell generic thumbnail generator to cover formats not handled by the image crate (e.g., RAW like .arw)

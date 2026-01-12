@@ -2,7 +2,7 @@ use anyhow::Result;
 use futures_util::StreamExt;
 use base64::Engine as _;
 use async_openai::{config::OpenAIConfig, Client};
-use async_openai::types::{
+use async_openai::types::chat::{
     ChatCompletionRequestMessage,
     ChatCompletionRequestSystemMessageArgs,
     ChatCompletionRequestUserMessageArgs,

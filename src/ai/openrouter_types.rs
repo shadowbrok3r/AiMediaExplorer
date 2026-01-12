@@ -1,7 +1,7 @@
 use std::pin::Pin;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use async_openai::types::{ChatChoiceStream, CompletionUsage};
+use async_openai::types::chat::{ChatChoiceStream, CompletionUsage};
 
 pub type OpenRouterChatCompletionResponseStream = Pin<
     Box<dyn futures_util::Stream<Item = Result<OpenRouterChatCompletionStreamResponse, async_openai::error::OpenAIError>> + Send>,

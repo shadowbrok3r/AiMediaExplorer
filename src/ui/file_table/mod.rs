@@ -549,12 +549,24 @@ impl FileExplorer {
                         }
                     }
                     ui.separator();
-                    ui.label(format!(
-                        "Showing {} of {} (page size {})",
-                        self.table.len(),
-                        self.last_scan_rows.len(),
-                        self.recursive_page_size
-                    ));
+                    let filtered_total = self.recursive_filtered_rows.len();
+                    let unfiltered_total = self.last_scan_rows.len();
+                    if filtered_total == unfiltered_total {
+                        ui.label(format!(
+                            "Showing {} of {} (page size {})",
+                            self.table.len(),
+                            unfiltered_total,
+                            self.recursive_page_size
+                        ));
+                    } else {
+                        ui.label(format!(
+                            "Showing {} of {} filtered ({} total, page size {})",
+                            self.table.len(),
+                            filtered_total,
+                            unfiltered_total,
+                            self.recursive_page_size
+                        ));
+                    }
                     // Display the current row range (1-based) for clarity
                     if self.recursive_page_size > 0 && !self.recursive_filtered_rows.is_empty() {
                         let start_idx = self.recursive_current_page * self.recursive_page_size;
@@ -993,7 +1005,7 @@ impl FileExplorer {
             let qtext = qtext.to_string();
             let start = self.similarity_query_offset;
             let batch = batch; // capture
-            let offset_tx = self.viewer.ai_update_tx.clone();
+            let _offset_tx = self.viewer.ai_update_tx.clone();
             tokio::spawn(async move {
                 // Ensure engine
                 let _ = crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await;
@@ -1109,13 +1121,14 @@ impl FileExplorer {
         });
     }
 
-    // Recompute total pages for current recursive snapshot
+    // Recompute total pages for current recursive snapshot (uses filtered rows for accurate pagination)
     fn update_recursive_total_pages(&mut self) {
         if self.recursive_page_size == 0 {
             self.recursive_total_pages = 0;
             return;
         }
-        let total_rows = self.last_scan_rows.len();
+        // Use filtered rows count for pagination, not the unfiltered last_scan_rows
+        let total_rows = self.recursive_filtered_rows.len();
         self.recursive_total_pages =
             (total_rows + self.recursive_page_size - 1) / self.recursive_page_size;
         if self.recursive_current_page >= self.recursive_total_pages

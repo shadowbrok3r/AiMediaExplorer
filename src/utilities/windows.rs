@@ -225,7 +225,10 @@ pub fn system_mem_mb() -> Option<(f32, f32)> {
 }
 
 #[cfg(not(windows))]
-fn system_mem_mb() -> Option<(f32, f32)> { None }
+pub fn system_mem_mb() -> Option<(f32, f32)> { None }
+
+#[cfg(not(windows))]
+pub fn gpu_mem_mb() -> Option<(f32, f32)> { None }
 
 // Try to read VRAM usage via PDH performance counters (works well on NVIDIA drivers)
 #[cfg(windows)]
@@ -260,11 +263,13 @@ fn gpu_mem_mb_pdh() -> Option<(f32, f32)> {
 }
 
 #[cfg(not(windows))]
+#[allow(dead_code)]
 fn gpu_mem_mb_pdh() -> Option<(f32, f32)> { None }
 
 #[cfg(not(windows))]
 fn sample_process_cpu_percent() -> Option<f32> { None }
 #[cfg(not(windows))]
+#[allow(dead_code)]
 fn process_mem_mb() -> Option<f32> { None }
 
 #[cfg(windows)]
