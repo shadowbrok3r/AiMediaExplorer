@@ -196,7 +196,7 @@ pub fn set_db_path<P: AsRef<Path>>(dir: P) -> anyhow::Result<(), anyhow::Error> 
     let mut pb = PathBuf::new();
     pb.push(DB_PATH_FILE);
     if let Some(parent) = pb.parent() { fs::create_dir_all(parent)?; }
-    fs::write(&pb, dir.as_os_str().to_string_lossy().as_ref())?;
+    fs::write::<&PathBuf, &str>(&pb, dir.as_os_str().to_string_lossy().as_ref())?;
     Ok(())
 }
 
