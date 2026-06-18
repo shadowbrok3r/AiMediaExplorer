@@ -11,6 +11,7 @@ pub use database::*;
 use eframe::egui::*;
 
 impl eframe::App for app::SmartMediaApp {
+    #[allow(deprecated)]
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.context.receive(ctx);
         self.navbar(ctx);
@@ -91,6 +92,8 @@ impl eframe::App for app::SmartMediaApp {
                 .show_inside(ui, &mut self.context);
         });
     }
+
+    fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {}
 
     fn persist_egui_memory(&self) -> bool { true }
 

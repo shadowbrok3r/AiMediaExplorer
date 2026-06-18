@@ -1,4 +1,4 @@
-use chrono::{DateTime, Local, NaiveDate};
+use chrono::{DateTime, Local};
 use eframe::egui::*;
 use egui::{containers::menu::{MenuButton, MenuConfig}, style::StyleModifier};
 
@@ -58,17 +58,17 @@ impl crate::ui::file_table::FileExplorer {
             ui.add_space(5.);
             ui.horizontal(|ui| {
                 // Parse current settings or default to today (without forcing persistence until user changes)
-                let today: NaiveDate = Local::now().date_naive();
-                let mut after_date: NaiveDate = self.viewer.ui_settings
+                let today = jiff::Zoned::now().date();
+                let mut after_date: jiff::civil::Date = self.viewer.ui_settings
                     .filter_modified_after
                     .as_deref()
-                    .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+                    .and_then(|s| s.parse::<jiff::civil::Date>().ok())
                     .unwrap_or(today);
 
-                let mut before_date: NaiveDate = self.viewer.ui_settings
+                let mut before_date: jiff::civil::Date = self.viewer.ui_settings
                     .filter_modified_before
                     .as_deref()
-                    .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+                    .and_then(|s| s.parse::<jiff::civil::Date>().ok())
                     .unwrap_or(today);
 
                 let after_id =  format!("{after_date} Start date");
@@ -98,13 +98,13 @@ impl crate::ui::file_table::FileExplorer {
                 }
 
                 if resp_after.changed() {
-                    self.viewer.ui_settings.filter_modified_after = Some(after_date.format("%Y-%m-%d").to_string());
+                    self.viewer.ui_settings.filter_modified_after = Some(after_date.to_string());
                     crate::database::settings::save_settings(&self.viewer.ui_settings);
                     self.active_filter_group = None;
                     self.apply_filters_to_current_table();
                 }
                 if resp_before.changed() {
-                    self.viewer.ui_settings.filter_modified_before = Some(before_date.format("%Y-%m-%d").to_string());
+                    self.viewer.ui_settings.filter_modified_before = Some(before_date.to_string());
                     crate::database::settings::save_settings(&self.viewer.ui_settings);
                     self.active_filter_group = None;
                     self.apply_filters_to_current_table();
