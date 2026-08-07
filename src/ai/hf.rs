@@ -1,8 +1,16 @@
 use anyhow::Result;
 use candle_core::{DType, Device};
 use candle_nn::VarBuilder;
-use hf_hub::api::sync::Api;
+use hf_hub::{HFClientSync, HFRepositorySync, RepoTypeModel, split_id};
 use tokenizers::Tokenizer;
+
+pub struct ApiRepo(HFRepositorySync<RepoTypeModel>);
+
+impl ApiRepo {
+    pub fn get(&self, filename: &str) -> Result<std::path::PathBuf> {
+        Ok(self.0.download_file().filename(filename).send()?)
+    }
+}
 
 pub fn pick_device_cuda0_or_cpu() -> Device {
     let dev = candle_core::Device::new_cuda(0).unwrap_or(candle_core::Device::Cpu);
@@ -10,16 +18,14 @@ pub fn pick_device_cuda0_or_cpu() -> Device {
     dev
 }
 
-pub fn hf_model(hf_repo: &str) -> Result<hf_hub::api::sync::ApiRepo> {
-    let api = Api::new()?;
-    Ok(api.model(hf_repo.to_string()))
+pub fn hf_model(hf_repo: &str) -> Result<ApiRepo> {
+    let client = HFClientSync::new()?;
+    let (owner, name) = split_id(hf_repo);
+    Ok(ApiRepo(client.model(owner, name)))
 }
 
-pub fn hf_get_file(
-    repo: &hf_hub::api::sync::ApiRepo,
-    filename: &str,
-) -> Result<std::path::PathBuf> {
-    Ok(repo.get(filename)?)
+pub fn hf_get_file(repo: &ApiRepo, filename: &str) -> Result<std::path::PathBuf> {
+    repo.get(filename)
 }
 
 pub fn load_tokenizer(hf_repo: &str, override_path: Option<&str>) -> Result<Tokenizer> {

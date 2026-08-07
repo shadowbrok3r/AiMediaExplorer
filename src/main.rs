@@ -11,10 +11,10 @@ pub use database::*;
 use eframe::egui::*;
 
 impl eframe::App for app::SmartMediaApp {
-    #[allow(deprecated)]
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.context.receive(ctx);
-        self.navbar(ctx);
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        self.context.receive(&ctx);
+        self.navbar(ui);
 
         // Create any requested dynamic tabs (tags/categories)
         {
@@ -75,8 +75,8 @@ impl eframe::App for app::SmartMediaApp {
         }
 
         CentralPanel::default()
-        .frame(Frame::central_panel(&ctx.style()).inner_margin(0.))
-        .show(ctx, |ui| {
+        .frame(Frame::central_panel(&ctx.global_style()).inner_margin(0.))
+        .show(ui, |ui| {
             egui_dock::DockArea::new(&mut self.tree)
                 .style(egui_dock::Style::from_egui(ui.style()))
                 .show_close_buttons(true)
@@ -92,8 +92,6 @@ impl eframe::App for app::SmartMediaApp {
                 .show_inside(ui, &mut self.context);
         });
     }
-
-    fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {}
 
     fn persist_egui_memory(&self) -> bool { true }
 
@@ -117,18 +115,6 @@ fn uniquify_title(open_tabs: &std::collections::HashSet<String>, base: &str) -> 
     }
 }
 
-/* lib.rs
-pub mod utilities;
-pub mod database;
-pub mod ai;
-pub mod app;
-pub mod ui;
-pub mod receive;
-
-// Re-exports to mirror main.rs so tests using the lib crate can access items like `crate::Thumbnail`.
-pub use utilities::{explorer::*, scan::*, thumbs::*, types::*};
-pub use database::*;
-*/
 #[tokio::main]
 async fn main() -> eframe::Result<()> {
     #[cfg(target_os = "windows")]
@@ -141,12 +127,6 @@ async fn main() -> eframe::Result<()> {
         }
     }
 
-    // simplelog::WriteLogger::init(
-    //     log::LevelFilter::Trace,
-    //     simplelog::Config::default(),
-    //     std::fs::File::create("output.log").unwrap()
-    // ).unwrap();
-
     egui_logger::builder()
         .max_level(log::LevelFilter::Info) // defaults to Debug
         .init()
@@ -158,8 +138,6 @@ async fn main() -> eframe::Result<()> {
             viewport: eframe::egui::ViewportBuilder::default()
                 .with_inner_size([1000.0, 750.0])
                 .with_drag_and_drop(true),
-                // .with_icon(load_icon()),
-                // .with_always_on_top(),
             ..Default::default()
         },
         Box::new(|cc| {

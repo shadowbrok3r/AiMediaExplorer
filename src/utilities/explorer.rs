@@ -1,6 +1,6 @@
 use crate::utilities::types::QuickAccess;
 use directories::UserDirs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub fn quick_access() -> Vec<QuickAccess> {
     let mut v = Vec::new();
@@ -172,9 +172,190 @@ pub fn list_drive_infos() -> Vec<DriveInfo> {
         out
     }
 }
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+pub fn list_drive_infos() -> Vec<DriveInfo> {
+    let Ok(text) = std::fs::read_to_string("/proc/mounts") else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::<String>::new();
+
+    for line in text.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(source) = parts.next() else { continue };
+        let Some(mount) = parts.next() else { continue };
+        let Some(fstype) = parts.next() else { continue };
+
+        let mount = unescape_mount_path(mount);
+        if !is_useful_linux_mount(source, &mount, fstype) {
+            continue;
+        }
+        if !seen.insert(mount.clone()) {
+            continue;
+        }
+
+        let Some((free, total)) = linux_disk_usage(&mount) else { continue };
+        if total == 0 {
+            continue;
+        }
+
+        let label = linux_volume_label(source, &mount);
+        let drive_type = linux_drive_type(source, &mount, fstype)
+            .as_str()
+            .to_string();
+
+        out.push(DriveInfo {
+            root: mount,
+            drive_type,
+            label,
+            free,
+            total,
+        });
+    }
+
+    out.sort_by(|a, b| a.root.cmp(&b.root));
+    out
+}
+
+#[cfg(all(not(windows), not(target_os = "linux")))]
 pub fn list_drive_infos() -> Vec<DriveInfo> {
     Vec::new()
+}
+
+#[cfg(target_os = "linux")]
+fn unescape_mount_path(s: &str) -> String {
+    // /proc/mounts escapes space as \040, tab as \011, newline as \012, backslash as \\
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            let code: String = chars.by_ref().take(3).collect();
+            if let Ok(n) = u8::from_str_radix(&code, 8) {
+                out.push(n as char);
+            } else {
+                out.push('\\');
+                out.push_str(&code);
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+#[cfg(target_os = "linux")]
+fn is_useful_linux_mount(source: &str, mount: &str, fstype: &str) -> bool {
+    const SKIP_FS: &[&str] = &[
+        "proc", "sysfs", "cgroup", "cgroup2", "tmpfs", "devtmpfs", "devpts",
+        "securityfs", "pstore", "bpf", "autofs", "configfs", "mqueue",
+        "tracefs", "debugfs", "hugetlbfs", "fusectl", "efivarfs", "overlay",
+        "squashfs", "nsfs", "binfmt_misc", "rpc_pipefs", "fuse.gvfsd-fuse",
+        "fuse.portal", "fuse.kio-fuse",
+    ];
+    if SKIP_FS.iter().any(|s| *s == fstype) {
+        return false;
+    }
+    if fstype.starts_with("fuse.") && !source.starts_with("/dev/") {
+        // Skip AppImage / portal FUSE mounts that are not block devices.
+        return false;
+    }
+    if source.contains("/loop") || source.starts_with("/dev/loop") {
+        return false;
+    }
+
+    if mount == "/" {
+        return true;
+    }
+    if mount.starts_with("/mnt/")
+        || mount.starts_with("/media/")
+        || mount.starts_with("/run/media/")
+    {
+        return true;
+    }
+    // Other real block-device mounts (e.g. /home on a separate disk).
+    source.starts_with("/dev/") && !mount.starts_with("/boot")
+}
+
+#[cfg(target_os = "linux")]
+fn linux_drive_type(source: &str, mount: &str, fstype: &str) -> DriveType {
+    if matches!(fstype, "iso9660" | "udf") {
+        return DriveType::Dvd;
+    }
+    if mount.starts_with("/media/") || mount.starts_with("/run/media/") {
+        return DriveType::Usb;
+    }
+    if source.starts_with("//") || fstype.contains("nfs") || fstype.contains("cifs") || fstype.contains("smb") {
+        return DriveType::Cloud;
+    }
+    DriveType::HardDrive
+}
+
+#[cfg(target_os = "linux")]
+fn linux_volume_label(source: &str, mount: &str) -> String {
+    if mount == "/" {
+        return "Root".to_string();
+    }
+    if let Some(label) = linux_label_for_device(source) {
+        return label;
+    }
+    Path::new(mount)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(mount)
+        .to_string()
+}
+
+#[cfg(target_os = "linux")]
+fn linux_label_for_device(source: &str) -> Option<String> {
+    let source = std::fs::canonicalize(source).ok()?;
+    let by_label = Path::new("/dev/disk/by-label");
+    let entries = std::fs::read_dir(by_label).ok()?;
+    for dent in entries.flatten() {
+        let path = dent.path();
+        let Ok(target) = std::fs::canonicalize(&path) else { continue };
+        if target == source {
+            let name = dent.file_name().into_string().ok()?;
+            return Some(decode_udev_name(&name));
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn decode_udev_name(name: &str) -> String {
+    // udev encodes spaces/specials as \xNN in by-label names.
+    let mut out = String::with_capacity(name.len());
+    let bytes = name.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 3 < bytes.len() && bytes[i + 1] == b'x' {
+            if let Ok(n) = u8::from_str_radix(std::str::from_utf8(&bytes[i + 2..i + 4]).unwrap_or(""), 16) {
+                out.push(n as char);
+                i += 4;
+                continue;
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
+
+#[cfg(target_os = "linux")]
+fn linux_disk_usage(path: &str) -> Option<(u64, u64)> {
+    use std::ffi::CString;
+    let c_path = CString::new(path).ok()?;
+    unsafe {
+        let mut s: libc::statvfs = std::mem::zeroed();
+        if libc::statvfs(c_path.as_ptr(), &mut s) != 0 {
+            return None;
+        }
+        let frsize = s.f_frsize as u64;
+        let total = s.f_blocks as u64 * frsize;
+        let free = s.f_bavail as u64 * frsize;
+        Some((free, total))
+    }
 }
 
 // --- WSL quick access helpers (Windows only) ---
@@ -398,4 +579,26 @@ pub fn unmount_wsl_drive(device_id: &str) -> Result<String, String> {
 #[cfg(not(windows))]
 pub fn unmount_wsl_drive(_device_id: &str) -> Result<String, String> {
     Err("WSL unmounting is only available on Windows".to_string())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_drive_tests {
+    use super::*;
+
+    #[test]
+    fn lists_root_and_real_mounts() {
+        let drives = list_drive_infos();
+        assert!(
+            drives.iter().any(|d| d.root == "/"),
+            "expected root mount, got {drives:?}"
+        );
+        assert!(
+            drives.iter().all(|d| d.total > 0),
+            "expected positive totals, got {drives:?}"
+        );
+        for d in &drives {
+            assert!(!d.root.is_empty());
+            println!("{} {} free={} total={} label={}", d.drive_type, d.root, d.free, d.total, d.label);
+        }
+    }
 }

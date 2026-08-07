@@ -4,10 +4,10 @@ use egui_dock::SurfaceIndex;
 use humansize::DECIMAL;
 
 impl crate::app::SmartMediaApp {
-    pub fn navbar(&mut self, ctx: &Context) {
-        TopBottomPanel::top("MainPageTopPanel")
-        .exact_height(24.)
-        .show(ctx, |ui| {
+    pub fn navbar(&mut self, ui: &mut Ui) {
+        Panel::top("MainPageTopPanel")
+        .exact_size(24.)
+        .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.menu_button(" File ", |ui| {
                     ui.menu_button("Database", |ui| {
@@ -262,9 +262,9 @@ impl crate::app::SmartMediaApp {
             });
         });
 
-        TopBottomPanel::bottom("FileExplorer Bottom Panel")
-        .exact_height(24.)
-        .show(ctx, |ui| {
+        Panel::bottom("FileExplorer Bottom Panel")
+        .exact_size(24.)
+        .show(ui, |ui| {
             ui.horizontal(|ui| {
                 // Use active explorer (current tab) for progress and stats
                 let ex = self.context.active_explorer();

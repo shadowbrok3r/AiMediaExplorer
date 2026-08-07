@@ -1,6 +1,5 @@
 use candle_core::Result;
 use candle_core::{Device, Tensor};
-use hf_hub::api::sync::Api;
 use image::{DynamicImage, GenericImageView};
 use serde::{Deserialize, Serialize};
 
@@ -84,9 +83,8 @@ pub fn calculate_middle(image_size: (u32, u32), center_size: (u32, u32)) -> (u32
 
 impl CLIPImageProcessor {
     pub fn from_pretrained(clip_id: &str) -> anyhow::Result<Self> {
-        let api = Api::new()?;
-        let api = api.model(clip_id.to_string());
-        let config_filename = api.get("preprocessor_config.json")?;
+        let repo = crate::ai::hf::hf_model(clip_id)?;
+        let config_filename = repo.get("preprocessor_config.json")?;
         let image_processor = serde_json::from_slice(&std::fs::read(config_filename)?)?;
         Ok(image_processor)
     }

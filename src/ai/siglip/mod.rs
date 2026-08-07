@@ -2,7 +2,6 @@ use anyhow::Result;
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::siglip;
-use hf_hub::api::sync::Api;
 use tokenizers::Tokenizer;
 pub mod embed;
 // pub use embed::*;
@@ -19,8 +18,7 @@ impl SiglipEngine {
     pub fn new(model_key: &str) -> Result<Self> {
         let hf_repo = map_model_key_to_repo(model_key);
         let device = candle_core::Device::new_cuda(0).unwrap_or(candle_core::Device::Cpu);
-        let api = Api::new()?;
-        let mdl = api.model(hf_repo.to_string());
+        let mdl = crate::ai::hf::hf_model(hf_repo)?;
         let model_file = mdl.get("model.safetensors")?;
         let config_file = mdl.get("config.json")?;
         let tokenizer = load_tokenizer(hf_repo, None)?;
@@ -70,8 +68,7 @@ fn load_tokenizer(hf_repo: &str, override_path: Option<&str>) -> Result<Tokenize
     let path = if let Some(p) = override_path {
         std::path::PathBuf::from(p)
     } else {
-        let api = Api::new()?;
-        api.model(hf_repo.to_string()).get("tokenizer.json")?
+        crate::ai::hf::hf_model(hf_repo)?.get("tokenizer.json")?
     };
     Ok(Tokenizer::from_file(path).map_err(anyhow::Error::msg)?)
 }

@@ -103,10 +103,12 @@ impl super::FileExplorer {
     }
 
     pub fn preview_pane(&mut self, ui: &mut Ui) {
-        SidePanel::right("MainPageRightPanel")
-            .default_width(400.)
-            .max_width(800.)
-            .show_animated_inside(ui, self.open_preview_pane, |ui| {
+        let mut open = self.open_preview_pane;
+        let mut close = false;
+        Panel::right("MainPageRightPanel")
+            .default_size(400.)
+            .max_size(800.)
+            .show_collapsible(ui, &mut open, |ui| {
                 ui.vertical_centered(|ui| {
                     let name = &self.current_thumb.filename;
                     let thumb_cache = &mut self.viewer.thumb_cache;
@@ -127,7 +129,7 @@ impl super::FileExplorer {
                         }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ui.button(RichText::new("✖").color(ui.style().visuals.error_fg_color)).on_hover_text("Close panel").clicked() { 
-                                self.open_preview_pane = false; 
+                                close = true; 
                             }
                             let can_edit = self.current_thumb.file_type != "<DIR>";
                             if ui.add_enabled(can_edit, Button::new("Edit Image")).on_hover_text("Open image editing tab for this image").clicked() {
@@ -533,5 +535,6 @@ impl super::FileExplorer {
                     });
                 });
             });
+        self.open_preview_pane = open && !close;
     }
 }

@@ -189,11 +189,12 @@ impl AssistantPanel {
             .unwrap_or_else(|| self.model_name.clone());
     }
 
-    pub fn ui(&mut self, ctx: &Context, explorer: &mut crate::ui::file_table::FileExplorer) {
-        self.receive(ctx);
+    pub fn ui(&mut self, ui: &mut Ui, explorer: &mut crate::ui::file_table::FileExplorer) {
+        let ctx = ui.ctx().clone();
+        self.receive(&ctx);
 
         // TOP PANEL
-        TopBottomPanel::top("assistant_top").show(&ctx, |ui| {
+        Panel::top("assistant_top").show(ui, |ui| {
             ui.horizontal(|ui| {
                 if ui.button("Model Options").clicked() {
                     self.open_model_opts = !self.open_model_opts;
@@ -206,7 +207,7 @@ impl AssistantPanel {
         });
 
         // BOTTOM: Input bar
-        TopBottomPanel::bottom("assistant_bottom").show(&ctx, |ui| {
+        Panel::bottom("assistant_bottom").show(ui, |ui| {
             let style = StyleModifier::default();
             style.apply(ui.style_mut());
             let menu_cfg = MenuConfig::default().close_behavior(PopupCloseBehavior::CloseOnClickOutside).style(style.clone());
@@ -518,10 +519,10 @@ impl AssistantPanel {
         });
 
         // LEFT: Provider/model + Sessions list
-        SidePanel::left("assistant_left")
-        .max_width(250.)
-        .min_width(200.)
-        .show_animated(ctx, self.open_model_opts, |ui| {
+        Panel::left("assistant_left")
+        .max_size(250.)
+        .min_size(200.)
+        .show_collapsible(ui, &mut self.open_model_opts, |ui| {
             // --- Recent Models UI ---
             let recent_models_vec = self.settings.recent_models.clone();
             let last_used_model_opt = self.settings.last_used_model.clone();
@@ -682,7 +683,7 @@ impl AssistantPanel {
         });
 
         // CENTER: Messages list
-        CentralPanel::default().show(&ctx, |ui| {
+        CentralPanel::default().show(ui, |ui| {
             ScrollArea::vertical()
             .stick_to_bottom(true)
             .auto_shrink([false, false])

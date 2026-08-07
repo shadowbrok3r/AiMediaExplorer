@@ -6,16 +6,18 @@ use eframe::egui::*;
 impl super::FileExplorer {
     /// Rich "Quick Access" / Options panel consolidating actions previously in the gear menu.
     pub fn quick_access_pane(&mut self, ui: &mut Ui) {
-        SidePanel::left("MainPageLeftPanel")
-            .max_width(300.)
-            .min_width(260.)
-            .show_animated_inside(ui, self.open_quick_access, |ui| {
+        let mut open = self.open_quick_access;
+        let mut close = false;
+        Panel::left("MainPageLeftPanel")
+            .max_size(300.)
+            .min_size(260.)
+            .show_collapsible(ui, &mut open, |ui| {
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {
                         ui.heading("Quick Access");
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ui.button(RichText::new("✖").color(ui.style().visuals.error_fg_color)).on_hover_text("Close panel").clicked() { 
-                                self.open_quick_access = false; 
+                                close = true; 
                             }
                         });
                     });
@@ -205,7 +207,7 @@ impl super::FileExplorer {
                             if self.cached_physical_drives.is_none() {
                                 ui.label(RichText::new("No physical drives detected").weak());
                             } else if let Some(drives) = &self.cached_physical_drives {
-                                ScrollArea::both().max_height(400.).max_width(300.).show(ui, |ui| {
+                                ScrollArea::both().max_size(400.).max_height(300.).show(ui, |ui| {
                                     for drive in drives {
                                         ui.separator();
                                         ui.horizontal(|ui| {
@@ -399,5 +401,6 @@ impl super::FileExplorer {
                     });
                 });
             });
+        self.open_quick_access = open && !close;
     }
 }

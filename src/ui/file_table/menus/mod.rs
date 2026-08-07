@@ -11,6 +11,10 @@ impl super::FileExplorer {
     pub fn navbar(&mut self, ui: &mut Ui) {
         let style = StyleModifier::default();
         style.apply(ui.style_mut());
+        Panel::top("file_explorer_navbar")
+        .exact_size(28.)
+        .show_separator_line(false)
+        .show(ui, |ui| {
         MenuBar::new()
         .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside))
         .style(style)
@@ -181,6 +185,7 @@ impl super::FileExplorer {
                     self.table_menu(ui);
                 });
             });
+        });
         });
     }
 }

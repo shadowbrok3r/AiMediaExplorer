@@ -58,6 +58,11 @@ impl egui_dock::TabViewer for crate::app::SmartMediaContext {
 
     fn is_closeable(&self, _: &Self::Tab) -> bool { true }
 
+    // File explorer / logs / etc. own their scroll; dock-level scroll hides the path bar.
+    fn scroll_bars(&self, _tab: &Self::Tab) -> [bool; 2] {
+        [false, false]
+    }
+
     fn on_close(&mut self, tab: &mut Self::Tab) -> OnCloseResponse {
     self.open_tabs.remove(tab);
     self.filtered_tabs.remove(tab);
