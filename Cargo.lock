@@ -461,6 +461,7 @@ dependencies = [
 [[package]]
 name = "backdrop-blur-core"
 version = "0.3.0"
+source = "git+https://github.com/shadowbrok3r/egui-theme-kit?rev=ab708cbe629d4b589e604100936e40688039efe1#ab708cbe629d4b589e604100936e40688039efe1"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -468,6 +469,7 @@ dependencies = [
 [[package]]
 name = "backdrop-blur-egui"
 version = "0.3.0"
+source = "git+https://github.com/shadowbrok3r/egui-theme-kit?rev=ab708cbe629d4b589e604100936e40688039efe1#ab708cbe629d4b589e604100936e40688039efe1"
 dependencies = [
  "backdrop-blur-core",
  "backdrop-blur-glow",
@@ -480,6 +482,7 @@ dependencies = [
 [[package]]
 name = "backdrop-blur-glow"
 version = "0.3.0"
+source = "git+https://github.com/shadowbrok3r/egui-theme-kit?rev=ab708cbe629d4b589e604100936e40688039efe1#ab708cbe629d4b589e604100936e40688039efe1"
 dependencies = [
  "backdrop-blur-core",
  "glow",
@@ -2272,11 +2275,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui-icon-pack"
+version = "0.1.0"
+source = "git+https://github.com/shadowbrok3r/egui-theme-kit?rev=ab708cbe629d4b589e604100936e40688039efe1#ab708cbe629d4b589e604100936e40688039efe1"
+dependencies = [
+ "egui",
+ "egui-phosphor",
+ "egui_extras",
+]
+
+[[package]]
+name = "egui-icon-pack-build"
+version = "0.1.0"
+source = "git+https://github.com/shadowbrok3r/egui-theme-kit?rev=ab708cbe629d4b589e604100936e40688039efe1#ab708cbe629d4b589e604100936e40688039efe1"
+
+[[package]]
 name = "egui-phosphor"
 version = "0.14.0"
 source = "git+https://github.com/shadowbrok3r/egui-phosphor?branch=egui-037#7275d267f6a615004784d57bef7f39d619288739"
 dependencies = [
  "egui",
+]
+
+[[package]]
+name = "egui-theme-kit"
+version = "0.1.0"
+source = "git+https://github.com/shadowbrok3r/egui-theme-kit?rev=ab708cbe629d4b589e604100936e40688039efe1#ab708cbe629d4b589e604100936e40688039efe1"
+dependencies = [
+ "anyhow",
+ "backdrop-blur-egui",
+ "directories",
+ "eframe",
+ "egui",
+ "egui-data-table",
+ "egui-toast",
+ "egui_dock",
+ "egui_extras",
+ "log",
+ "rfd",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -8314,7 +8352,6 @@ dependencies = [
  "anyhow",
  "async-openai",
  "async-trait",
- "backdrop-blur-egui",
  "base64 0.23.1",
  "blake3",
  "bzip2",
@@ -8328,7 +8365,10 @@ dependencies = [
  "eframe",
  "egui",
  "egui-data-table",
+ "egui-icon-pack",
+ "egui-icon-pack-build",
  "egui-phosphor",
+ "egui-theme-kit",
  "egui-toast",
  "egui_dock",
  "egui_extras",

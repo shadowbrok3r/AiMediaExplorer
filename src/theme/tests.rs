@@ -1,164 +1,103 @@
-//! Cross-module theme tests: stock control geometry per preset and density, and the legacy-styling ratchet.
+//! App theme tests: the default look, the font stack and the legacy-styling ratchet.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use eframe::egui::{
-    Button, CentralPanel, ComboBox, Context, DragValue, Pos2, RawInput, Rect, TextEdit, Ui, vec2,
-};
+use eframe::egui::{Context, FontFamily, FontId};
 use regex::Regex;
+use serde_json::{Value, json};
 
 use super::{
-    dock_style,
+    cli,
     fonts::{self, TextScale},
-    metrics::{Density, Metrics},
-    presets::{
-        MATCHABLE_PRESETS, PresetStyles, apply_preset, bootstrap_startup_theme, set_density,
-    },
+    metrics::Metrics,
+    presets::{PresetStyles, bootstrap_startup_theme, installed_preset},
     tokens::Tokens,
 };
 
-fn context() -> Context {
+fn default_context() -> Context {
     let ctx = Context::default();
     ctx.set_fonts(fonts::definitions(TextScale::Normal));
     bootstrap_startup_theme(&ctx);
+    ctx.run_ui(Default::default(), |_| {}).drop_without_applying_deltas();
     ctx
 }
 
-/// Runs `passes` frames of `f` in a central panel; returns the last result.
-fn run<R>(ctx: &Context, passes: usize, mut f: impl FnMut(&mut Ui) -> R) -> R {
-    let mut out = None;
-    for _ in 0..passes {
-        let input = RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1200.0, 400.0))),
-            ..Default::default()
-        };
-        ctx.run_ui(input, |ui| {
-            CentralPanel::default().show(ui, |ui| out = Some(f(ui)));
-        })
-        .drop_without_applying_deltas();
-    }
-    out.expect("the ui closure ran")
-}
-
-/// Rects of a stock Button, ComboBox, DragValue and TextEdit in one row.
-fn stock_row(ui: &mut Ui) -> Vec<Rect> {
-    let mut text = "Text".to_owned();
-    let mut size = 20.0_f32;
-    ui.horizontal(|ui| {
-        let combo = ComboBox::from_id_salt("stock_row")
-            .width(100.0)
-            .selected_text("One")
-            .show_ui(ui, |ui| {
-                let _ = ui.selectable_label(true, "One");
-            });
-        vec![
-            ui.button("Apply").rect,
-            combo.response.rect,
-            ui.add(DragValue::new(&mut size)).rect,
-            ui.add(TextEdit::singleline(&mut text).desired_width(120.0))
-                .rect,
-        ]
-    })
-    .inner
-}
-
 #[test]
-fn stock_controls_share_the_control_height_and_centre_line_for_every_preset_and_density() {
-    let ctx = context();
-    for preset in MATCHABLE_PRESETS {
-        apply_preset(&ctx, preset);
-        for density in Density::ALL {
-            set_density(&ctx, density);
-            let rects = run(&ctx, 2, stock_row);
-            let height = Metrics::for_density(density).control_h;
-            let first = rects[0];
-            for (i, r) in rects.iter().enumerate() {
-                assert!(
-                    (r.height() - height).abs() < 0.01,
-                    "{} at {density:?}: control {i} is {r:?}, want height {height}",
-                    preset.as_str()
-                );
-                assert!(
-                    (r.center().y - first.center().y).abs() < 0.01,
-                    "{} at {density:?}: control {i} is off the centre line",
-                    preset.as_str()
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn bootstrap_pins_the_dark_slot_and_applies_the_embedded_file() {
-    let ctx = Context::default();
-    ctx.set_theme(eframe::egui::Theme::Light);
-    super::bootstrap_context(&ctx, None);
-    assert_eq!(ctx.theme(), eframe::egui::Theme::Dark);
-    assert_eq!(
-        super::presets::installed_preset(&ctx),
-        PresetStyles::Mastertech
-    );
-    assert_eq!(
-        super::persist::source(&ctx),
-        super::persist::ThemeSource::Embedded
-    );
-}
-
-#[test]
-fn preferences_replace_the_options_but_keep_the_installed_style() {
-    let ctx = context();
-    let style = ctx.global_style();
-    let mut options = eframe::egui::Options::default();
-    options.zoom_factor = 1.5;
-    super::apply_preferences(&ctx, options);
-    assert_eq!(ctx.options(|o| o.zoom_factor), 1.5);
-    assert!(std::sync::Arc::ptr_eq(&style, &ctx.global_style()));
-}
-
-#[test]
-fn a_prominent_primary_button_is_taller_than_a_stock_one() {
-    use eframe::egui::class::HasClasses as _;
-    let ctx = context();
-    let (stock, prominent) = run(&ctx, 2, |ui| {
-        ui.horizontal(|ui| {
-            (
-                ui.button("Apply").rect,
-                ui.add(Button::new("Save").with_class(super::widget_theme::PROMINENT))
-                    .rect,
-            )
-        })
-        .inner
+fn the_default_theme_keeps_the_mastertech_look() {
+    let ctx = default_context();
+    assert_eq!(installed_preset(&ctx), PresetStyles::Graphite);
+    let tokens = cli::tokens_json(&Tokens::get(&ctx));
+    let expected: Value = json!({
+        "base": "#08080a", "card_border": "#7f8190", "error": "#ec6284", "field": "#0f0f12",
+        "field_border": "#747683", "hover": "#221724", "icon": "#b7b7bd", "info": "#e598c2",
+        "on_primary": "#0c0c0e", "pressed": "#291d30", "primary": "#d184de", "primary_border": "#8d5b97",
+        "primary_soft": "#2c1e30", "radius_lg": 5, "radius_md": 4, "radius_sm": 3, "raised": "#0d0d12",
+        "secondary": "#bf2165", "secondary_soft": "#290d1a", "separator": "#35353c", "success": "#48c78e",
+        "sunken": "#0f0f12", "tertiary": "#e598c2", "tertiary_soft": "#30222b", "text": "#e2e2ea",
+        "text_dim": "#8b8b90", "text_faint": "#5d5d61", "warn": "#7ec8e6", "window": "#111115",
     });
-    assert!(prominent.height() > stock.height());
+    assert_eq!(tokens, expected);
+    let metrics = cli::metrics_json(&Metrics::get(&ctx));
+    let expected: Value = json!({
+        "bar_h": 32.0, "button_h": 26.0, "combo_w": 110.0, "control_h": 22.0, "footer_h": 28.0,
+        "gap": [6.0, 4.0], "header_h": 26.0, "icon_lg": 18.0, "icon_md": 14.0, "icon_sm": 12.0,
+        "menu_margin": 4, "pad": [8.0, 3.0], "radius_lg": 12, "radius_md": 8, "radius_sm": 6,
+        "row_h": 22.0, "slider_w": 130.0, "tooltip_w": 280.0, "window_margin": 10,
+    });
+    assert_eq!(metrics, expected);
+    let resolved = cli::resolved_json(&ctx);
+    assert_eq!(resolved["density"], "Compact");
+    assert_eq!(resolved["text_scale"], "Small (90%)");
+    assert_eq!(resolved["glass"]["blur_radius"], 32.0);
+    assert_eq!(resolved["text_styles"]["Heading"]["family"], "semibold");
 }
 
 #[test]
-fn dock_chrome_builds_from_the_tokens_for_every_preset_and_density() {
-    let ctx = context();
-    for preset in MATCHABLE_PRESETS {
-        apply_preset(&ctx, preset);
-        for density in Density::ALL {
-            set_density(&ctx, density);
-            let dock = dock_style::style(&ctx);
-            let t = Tokens::get(&ctx);
-            let m = Metrics::for_density(density);
-            assert_eq!(dock.tab.tab_body.bg_fill, t.raised, "{}", preset.as_str());
-            let margin = dock.tab_bar.inner_margin;
-            let pill = dock.tab_bar.height - f32::from(margin.top + margin.bottom);
-            assert_eq!(pill, m.control_h, "{} at {density:?}", preset.as_str());
-        }
+fn the_font_stack_orders_the_app_faces_under_inter_and_the_icon_font() {
+    let defs = fonts::definitions(TextScale::Normal);
+    let keys = |family: FontFamily| defs.families[&family].clone();
+    assert_eq!(
+        keys(FontFamily::Proportional),
+        ["Inter", "Ubuntu-Light", "phosphor", "egui-icons", "NotoEmoji-Regular", "emoji-icon-font"]
+    );
+    assert_eq!(
+        keys(FontFamily::Monospace),
+        ["UbuntuSansMono", "phosphor", "UbuntuMonoNerdFont", "Hack", "Ubuntu-Light", "egui-icons", "NotoEmoji-Regular", "emoji-icon-font"]
+    );
+    assert_eq!(keys(FontFamily::Name("Regular".into())), ["Regular", "phosphor"]);
+    assert_eq!(keys(FontFamily::Name("Bold".into())), ["Bold", "phosphor"]);
+    assert_eq!(keys(FontFamily::Name("medium".into()))[0], "Inter-Medium");
+    assert_eq!(keys(FontFamily::Name("semibold".into()))[0], "Inter-SemiBold");
+    for family in defs.families.values() {
+        assert!(family.iter().all(|key| defs.font_data.contains_key(key)), "{family:?}");
     }
 }
 
 #[test]
-fn leaving_and_returning_to_the_default_preset_restores_the_published_look() {
-    let ctx = context();
-    let before = Tokens::get(&ctx);
-    apply_preset(&ctx, PresetStyles::MtechNoirGlass);
-    assert_ne!(Tokens::get(&ctx), before);
-    apply_preset(&ctx, PresetStyles::Mastertech);
-    assert_eq!(Tokens::get(&ctx), before);
+fn icon_glyphs_resolve_to_phosphor_in_the_text_and_monospace_families() {
+    use eframe::epaint::text::{Fonts, TextOptions};
+
+    let mut defs = fonts::definitions(TextScale::Normal);
+    defs.families.insert(FontFamily::Name("icon-only".into()), vec!["phosphor".to_owned()]);
+    let mut atlas = Fonts::new(TextOptions::default(), defs);
+    let mut view = atlas.with_pixels_per_point(1.0);
+    let glyph = egui_phosphor::regular::GEAR.chars().next().expect("glyph");
+    let icon = view.glyph_width(&FontId::new(14.0, FontFamily::Name("icon-only".into())), glyph);
+    assert!(icon > 0.0, "the icon face lacks the glyph");
+    for family in [FontFamily::Proportional, FontFamily::Monospace, FontFamily::Name("semibold".into())] {
+        let width = view.glyph_width(&FontId::new(14.0, family.clone()), glyph);
+        assert_eq!(width, icon, "{glyph:?} in {family:?} is not the icon face's");
+    }
+}
+
+#[test]
+fn the_theme_dump_lists_the_app_faces() {
+    let dump = cli::dump_with(&cli::Options::default(), &super::font_config()).expect("dump");
+    let dump: Value = serde_json::from_str(&dump).expect("json");
+    assert_eq!(dump["font_families"]["Monospace"][0], "UbuntuSansMono");
+    assert_eq!(dump["font_families"]["Proportional"][0], "Inter");
+    assert_eq!(dump["source"], "embedded default");
 }
 
 /// Most `Color32` constructors and named colours in the UI files this theme restyled.

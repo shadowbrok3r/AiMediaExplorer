@@ -308,6 +308,12 @@ impl crate::app::SmartMediaContext {
 
     fn preferences_ui(&mut self, ui: &mut Ui, d: &mut UiSettings) -> PrefsAction {
         let mut action = PrefsAction::None;
+        ui.horizontal(|ui| {
+            ui.label("Appearance:");
+            if icons::button(ui, svg::PALETTE, "Theme settings…").on_hover_text("Open the Appearance window").clicked() {
+                self.appearance.open();
+            }
+        });
         ui.collapsing("Database", |ui| {
             let current_path = crate::database::get_db_path();
             ui.horizontal(|ui| {

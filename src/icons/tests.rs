@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use egui::{Image, Pos2, Vec2};
+use egui::{Image, Vec2};
 
 use super::glyphs::{drive_icon, file_icon_svg, folder_shortcut_svg};
-use super::pack::{ALL, BORROWED, Icon, snapped_square};
+use super::pack::{ALL, BORROWED, IconPack, PACK};
 use super::svg;
 use crate::utilities::explorer::DriveType;
 
@@ -72,26 +72,26 @@ fn every_svg_file_has_a_const_and_back() {
 #[test]
 fn find_round_trips() {
     for icon in ALL {
-        assert_eq!(Icon::find(icon.name()), Some(*icon));
+        assert_eq!(PACK.find(icon.name()), Some(*icon));
     }
-    assert_eq!(Icon::find("cpu"), Some(svg::CPU));
-    assert_eq!(Icon::find("ame-logo"), Some(svg::AME_LOGO));
-    assert_eq!(Icon::find("no-such-icon"), None);
+    assert_eq!(PACK.find("cpu"), Some(svg::CPU));
+    assert_eq!(PACK.find("ame-logo"), Some(svg::AME_LOGO));
+    assert_eq!(PACK.find("no-such-icon"), None);
 }
 
 #[test]
 fn from_glyph_round_trips_phosphor_icons() {
     for icon in ALL.iter().filter(|i| !i.is_custom()) {
-        let found = Icon::from_glyph(icon.glyph()).expect(icon.name());
+        let found = PACK.from_glyph(icon.glyph()).expect(icon.name());
         assert_eq!(found.glyph(), icon.glyph(), "{}", icon.name());
         assert!(!found.is_custom());
     }
-    assert_eq!(Icon::from_glyph(egui_phosphor::regular::CPU), Some(svg::CPU));
+    assert_eq!(PACK.from_glyph(egui_phosphor::regular::CPU), Some(svg::CPU));
     assert_eq!(
-        Icon::from_glyph(svg::AME_LOGO.glyph()).map(|i| i.is_custom()),
+        PACK.from_glyph(svg::AME_LOGO.glyph()).map(|i| i.is_custom()),
         Some(false)
     );
-    assert_eq!(Icon::from_glyph("x"), None);
+    assert_eq!(PACK.from_glyph("x"), None);
 }
 
 #[test]
@@ -147,27 +147,6 @@ fn gallery_draws_without_panicking() {
     }
     super::gallery::toggle(&ctx);
     assert!(!super::gallery::is_open(&ctx));
-}
-
-#[test]
-fn widgets_draw_without_panicking() {
-    let ctx = egui::Context::default();
-    super::install(&ctx);
-    let mut output = ctx.run_ui(Default::default(), |ui| {
-        super::button(ui, svg::GEAR, "Settings");
-        super::small_button(ui, svg::GEAR, "Settings");
-        super::selectable_button(ui, svg::STAR, true, "Starred");
-        super::icon_button(ui, svg::TRASH, "Delete");
-        super::icon_button_tinted(ui, svg::TRASH, "Delete", egui::Color32::RED);
-        super::toggle_button(ui, svg::EYE, false, "Preview");
-        super::label(ui, svg::CPU, "CPU");
-        super::heading(ui, svg::AME_REFINE, "Refine");
-        super::checkbox(ui, &mut true, svg::AME_ASSISTANT, "Assistant");
-        super::menu_button(ui, svg::AME_DATABASE, "Database", |ui| {
-            super::button(ui, svg::AME_DB_EXPORT, "Export");
-        });
-    });
-    output.textures_delta.clear();
 }
 
 #[test]
@@ -235,7 +214,7 @@ fn duo_layers_pair_with_regular_icons() {
     assert!(!duo.is_empty());
     for name in &duo {
         assert!(regular.contains(name), "duo/{name}.svg has no regular/{name}.svg");
-        assert!(Icon::find(name).is_some_and(|i| i.has_duo()), "{name}: duo not wired");
+        assert!(PACK.find(name).is_some_and(|i| i.has_duo()), "{name}: duo not wired");
     }
     assert_eq!(ALL.iter().filter(|i| i.has_duo()).count(), duo.len());
     for hero in [svg::AME_LOGO, svg::AME_SCAN, svg::AME_ASSISTANT, svg::AME_THUMBNAIL_GRID] {
@@ -264,18 +243,6 @@ fn loads_through_egui_extras_svg_loader() {
 }
 
 #[test]
-fn snapped_square_is_pixel_exact() {
-    for ppp in [1.0, 1.25, 1.5, 2.0] {
-        for x in [10.0, 10.3, 10.5, 10.77] {
-            let r = snapped_square(Pos2::new(x, x + 0.2), 16.0, ppp);
-            let px = r.size() * ppp;
-            assert!((px.x - (16.0 * ppp).round()).abs() < 1e-3);
-            assert!(((r.min.x * ppp) - (r.min.x * ppp).round()).abs() < 1e-3);
-        }
-    }
-}
-
-#[test]
 fn file_icons_follow_app_media_types() {
     assert_eq!(file_icon_svg("a", true), svg::FOLDER);
     assert_eq!(file_icon_svg("shot.JPG", false), svg::FILE_JPG);
@@ -296,23 +263,4 @@ fn places_and_drives_map_to_icons() {
     assert_eq!(folder_shortcut_svg("Unknown"), svg::FOLDER);
     assert_eq!(drive_icon(&DriveType::Usb), svg::USB);
     assert_eq!(drive_icon(&DriveType::HardDrive), svg::HARD_DRIVE);
-}
-
-#[test]
-fn icon_size_follows_body_font() {
-    let ctx = egui::Context::default();
-    let mut edges = Vec::new();
-    let mut output = ctx.run_ui(Default::default(), |ui| {
-        edges = [
-            super::IconSize::Sm,
-            super::IconSize::Md,
-            super::IconSize::Lg,
-            super::IconSize::Tool,
-        ]
-        .map(|s| s.px(ui))
-        .to_vec();
-    });
-    output.textures_delta.clear();
-    assert!(edges.windows(2).all(|w| w[0] < w[1]), "{edges:?}");
-    assert!(edges[0] >= 8.0);
 }

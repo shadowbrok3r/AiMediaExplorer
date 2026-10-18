@@ -1,44 +1,10 @@
 //! Phosphor font glyphs for inline text, plus file-type and place-to-icon mappings.
 
+pub use egui_icon_pack::{icon, icon_colored, icon_sized, install_fonts};
 pub use egui_phosphor::regular as p;
-
-use egui::{Color32, FontDefinitions, FontFamily, RichText};
 
 use super::pack::{self as svg, Icon};
 use crate::utilities::explorer::DriveType;
-
-/// Registers Phosphor in the Proportional, Monospace and named "Regular"/"Bold" families.
-pub fn install_fonts(fonts: &mut FontDefinitions) {
-    egui_phosphor::add_to_fonts(fonts, egui_phosphor::Variant::Regular);
-
-    // Phosphor also goes into the Monospace and named families.
-    for family in [
-        FontFamily::Monospace,
-        FontFamily::Name("Regular".into()),
-        FontFamily::Name("Bold".into()),
-    ] {
-        if let Some(keys) = fonts.families.get_mut(&family) {
-            if !keys.iter().any(|k| k == "phosphor") {
-                keys.insert(1.min(keys.len()), "phosphor".into());
-            }
-        }
-    }
-}
-
-/// Glyph as rich text in the Proportional family.
-pub fn icon(glyph: &str) -> RichText {
-    RichText::new(glyph).family(FontFamily::Proportional)
-}
-
-/// Glyph at `size` points.
-pub fn icon_sized(glyph: &str, size: f32) -> RichText {
-    RichText::new(glyph).size(size).family(FontFamily::Proportional)
-}
-
-/// Glyph in a fixed color.
-pub fn icon_colored(glyph: &str, color: Color32) -> RichText {
-    icon(glyph).color(color)
-}
 
 pub const CHEV_OPEN: &str = p::CARET_DOWN;
 pub const CHEV_CLOSED: &str = p::CARET_RIGHT;

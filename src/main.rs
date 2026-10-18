@@ -61,6 +61,8 @@ impl eframe::App for app::SmartMediaApp {
 
         ui::devtools::show(&ctx);
         theme::debug_panel::show(&ctx);
+        self.context.appearance.update(&ctx);
+        self.context.appearance.show(&ctx);
         theme::debug_panel::record_ui_time(&ctx, started.elapsed());
         theme::debug_panel::record_frame_cpu(&ctx, frame.info().cpu_usage);
     }
@@ -68,12 +70,13 @@ impl eframe::App for app::SmartMediaApp {
     fn persist_egui_memory(&self) -> bool { true }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        theme::save(&self.egui_ctx, storage);
+        self.context.appearance.save(&self.egui_ctx, storage);
         app::save_egui_preferences(&self.egui_ctx, storage);
     }
 
     fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
         settings::flush_blocking(std::time::Duration::from_millis(1500));
+        self.context.appearance.flush(&self.egui_ctx);
         if let Some(gl) = gl {
             theme::glass::shutdown(gl);
         }
@@ -188,23 +191,21 @@ async fn main() -> eframe::Result<()> {
         std::process::exit(code);
     }
 
-    // Theme flags: `--theme-dump` prints the resolved tokens and metrics as JSON and exits without a window, `--theme <path.json>` (or SMART_MEDIA_THEME) forces a theme file for the run, `--no-frost` disables the glass blur, `--theme-panel` opens the Theme window.
-    let theme_options = match theme::cli::Options::from_env() {
+    // Theme flags: `--theme-dump` prints the resolved tokens and metrics as JSON and exits without a window, `--theme <path.json>` (or EGUI_THEME_KIT_THEME, or the old SMART_MEDIA_THEME) forces a theme file for the run, `--no-frost` (or EGUI_THEME_KIT_NO_FROST, or the old SMART_MEDIA_NO_FROST) disables the glass blur, `--theme-panel` opens the Theme window.
+    let theme_options = match theme::cli_options() {
         Ok(options) => options,
         Err(e) => {
             eprintln!("{e}");
             std::process::exit(2);
         }
     };
-    if theme_options.theme_dump {
-        match theme::cli::dump(&theme_options) {
-            Ok(json) => println!("{json}"),
-            Err(e) => {
-                eprintln!("theme dump failed: {e:#}");
-                std::process::exit(1);
-            }
+    match theme::cli::handle_dump(&theme_options, &theme::font_config()) {
+        Ok(true) => return Ok(()),
+        Ok(false) => {}
+        Err(e) => {
+            eprintln!("theme dump failed: {e:#}");
+            std::process::exit(1);
         }
-        return Ok(());
     }
 
     // `--mcp-stdio` (or SMART_MEDIA_MCP_STDIO=1) starts the MCP stdio server; it is off otherwise.

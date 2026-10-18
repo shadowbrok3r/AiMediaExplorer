@@ -45,6 +45,8 @@ pub struct SmartMediaContext {
     // AI init status flags
     pub ai_initializing: bool,
     pub ai_ready: bool,
+    // Theme picker window, its database store and the theme sync
+    pub appearance: crate::theme::Appearance,
     // Preferences edits, present only while the window is open
     pub prefs: Option<PrefsDraft>,
     // Set by the Egui Settings Save button; handled once the frame storage is reachable
@@ -95,7 +97,7 @@ pub enum DbSelectMode {
 
 impl SmartMediaApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        crate::theme::bootstrap(cc);
+        let appearance = crate::theme::setup(cc);
         restore_egui_preferences(&cc.egui_ctx, cc.storage);
         let (db_ready_tx, db_ready_rx) = crossbeam::channel::bounded(1);
         let (toast_tx, toast_rx) = crossbeam::channel::unbounded();
@@ -133,6 +135,7 @@ impl SmartMediaApp {
             open_settings_modal: false,
             ai_initializing: false,
             ai_ready: false,
+            appearance,
             prefs: None,
             egui_prefs_save_requested: false,
             pending_tab_adds: Vec::new(),

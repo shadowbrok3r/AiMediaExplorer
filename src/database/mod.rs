@@ -19,6 +19,7 @@ pub mod maintenance;
 pub mod cli;
 pub mod thumb_blobs;
 pub mod thumb_migration;
+pub mod ui_themes;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -228,6 +229,7 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
 
     // DEFINE BUCKET userfiles BACKEND "memory";
     define_schema(&DB).await?;
+    let _ = ui_themes::ensure_schema(&DB).await;
     if pre_open.is_some() {
         snapshot::finish_open(Path::new(&db_path));
     }

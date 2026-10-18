@@ -147,10 +147,18 @@ impl crate::app::SmartMediaApp {
                     if icons::button(ui, svg::GEAR, "Preferences").clicked() {
                         crate::app::OPEN_SETTINGS_REQUEST.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
+                    if icons::button(ui, svg::PALETTE, "Appearance…").on_hover_text("Theme presets, colors, density and text size").clicked() {
+                        self.context.appearance.open();
+                        ui.close();
+                    }
                 });
 
                 ui.menu_button(" View ", |ui| {
-                    if icons::button(ui, svg::PALETTE, "Egui Settings").clicked() {
+                    if icons::button(ui, svg::PALETTE, "Appearance…").on_hover_text("Theme presets, colors, density and text size").clicked() {
+                        self.context.appearance.open();
+                        ui.close();
+                    }
+                    if icons::button(ui, svg::SLIDERS, "Egui Settings").clicked() {
                         self.context.open_ui_settings = true;
                     }
 
@@ -179,15 +187,15 @@ impl crate::app::SmartMediaApp {
                         self.context.assistant_window_open = was_open;
                     }
                     ui.separator();
-                    if icons::button(ui, svg::SLIDERS, "Theme panel").clicked() {
-                        crate::theme::debug_panel::toggle(ui.ctx());
-                        ui.close();
-                    }
                     if icons::button(ui, svg::AME_LOGO, "Icon gallery").clicked() {
                         icons::gallery::toggle(ui.ctx());
                         ui.close();
                     }
                     icons::menu_button(ui, svg::WRENCH, "Devtools", |ui| {
+                        if icons::button(ui, svg::SLIDERS, "Theme panel").clicked() {
+                            crate::theme::debug_panel::toggle(ui.ctx());
+                            ui.close();
+                        }
                         if icons::button(ui, svg::DATABASE, "Settings store").clicked() {
                             crate::ui::devtools::toggle_settings_store(ui.ctx());
                             ui.close();
