@@ -240,7 +240,7 @@ fn indicator_small(ui: &mut Ui, meta: &StatusMeta) {
         display_label = format!("   {}", display_label);
     }
 
-    let custom_button_id = Id::new(format!("custom_button {display_label:?}"));
+    let custom_button_id = IdSalt::new("custom_button");
     let atom_layout = Button::new((
         Atom::custom(custom_button_id, Vec2::splat(14.0)),
         RichText::new(display_label).color(meta.state.color(ui.style())),
@@ -407,7 +407,7 @@ impl Widget for GearSpinner {
             .size
             .unwrap_or_else(|| ui.style().spacing.interact_size.y);
         let (rect, response) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
-        response.widget_info(|| WidgetInfo::new(WidgetType::ProgressIndicator));
+        response.widget_info(|| WidgetInfo::new(Role::ProgressIndicator));
         self.paint_at(ui, rect);
 
         response

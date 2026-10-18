@@ -43,7 +43,7 @@ impl ArchiveHandler for ZipHandler {
         for i in 0..zip.len() {
             match zip.by_index(i) {
                 Ok(entry) => {
-                    let full_name = entry.name().to_string();
+                    let full_name = entry.name()?.to_string();
                     let size = entry.size() as u64;
             let encrypted = entry.encrypted();
                     drop(entry); // Explicitly drop to release the borrow

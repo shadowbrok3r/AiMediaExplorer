@@ -1,4 +1,4 @@
-use egui_dock::{NodeIndex, SurfaceIndex, tab_viewer::OnCloseResponse};
+use egui_dock::{NodePath, tab_viewer::OnCloseResponse};
 use eframe::egui::*;
 
 pub const TABS: [&str; 3] = [
@@ -9,6 +9,10 @@ pub const TABS: [&str; 3] = [
 
 impl egui_dock::TabViewer for crate::app::SmartMediaContext {
     type Tab = String;
+
+    fn id(&mut self, tab: &mut Self::Tab) -> Id {
+        Id::unique(tab.as_str())
+    }
 
     fn title(&mut self, tab: &mut Self::Tab) -> WidgetText {
         tab.as_str().into()
@@ -45,8 +49,7 @@ impl egui_dock::TabViewer for crate::app::SmartMediaContext {
         &mut self,
         _ui: &mut Ui,
         tab: &mut Self::Tab,
-        _surface: SurfaceIndex,
-        _node: NodeIndex,
+        _path: NodePath,
     ) {
         match tab.as_str() {
 

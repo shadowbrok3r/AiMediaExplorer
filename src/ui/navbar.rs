@@ -20,8 +20,8 @@ impl crate::app::SmartMediaApp {
                         if ui.button("Refine (AI, DB-only)").on_hover_text("Open AI Refinements panel to generate proposals from the database").clicked() {
                             // Ensure tab is open/focused
                             let label = "AI Refinements".to_string();
-                            if let Some((surface, node, _tab)) = self.tree.find_tab(&label) {
-                                self.tree.set_focused_node_and_surface((surface, node));
+                            if let Some(path) = self.tree.find_tab(&label) {
+                                self.tree.set_focused_node_and_surface(path.node_path());
                             } else {
                                 self.tree[SurfaceIndex::main()].push_to_focused_leaf(label.clone());
                                 self.context.open_tabs.insert(label);

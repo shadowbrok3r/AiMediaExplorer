@@ -614,7 +614,7 @@ impl AssistantPanel {
                                     // We can't mutate self.sessions while iterating; mark index
                                     // We'll handle it below the list rendering
                                     // Use a unique id salt to stash requested deletion index in ui memory
-                                    ui.data_mut(|d| d.insert_temp::<usize>(Id::new("assistant_delete_idx"), i));
+                                    ui.data_mut(|d| d.insert_temp::<usize>(Id::unique("assistant_delete_idx"), i));
                                 }
                             });
                         });
@@ -658,7 +658,7 @@ impl AssistantPanel {
             }
             
             // Apply a pending deletion if requested
-            if let Some(del_idx) = ctx.data(|d| d.get_temp::<usize>(Id::new("assistant_delete_idx"))) {
+            if let Some(del_idx) = ctx.data(|d| d.get_temp::<usize>(Id::unique("assistant_delete_idx"))) {
                 if del_idx < self.sessions.len() && del_idx < self.session_ids.len() {
                     let to_delete_id = self.session_ids[del_idx].clone();
                     // Remove from UI state first for snappy UX
@@ -678,7 +678,7 @@ impl AssistantPanel {
                     });
                 }
                 // Clear the temp marker
-                ctx.data_mut(|d| d.remove::<usize>(Id::new("assistant_delete_idx")));
+                ctx.data_mut(|d| d.remove::<usize>(Id::unique("assistant_delete_idx")));
             }
         });
 

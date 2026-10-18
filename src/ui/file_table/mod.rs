@@ -489,7 +489,7 @@ impl FileExplorer {
         let style = StyleModifier::default();
         style.apply(ui.style_mut());
 
-        CentralPanel::default().show_inside(ui, |ui| {
+        CentralPanel::default().show(ui, |ui| {
             // Recursive scan pagination controls (only when snapshot large enough)
             if self.recursive_scan && self.last_scan_rows.len() > self.recursive_page_size {
                 self.update_recursive_total_pages();

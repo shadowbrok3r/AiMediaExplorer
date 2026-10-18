@@ -5,7 +5,7 @@ const STYLE: &str = r#"{"override_text_style":null,"override_font_id":null,"over
 
 impl crate::app::SmartMediaContext {
     pub fn receive(&mut self, ctx: &eframe::egui::Context) {
-        Area::new(Id::new("toasts_overlay"))
+        Area::new(Id::unique("toasts_overlay"))
             .fixed_pos(Pos2::ZERO)
             .show(ctx, |ui| {
                 self.toasts.show(ui);
@@ -795,7 +795,7 @@ impl crate::app::SmartMediaContext {
             ctx.settings_ui(ui);
             Panel::bottom("Egui Settings bottom panel")
             .exact_size(25.)
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui.button("Save").clicked() {
                         let mut new_opts = ctx.options(|o| o.clone());
