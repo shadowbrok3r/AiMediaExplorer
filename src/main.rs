@@ -7,6 +7,7 @@ pub mod ui;
 pub mod receive;
 pub mod icons;
 pub mod theme;
+pub mod settings;
 
 pub use utilities::{explorer::*, scan::*, thumbs::*, types::*};
 pub use database::*;
@@ -22,65 +23,11 @@ impl eframe::App for app::SmartMediaApp {
         let ctx = ui.ctx().clone();
         theme::glass::frost_open_windows(&ctx);
         self.context.receive(&ctx);
+        self.sync_focused_explorer();
+        settings::banner::show(ui);
         self.navbar(ui);
-
-        // Create any requested dynamic tabs (tags/categories)
-        {
-            let mut q = app::OPEN_TAB_REQUESTS.lock().unwrap();
-            for req in q.drain(..) {
-                match req {
-                    crate::ui::file_table::FilterRequest::NewTab { title, rows, showing_similarity, similar_scores, origin_path, background: _ } => {
-                        let title = uniquify_title(&self.context.open_tabs, &title);
-                        if !self.context.open_tabs.contains(&title) {
-                            self.tree[egui_dock::SurfaceIndex::main()].push_to_focused_leaf(title.clone());
-                            self.context.open_tabs.insert(title.clone());
-                        }
-                        if title.starts_with("Image Edit") {
-                            if let Some(origin) = origin_path.as_ref() {
-                                self.context.image_edit.open_with_path(origin);
-                            }
-                            // No filtered tab to manage; the TabViewer renders self.context.image_edit
-                        } else {
-                            let mut ex = crate::ui::file_table::FileExplorer::new(true);
-                            ex.set_rows(rows);
-                            if showing_similarity {
-                                ex.viewer.showing_similarity = true;
-                                if let Some(scores) = similar_scores { ex.viewer.similar_scores = scores; }
-                                if let Some(origin) = origin_path { ex.current_path = origin; }
-                            }
-                            self.context.filtered_tabs.insert(title.clone(), ex);
-                        }
-                    }
-                    crate::ui::file_table::FilterRequest::OpenDatabaseAll { title, background } => {
-                        let title = uniquify_title(&self.context.open_tabs, &title);
-                        if !self.context.open_tabs.contains(&title) {
-                            self.tree[egui_dock::SurfaceIndex::main()].push_to_focused_leaf(title.clone());
-                            self.context.open_tabs.insert(title.clone());
-                        }
-                        let mut ex = crate::ui::file_table::FileExplorer::new(true);
-                        ex.viewer.mode = crate::ui::file_table::table::ExplorerMode::Database;
-                        ex.load_all_database_rows();
-                        self.context.filtered_tabs.insert(title.clone(), ex);
-                        if background {
-                            // Leave focus as-is
-                        }
-                    }
-                    crate::ui::file_table::FilterRequest::OpenPath { title, path, recursive, background } => {
-                        let title = uniquify_title(&self.context.open_tabs, &title);
-                        if !self.context.open_tabs.contains(&title) {
-                            self.tree[egui_dock::SurfaceIndex::main()].push_to_focused_leaf(title.clone());
-                            self.context.open_tabs.insert(title.clone());
-                        }
-                        let mut ex = crate::ui::file_table::FileExplorer::new(true);
-                        ex.init_open_path(&path, recursive);
-                        self.context.filtered_tabs.insert(title.clone(), ex);
-                        if background {
-                            // As above, egui_dock focuses on push; no direct defocus API. Future enhancement: track previous and re-focus.
-                        }
-                    }
-                }
-            }
-        }
+        self.drain_open_tab_requests();
+        self.open_refine_tab_if_requested();
 
         CentralPanel::default()
         .frame(Frame::central_panel(&ctx.global_style()).inner_margin(0.))
@@ -99,7 +46,20 @@ impl eframe::App for app::SmartMediaApp {
                 .secondary_button_context_menu(true)
                 .show_inside(ui, &mut self.context);
         });
+        self.process_tab_adds();
 
+        if std::mem::take(&mut self.context.egui_prefs_save_requested) {
+            let saved = frame.storage_mut().map(|storage| {
+                app::save_egui_preferences(&ctx, storage);
+                storage.flush();
+            });
+            match saved {
+                Some(()) => ui::dialogs::toast(egui_toast::ToastKind::Success, "Egui settings saved"),
+                None => ui::dialogs::toast(egui_toast::ToastKind::Error, "Egui settings not saved: no persistent storage"),
+            }
+        }
+
+        ui::devtools::show(&ctx);
         theme::debug_panel::show(&ctx);
         theme::debug_panel::record_ui_time(&ctx, started.elapsed());
         theme::debug_panel::record_frame_cpu(&ctx, frame.info().cpu_usage);
@@ -109,29 +69,107 @@ impl eframe::App for app::SmartMediaApp {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         theme::save(&self.egui_ctx, storage);
+        app::save_egui_preferences(&self.egui_ctx, storage);
     }
 
     fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
+        settings::flush_blocking(std::time::Duration::from_millis(1500));
         if let Some(gl) = gl {
             theme::glass::shutdown(gl);
         }
     }
 }
 
-fn uniquify_title(open_tabs: &std::collections::HashSet<String>, base: &str) -> String {
-    if !open_tabs.contains(base) {
-        return base.to_string();
-    }
-    let mut idx = 2;
-    loop {
-        let cand = format!("{} ({})", base, idx);
-        if !open_tabs.contains(&cand) {
-            return cand;
+impl app::SmartMediaApp {
+    /// Records the focused dock tab as the active explorer when it shows one.
+    fn sync_focused_explorer(&mut self) {
+        let focused = self.tree.find_active_focused().map(|(_, tab)| tab.clone());
+        if let Some(title) = focused {
+            if app::is_explorer_tab(&title, &self.context.filtered_tabs) {
+                self.context.active_tab_title = Some(title);
+            }
         }
-        idx += 1;
-        if idx > 9999 { return format!("{} ({})", base, idx); }
+    }
+
+    /// Focuses the tab `title` if it is open, otherwise opens it in the focused leaf.
+    pub fn focus_or_open_tab(&mut self, title: &str) {
+        ui::tabs::focus_or_open_tab(&mut self.tree, &mut self.context.open_tabs, title);
+    }
+
+    /// Opens `title` in the focused leaf; with `background` the previously focused tab stays in front.
+    fn open_tab(&mut self, title: &str, background: bool) {
+        ui::tabs::open_tab(&mut self.tree, &mut self.context.open_tabs, title, background);
+    }
+
+    /// Shows the AI Refinements tab when a refine selection is waiting for it.
+    fn open_refine_tab_if_requested(&mut self) {
+        let waiting = !ui::refine::REFINE_SELECTION_REQUESTS.lock().unwrap().is_empty();
+        if waiting {
+            self.focus_or_open_tab("AI Refinements");
+        }
+    }
+
+    /// Turns dock add-button presses into new explorer tabs.
+    fn process_tab_adds(&mut self) {
+        for path in std::mem::take(&mut self.context.pending_tab_adds) {
+            let title = ui::tabs::uniquify_title(&self.context.open_tabs, "Explorer");
+            self.tree.set_focused_node_and_surface(path);
+            self.tree.push_to_focused_leaf(title.clone());
+            self.context.open_tabs.insert(title.clone());
+            self.context.filtered_tabs.insert(title, ui::file_table::FileExplorer::new(false));
+        }
+    }
+
+    /// Creates the tabs requested through `OPEN_TAB_REQUESTS`.
+    fn drain_open_tab_requests(&mut self) {
+        let requests: Vec<_> = app::OPEN_TAB_REQUESTS.lock().unwrap().drain(..).collect();
+        for req in requests {
+            match req {
+                ui::file_table::FilterRequest::NewTab { title, rows, showing_similarity, similar_scores, origin_path, background } => {
+                    if title.starts_with("Image Edit") {
+                        if let Some(origin) = origin_path.as_ref() {
+                            self.context.image_edit.open_with_path(origin);
+                        }
+                        if self.context.open_tabs.contains(IMAGE_EDIT_TAB) {
+                            if !background { self.focus_or_open_tab(IMAGE_EDIT_TAB); }
+                        } else {
+                            self.open_tab(IMAGE_EDIT_TAB, background);
+                        }
+                        continue;
+                    }
+                    let title = ui::tabs::uniquify_title(&self.context.open_tabs, &title);
+                    self.open_tab(&title, background);
+                    let mut ex = ui::file_table::FileExplorer::new(true);
+                    ex.set_rows(rows);
+                    if showing_similarity {
+                        ex.viewer.showing_similarity = true;
+                        if let Some(scores) = similar_scores { ex.viewer.similar_scores = scores; }
+                        if let Some(origin) = origin_path { ex.current_path = origin; }
+                    }
+                    self.context.filtered_tabs.insert(title, ex);
+                }
+                ui::file_table::FilterRequest::OpenDatabaseAll { title, background } => {
+                    let title = ui::tabs::uniquify_title(&self.context.open_tabs, &title);
+                    self.open_tab(&title, background);
+                    let mut ex = ui::file_table::FileExplorer::new(true);
+                    ex.viewer.mode = ui::file_table::table::ExplorerMode::Database;
+                    ex.load_all_database_rows();
+                    self.context.filtered_tabs.insert(title, ex);
+                }
+                ui::file_table::FilterRequest::OpenPath { title, path, recursive, background } => {
+                    let title = ui::tabs::uniquify_title(&self.context.open_tabs, &title);
+                    self.open_tab(&title, background);
+                    let mut ex = ui::file_table::FileExplorer::new(true);
+                    ex.init_open_path(&path, recursive);
+                    self.context.filtered_tabs.insert(title, ex);
+                }
+            }
+        }
     }
 }
+
+/// Title of the single Image Edit tool tab.
+const IMAGE_EDIT_TAB: &str = "Image Edit";
 
 #[tokio::main]
 async fn main() -> eframe::Result<()> {
@@ -169,6 +207,7 @@ async fn main() -> eframe::Result<()> {
         return Ok(());
     }
 
+    // `--mcp-stdio` (or SMART_MEDIA_MCP_STDIO=1) starts the MCP stdio server; it is off otherwise.
     egui_logger::builder()
         .max_level(log::LevelFilter::Info) // defaults to Debug
         .init()
@@ -183,15 +222,7 @@ async fn main() -> eframe::Result<()> {
                 .with_drag_and_drop(true),
             ..Default::default()
         },
-        Box::new(|cc| {
-            // Fire up MCP stdio server in the background for testing
-            tokio::spawn(async move {
-                if let Err(e) = crate::ai::mcp::serve_stdio_background().await {
-                    log::warn!("[MCP] stdio server failed to start: {e}");
-                }
-            });
-            Ok(Box::new(app::SmartMediaApp::new(cc)))
-        }),
+        Box::new(|cc| Ok(Box::new(app::SmartMediaApp::new(cc)))),
     );
     
     Ok(())

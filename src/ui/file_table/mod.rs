@@ -325,12 +325,7 @@ impl FileExplorer {
         let (db_preload_tx, db_preload_rx) = crossbeam::channel::unbounded();
         let (logical_groups_tx, logical_groups_rx) = crossbeam::channel::unbounded();
         let (filter_groups_tx, filter_groups_rx) = crossbeam::channel::unbounded();
-        let current_path = directories::UserDirs::new()
-            .unwrap()
-            .picture_dir()
-            .unwrap()
-            .to_string_lossy()
-            .to_string();
+        let current_path = crate::settings::dirs::start_dir().to_string_lossy().to_string();
 
         let mut this = Self {
             table: Default::default(),
@@ -368,7 +363,7 @@ impl FileExplorer {
             video_position_secs: 0.0,
             thumb_scheduled: std::collections::HashSet::new(),
             thumb_semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(6)),
-            follow_active_vision: true,
+            follow_active_vision: false,
             clip_presence: std::collections::HashSet::new(),
             clip_embedding_rx,
             vision_started: 0,
@@ -471,6 +466,7 @@ impl FileExplorer {
     }
 
     pub fn ui(&mut self, ui: &mut Ui) {
+        self.viewer.sync_settings();
         self.receive(ui.ctx());
         if self.repaint_next {
             ui.ctx().request_repaint();

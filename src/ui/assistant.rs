@@ -1,8 +1,8 @@
 use egui_json_tree::{DefaultExpand, JsonTree, JsonTreeStyle, JsonTreeVisuals, ToggleButtonsState};
-use egui::{style::StyleModifier, containers::menu::{MenuButton, MenuConfig}};
+use egui::containers::menu::{MenuButton, MenuConfig};
 use crossbeam::channel::{Receiver, Sender, unbounded, bounded};
 use egui_extras::syntax_highlighting::{CodeTheme, highlight};
-use crate::{UiSettings, icons::{self, svg}, ui::status::GlobalStatusIndicator};
+use crate::{UiSettings, icons::{self, svg}, ui::{dialogs::{self, DialogResult}, status::GlobalStatusIndicator}};
 use crate::ai::openai_compat::OpenRouterModel;
 use std::collections::{HashMap, HashSet};
 use tokio::task::JoinHandle;
@@ -60,7 +60,10 @@ pub struct AssistantPanel {
     mcp_ping_text: String,
     mcp_search_text: String,
     model_sort: ModelSort,
+    // Read-only mirror of the settings store, refreshed when the store changes
     settings: UiSettings,
+    settings_gen: u64,
+    inference_draft: InferenceDraft,
     // UI-bound copies of option fields that need stable mutable references
     selected_provider: String,
     model_name: String,
@@ -89,6 +92,14 @@ pub struct AssistantPanel {
     db_thumb_rx: crossbeam::channel::Receiver<(String, Option<(Vec<u8>, u32, u32)>)>,
     // Prevent duplicate thumb fetches
     pending_thumb_fetch: std::collections::HashSet<String>,
+}
+
+/// Endpoint and organization text being edited in the Inference menu.
+#[derive(Default)]
+struct InferenceDraft {
+    base_url: String,
+    org: String,
+    synced: (String, String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,7 +131,8 @@ impl AssistantPanel {
         let (initial_sessions_tx, initial_sessions_rx) = bounded::<(Vec<(String, Vec<ChatMessage>)>, Vec<surrealdb::types::RecordId>)>(1);
         let (session_loaded_tx, session_loaded_rx) = unbounded::<(usize, Vec<ChatMessage>)>();
         let (db_thumb_tx, db_thumb_rx) = unbounded::<(String, Option<(Vec<u8>, u32, u32)>)>();
-        
+        let (settings, settings_gen) = crate::settings::new_mirror();
+
         Self {
             prompt: String::new(),
             progress: None,
@@ -151,7 +163,9 @@ impl AssistantPanel {
             mcp_ping_text: String::new(),
             mcp_search_text: String::new(),
             model_sort: ModelSort::NameAsc,
-            settings: UiSettings::default(),
+            settings,
+            settings_gen,
+            inference_draft: InferenceDraft::default(),
             selected_provider: "local-joycaption".into(),
             model_name: String::new(),
             open_model_opts: true,
@@ -175,23 +189,46 @@ impl AssistantPanel {
         }
     }
 
-    pub fn set_ui_settings(&mut self, settings: UiSettings) {
-        // Merge new settings and refresh UI-bound copies
-        self.settings = settings.clone();
-        self.selected_provider = settings
-            .ai_chat_provider
-            .clone()
-            .unwrap_or_else(|| self.selected_provider.clone());
+    /// Refreshes the settings mirror and the provider and model fields bound to it after a store change.
+    fn refresh_settings(&mut self) {
+        let previous_model = self.settings.openai_default_model.clone();
+        if !crate::settings::sync_mirror(&mut self.settings, &mut self.settings_gen) {
+            return;
+        }
+        if let Some(provider) = self.settings.ai_chat_provider.clone() {
+            self.selected_provider = provider;
+        }
+        if self.settings.openai_default_model != previous_model {
+            self.model_override = None;
+        }
         self.model_name = self
             .model_override
             .clone()
-            .or_else(|| settings.openai_default_model.clone())
+            .or_else(|| self.settings.openai_default_model.clone())
             .unwrap_or_else(|| self.model_name.clone());
+    }
+
+    /// Loads the endpoint and organization from settings into the draft unless the user has unsaved edits.
+    fn sync_inference_draft(&mut self) {
+        let stored = (
+            self.settings.openai_base_url.clone().unwrap_or_default(),
+            self.settings.openai_organization.clone().unwrap_or_default(),
+        );
+        let draft = &mut self.inference_draft;
+        if draft.synced == stored {
+            return;
+        }
+        if (draft.base_url.clone(), draft.org.clone()) == draft.synced {
+            draft.base_url = stored.0.clone();
+            draft.org = stored.1.clone();
+        }
+        draft.synced = stored;
     }
 
     pub fn ui(&mut self, ui: &mut Ui, explorer: &mut crate::ui::file_table::FileExplorer) {
         let ctx = ui.ctx().clone();
         self.receive(&ctx);
+        self.refresh_settings();
 
         // TOP PANEL
         Panel::top("assistant_top").show(ui, |ui| {
@@ -208,11 +245,9 @@ impl AssistantPanel {
 
         // BOTTOM: Input bar
         Panel::bottom("assistant_bottom").show(ui, |ui| {
-            let style = StyleModifier::default();
-            style.apply(ui.style_mut());
-            let menu_cfg = MenuConfig::default().close_behavior(PopupCloseBehavior::CloseOnClickOutside).style(style.clone());
+            let menu_cfg = MenuConfig::default().close_behavior(PopupCloseBehavior::CloseOnClickOutside);
             ui.add_space(4.);
-            MenuBar::new().config(menu_cfg).style(style).ui(ui, |ui| {
+            MenuBar::new().config(menu_cfg).ui(ui, |ui| {
                 
                 // Plus menu to add attachments
                 icons::icon_menu_button(ui, svg::PLUS, "Attach", |ui| {
@@ -223,12 +258,11 @@ impl AssistantPanel {
                         ui.close_kind(UiKind::Menu);
                     }
                     if icons::button(ui, svg::PAPERCLIP, "Attach file…").clicked() {
-                        if let Some(file) = rfd::FileDialog::new()
-                            .set_title("Attach image or file")
-                            .pick_file()
-                        {
-                            self.attachments.push(file.display().to_string());
-                        }
+                        let ctx = ui.ctx().clone();
+                        dialogs::pick_file(&ctx, "Attach image or file", {
+                            let ctx = ctx.clone();
+                            move |file| dialogs::deliver(&ctx, DialogResult::AssistantAttach(file))
+                        });
                         ui.close_kind(UiKind::Menu);
                     }
                 });
@@ -316,26 +350,28 @@ impl AssistantPanel {
                 ui.separator();
                 ui.add_space(4.);
 
-                let menu_txt = RichText::new("Inference").color(ui.style().visuals.error_fg_color).strong();
-                let style = StyleModifier::default();
-                style.apply(ui.style_mut());
-                let menu_cfg = MenuConfig::default().close_behavior(PopupCloseBehavior::CloseOnClickOutside).style(style);
+                let menu_txt = RichText::new("Inference").color(crate::theme::primary(ui)).strong();
+                let menu_cfg = MenuConfig::default().close_behavior(PopupCloseBehavior::CloseOnClickOutside);
                 MenuButton::from_button(icons::button_widget(ui, svg::AME_MODEL, menu_txt)).config(menu_cfg).ui(ui, |ui| {
-                    let mut settings = self.settings.clone();
+                    self.sync_inference_draft();
                     ui.label("Endpoint (OpenAI-compatible base URL)");
-                    ui.add(
-                        TextEdit::singleline(settings.openai_base_url.get_or_insert(String::new()))
+                    let endpoint = ui.add(
+                        TextEdit::singleline(&mut self.inference_draft.base_url)
                             .hint_text("e.g. http://localhost:11434/v1"),
                     );
                     ui.label("Organization (optional)");
-                    ui.add(TextEdit::singleline(
-                        settings.openai_organization.get_or_insert(String::new()),
-                    ));
+                    let org = ui.add(TextEdit::singleline(&mut self.inference_draft.org));
                     ui.label("Temperature");
                     ui.add(Slider::new(&mut self.temp, 0.0..=1.5).logarithmic(false));
                     ui.add_space(6.0);
-                    if icons::button(ui, svg::FLOPPY_DISK, "Save Settings").clicked() {
-                        crate::database::settings::save_settings(&settings);
+                    let save = icons::button(ui, svg::FLOPPY_DISK, "Save Settings").clicked();
+                    if save || endpoint.lost_focus() || org.lost_focus() {
+                        let (url, organization) = (self.inference_draft.base_url.trim().to_string(), self.inference_draft.org.trim().to_string());
+                        crate::settings::update("assistant:inference", |s| {
+                            s.openai_base_url = (!url.is_empty()).then(|| url.clone());
+                            s.openai_organization = (!organization.is_empty()).then(|| organization.clone());
+                        });
+                        self.refresh_settings();
                     }
                 });
 
@@ -389,10 +425,8 @@ impl AssistantPanel {
 
                 if selected_provider != current_provider {
                     self.selected_provider = selected_provider.clone();
-                    let mut s2 = self.settings.clone();
-                    s2.ai_chat_provider = Some(selected_provider.clone());
-                    crate::database::settings::save_settings(&s2);
-                    self.settings = s2;
+                    crate::settings::update("assistant:provider", |s| s.ai_chat_provider = Some(selected_provider.clone()));
+                    self.refresh_settings();
                 }
 
                 let current_model = if self.model_name.is_empty() {
@@ -409,10 +443,9 @@ impl AssistantPanel {
                 // Only update the default model on edit; do NOT create a new session or mark it as recently used here.
                 if te_resp.lost_focus() && self.model_name != current_model && !self.model_name.trim().is_empty() {
                     self.model_override = Some(self.model_name.clone());
-                    let mut s2 = self.settings.clone();
-                    s2.openai_default_model = Some(self.model_name.clone());
-                    crate::database::settings::save_settings(&s2);
-                    self.settings = s2;
+                    let model = self.model_name.clone();
+                    crate::settings::update("assistant:model", |s| s.openai_default_model = Some(model));
+                    self.refresh_settings();
                 }
                 
                 if !self.attachments.is_empty() {
@@ -529,15 +562,13 @@ impl AssistantPanel {
             let recent_models_vec = self.settings.recent_models.clone();
             let last_used_model_opt = self.settings.last_used_model.clone();
             if !recent_models_vec.is_empty() || last_used_model_opt.is_some() {
-                ui.vertical_centered(|ui| ui.heading(RichText::new("Recent Models").color(ui.style().visuals.error_fg_color)));
+                ui.vertical_centered(|ui| ui.heading(RichText::new("Recent Models").color(crate::theme::primary(ui))));
                 ui.horizontal(|ui| {
                     if icons::button(ui, svg::BROOM, "Clear Recent Models").on_hover_text("Remove all stored recent models").clicked() {
-                        let mut s2 = self.settings.clone();
-                        s2.recent_models.clear();
-                        // Optionally also clear last_used_model; keep it if you want separate
-                        s2.last_used_model = None;
-                        crate::database::settings::save_settings(&s2);
-                        self.settings = s2;
+                        crate::settings::update("assistant:clear-recent-models", |s| {
+                            s.recent_models.clear();
+                            s.last_used_model = None;
+                        });
                     }
                 });
                 if let Some(last) = last_used_model_opt.as_deref() {
@@ -546,9 +577,7 @@ impl AssistantPanel {
                         if ui.button(last).clicked() {
                             self.model_override = Some(last.to_string());
                             self.model_name = last.to_string();
-                            let mut s2 = self.settings.clone();
-                            s2.openai_default_model = Some(last.to_string());
-                            crate::database::settings::save_settings(&s2);
+                            crate::settings::update("assistant:last-used-model", |s| s.openai_default_model = Some(last.to_string()));
                         }
                     });
                 }
@@ -559,9 +588,7 @@ impl AssistantPanel {
                                 if ui.button(m).clicked() {
                                     self.model_override = Some(m.clone());
                                     self.model_name = m.clone();
-                                    let mut s2 = self.settings.clone();
-                                    s2.openai_default_model = Some(m.clone());
-                                    crate::database::settings::save_settings(&s2);
+                                    crate::settings::update("assistant:recent-model", |s| s.openai_default_model = Some(m.clone()));
                                 }
                             }
                         });
@@ -575,9 +602,9 @@ impl AssistantPanel {
 
             // --- Sessions list ---
             ui.horizontal(|ui| {
-                ui.heading(RichText::new("Sessions").color(ui.style().visuals.error_fg_color));
+                ui.heading(RichText::new("Sessions").color(crate::theme::primary(ui)));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let err_color = ui.style().visuals.error_fg_color;
+                    let err_color = crate::theme::error(ui);
                     if icons::icon_button_tinted(ui, svg::TRASH, "Double Click to Clear ALL Sessions", err_color).double_clicked() {
                         self.messages.clear();
                         if let Some((title, store)) = self.sessions.get_mut(self.active_session) {
@@ -720,6 +747,12 @@ impl AssistantPanel {
     }
 
     pub fn receive(&mut self, ctx: &Context) {
+        if let Some(file) = dialogs::take(|r| match r {
+            DialogResult::AssistantAttach(p) => Some(p.display().to_string()),
+            _ => None,
+        }) {
+            self.attachments.push(file);
+        }
         // Drain pending external attach requests
         {
             let mut q = ATTACH_REQUESTS.lock().unwrap();
@@ -1107,7 +1140,7 @@ impl AssistantPanel {
                             ui.horizontal(|ui| {
                                 let tint = ui.visuals().text_color();
                                 let edge = icons::IconSize::Sm.px(ui);
-                                let accent = ui.style().visuals.error_fg_color;
+                                let accent = crate::theme::primary(ui);
                                 let mut right = Atoms::new(RichText::new(price_suffix.clone()).color(accent));
                                 for modality in &modalities {
                                     right.push_right(modality.image(edge).tint(accent));
@@ -1130,11 +1163,10 @@ impl AssistantPanel {
                                     {
                                         self.model_override = Some(id.clone());
                                         self.model_name = id.clone();
-                                        let mut settings = self.settings.clone();
-                                        settings.openai_default_model = Some(id.clone());
-                                        settings.push_recent_model(&id);
-                                        crate::database::settings::save_settings(&settings);
-                                        self.settings = settings;
+                                        crate::settings::update("assistant:use-model", |s| {
+                                            s.openai_default_model = Some(id.clone());
+                                            s.push_recent_model(&id);
+                                        });
                                         // Create a new chat session named after the model and switch to it
                                         let model_title = id.clone();
                                         let tx_clone = self.new_session_tx.clone();
@@ -1413,10 +1445,7 @@ impl AssistantPanel {
                 match stream_res {
                     Ok(full) => {
                         // On successful assistant reply, record model usage as recently used
-                        if let Some(mut s) = Some(settings.clone()) {
-                            s.push_recent_model(&model_id_for_usage);
-                            crate::database::settings::save_settings(&s);
-                        }
+                        crate::settings::update("assistant:model-used", |s| s.push_recent_model(&model_id_for_usage));
                         if !path_for_updates.is_empty() {
                             let _ = txu.try_send(crate::ui::file_table::AIUpdate::Interim {
                                 path: path_for_updates.clone(),
@@ -1478,10 +1507,8 @@ impl AssistantPanel {
                                 )
                                 .await;
                                 // Mark the local model as recently used (use provider name)
-                                let mut s = settings.clone();
-                                let mname = s.openai_default_model.clone().unwrap_or_else(|| "local-joycaption".into());
-                                s.push_recent_model(&mname);
-                                crate::database::settings::save_settings(&s);
+                                let mname = settings.openai_default_model.clone().unwrap_or_else(|| "local-joycaption".into());
+                                crate::settings::update("assistant:model-used", |s| s.push_recent_model(&mname));
                                 crate::ui::status::ASSIST_STATUS
                                     .set_state(crate::ui::status::StatusState::Idle, "Idle");
                             }
@@ -1539,10 +1566,8 @@ impl AssistantPanel {
                         results,
                     });
                     // On successful local text search, treat the current default model as used
-                    let mut s = settings.clone();
-                    let mname = s.openai_default_model.clone().unwrap_or_else(|| "local-joycaption".into());
-                    s.push_recent_model(&mname);
-                    crate::database::settings::save_settings(&s);
+                    let mname = settings.openai_default_model.clone().unwrap_or_else(|| "local-joycaption".into());
+                    crate::settings::update("assistant:model-used", |s| s.push_recent_model(&mname));
                     crate::ui::status::ASSIST_STATUS
                         .set_state(crate::ui::status::StatusState::Idle, "Idle");
                 });
@@ -1840,5 +1865,33 @@ impl AssistantPanel {
             };
             let _ = tx.try_send((path_s, res));
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_inference_draft_follows_settings_until_the_user_edits_it() {
+        let mut panel = AssistantPanel::new();
+        panel.settings.openai_base_url = Some("http://a/v1".into());
+        panel.sync_inference_draft();
+        assert_eq!(panel.inference_draft.base_url, "http://a/v1");
+
+        panel.inference_draft.base_url = "http://typing/v1".into();
+        panel.settings.openai_base_url = Some("http://c/v1".into());
+        panel.sync_inference_draft();
+        assert_eq!(panel.inference_draft.base_url, "http://typing/v1", "unsaved edits survive frames and store changes");
+    }
+
+    #[test]
+    fn a_store_change_updates_an_untouched_draft() {
+        let mut panel = AssistantPanel::new();
+        panel.settings.openai_organization = Some("org-1".into());
+        panel.sync_inference_draft();
+        panel.settings.openai_organization = Some("org-2".into());
+        panel.sync_inference_draft();
+        assert_eq!(panel.inference_draft.org, "org-2");
     }
 }

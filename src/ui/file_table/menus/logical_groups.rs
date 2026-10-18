@@ -1,18 +1,35 @@
 use eframe::egui::*;
-use egui::{containers::menu::{MenuButton, MenuConfig}, style::StyleModifier};
+use egui::containers::menu::{MenuButton, MenuConfig};
+
+/// Longest group name shown on the menu button before it is cut with an ellipsis.
+const GROUP_LABEL_MAX_CHARS: usize = 18;
 
 impl crate::ui::file_table::FileExplorer {
+    /// Text of the Logical Groups menu button.
+    pub fn logical_group_label(&self) -> String {
+        match &self.active_logical_group_name {
+            Some(name) => {
+                let short: String = if name.chars().count() > GROUP_LABEL_MAX_CHARS {
+                    name.chars().take(GROUP_LABEL_MAX_CHARS - 3).collect::<String>() + "..."
+                } else {
+                    name.clone()
+                };
+                format!("Logical Groups ({short})")
+            }
+            None => "Logical Groups".to_string(),
+        }
+    }
+
     pub fn logical_group_menu(&mut self, ui: &mut Ui) {
-        let style = StyleModifier::default();
-        style.apply(ui.style_mut());
-        let txt = if let Some(name) = &self.active_logical_group_name {
-            RichText::new(format!("Logical Groups ({name})")).color(crate::theme::success(ui))
+        let label = self.logical_group_label();
+        let txt = if self.active_logical_group_name.is_some() {
+            RichText::new(label).color(crate::theme::success(ui))
         } else {
-            RichText::new(format!("Logical Groups")).color(crate::theme::warn(ui))
+            RichText::new(label).color(crate::theme::warn(ui))
         };
-        
+
         MenuButton::new(txt)
-        .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside).style(style.clone()))
+        .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside))
         .ui(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.set_width(470.);
@@ -24,7 +41,7 @@ impl crate::ui::file_table::FileExplorer {
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.button("⟲ Refresh").clicked() {
+                        if crate::icons::button(ui, crate::icons::svg::ARROWS_CLOCKWISE, "Refresh").clicked() {
                             let tx = self.logical_groups_tx.clone();
                             tokio::spawn(async move {
                                 match crate::database::LogicalGroup::list_all().await {
@@ -38,7 +55,7 @@ impl crate::ui::file_table::FileExplorer {
                 ui.separator();
                 ui.add_space(5.);
                 ui.vertical_centered(|ui| 
-                    ui.heading(RichText::new("Operations").underline().color(ui.style().visuals.error_fg_color))
+                    ui.heading(RichText::new("Operations").underline().color(crate::theme::primary(ui)))
                 );
                 ui.add_space(5.);
                 ui.horizontal(|ui| {
@@ -219,7 +236,7 @@ impl crate::ui::file_table::FileExplorer {
 
                 ui.add_space(5.);
                 ui.vertical_centered(|ui| 
-                    ui.heading(RichText::new("Create New Group").underline().color(ui.style().visuals.error_fg_color))
+                    ui.heading(RichText::new("Create New Group").underline().color(crate::theme::primary(ui)))
                 );
                 ui.add_space(5.);
                 

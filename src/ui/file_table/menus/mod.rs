@@ -1,6 +1,9 @@
-use egui::{containers::menu::MenuConfig, style::StyleModifier};
+use egui::containers::menu::MenuConfig;
 use eframe::egui::*;
 
+use crate::icons::{self, svg};
+
+pub mod db_delete;
 pub mod logical_groups;
 pub mod selection_menu;
 pub mod filter_menu;
@@ -18,42 +21,30 @@ const SEARCH_PREFERRED_WIDTH: f32 = 200.;
 
 impl super::FileExplorer {
     pub fn navbar(&mut self, ui: &mut Ui) {
-        let style = StyleModifier::default();
-        style.apply(ui.style_mut());
         Panel::top("file_explorer_navbar")
         .exact_size(28.)
         .show_separator_line(false)
         .show(ui, |ui| {
         MenuBar::new()
         .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside))
-        .style(style)
         .ui(ui, |ui| {
             ui.set_height(25.);
             ui.horizontal_top(|ui| {
-                let err_color = ui.style().visuals.error_fg_color;
-                let font = FontId::proportional(15.);
-                let size = vec2(25., 25.);
                 ui.add_space(5.);
-                if Button::new(
-                    if self.open_quick_access { RichText::new("⚙").font(font.clone()).color(err_color) } else { RichText::new("⚙").font(font.clone()) }
-                )
-                .min_size(size)
-                .ui(ui)
-                .on_hover_text("Open Options side panel")
-                .clicked() {
+                if icons::toggle_button(ui, svg::GEAR, self.open_quick_access, "Open Options side panel").clicked() {
                     self.open_quick_access = !self.open_quick_access;
                 }
-                
+
                 ui.add_space(5.);
                 ui.separator();
                 ui.add_space(5.);
-                if Button::new(RichText::new("⬆").font(font.clone()).color(err_color)).min_size(size).ui(ui).clicked() { self.nav_up(); }
-                if Button::new(RichText::new("⬅").font(font.clone()).color(err_color)).min_size(size).ui(ui).clicked() { self.nav_back(); }
-                if Button::new(RichText::new("➡").font(font.clone()).color(err_color)).min_size(size).ui(ui).clicked() { self.nav_forward(); }
-                if Button::new(RichText::new("⟲").font(font.clone()).color(err_color)).min_size(size).ui(ui).clicked() { self.refresh(); }
-                if Button::new(RichText::new("🏠").font(font.clone()).color(err_color)).min_size(size).ui(ui).clicked() { self.nav_home(); }
+                if icons::icon_button(ui, svg::ARROW_UP, "Up one folder").clicked() { self.nav_up(); }
+                if icons::icon_button(ui, svg::ARROW_LEFT, "Back").clicked() { self.nav_back(); }
+                if icons::icon_button(ui, svg::ARROW_RIGHT, "Forward").clicked() { self.nav_forward(); }
+                if icons::icon_button(ui, svg::ARROW_CLOCKWISE, "Refresh").clicked() { self.refresh(); }
+                if icons::icon_button(ui, svg::HOUSE_SIMPLE, "Home").clicked() { self.nav_home(); }
                 if self.viewer.mode == super::table::ExplorerMode::Database {
-                    if Button::new(RichText::new("🗙").font(font.clone()).color(err_color)).min_size(size).ui(ui).on_hover_text("Double click to Clear Database Table").double_clicked() { self.table.clear(); self.table_index.clear(); }
+                    if icons::icon_button(ui, svg::TRASH, "Double click to Clear Database Table").double_clicked() { self.table.clear(); self.table_index.clear(); }
                 }
                 ui.separator();
                 let right_id = ui.id().with("navbar_right_width");
@@ -169,12 +160,9 @@ impl super::FileExplorer {
                 }
                 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let style = StyleModifier::default();
-                    style.apply(ui.style_mut());
-                    
                     self.filter_menu(ui);
 
-                    if ui.button(if self.open_preview_pane { RichText::new("👁").color(err_color) } else { RichText::new("👁").font(font) }).clicked() {
+                    if icons::toggle_button(ui, svg::EYE, self.open_preview_pane, "Toggle preview pane").clicked() {
                         self.open_preview_pane = !self.open_preview_pane;
                     };
 

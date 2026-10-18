@@ -4,11 +4,10 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use surrealdb::types::{RecordId, SurrealValue};
-use tokio::task;
 use crate::database::{db_activity, db_set_detail, db_set_error};
 
 /// Inner struct for database storage (without egui::Options which doesn't implement SurrealValue)
-#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SurrealValue)]
 struct UiSettingsDb {
     pub id: RecordId,
     pub ext_enabled: Option<Vec<(String, bool)>>,
@@ -47,6 +46,7 @@ struct UiSettingsDb {
     pub openai_base_url: Option<String>,
     pub openai_default_model: Option<String>,
     pub openai_organization: Option<String>,
+    pub mcp_stdio_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,6 +113,8 @@ pub struct UiSettings {
     pub openai_default_model: Option<String>,
     // Optional OpenAI organization header
     pub openai_organization: Option<String>,
+    // Start the MCP stdio server (it shares the GUI process stdin/stdout); off unless true
+    pub mcp_stdio_enabled: Option<bool>,
     // egui preferences - kept in memory only, not persisted to DB
     #[serde(skip)]
     pub egui_preferences: Options
@@ -158,6 +160,7 @@ impl From<UiSettingsDb> for UiSettings {
             openai_base_url: db.openai_base_url,
             openai_default_model: db.openai_default_model,
             openai_organization: db.openai_organization,
+            mcp_stdio_enabled: db.mcp_stdio_enabled,
             egui_preferences: Options::default(),
         }
     }
@@ -203,6 +206,7 @@ impl From<&UiSettings> for UiSettingsDb {
             openai_base_url: s.openai_base_url.clone(),
             openai_default_model: s.openai_default_model.clone(),
             openai_organization: s.openai_organization.clone(),
+            mcp_stdio_enabled: s.mcp_stdio_enabled,
         }
     }
 }
@@ -248,6 +252,7 @@ impl Default for UiSettings {
             openai_base_url: None,
             openai_default_model: Some("gpt-5-mini".into()),
             openai_organization: None,
+            mcp_stdio_enabled: None,
             egui_preferences: Options::default()
 
         }
@@ -276,53 +281,160 @@ impl UiSettings {
         self.last_used_model = Some(model.to_string());
     }
 }
-// In-memory snapshot (optional) to avoid extra DB selects for callers that load early.
-pub static SETTINGS_CACHE: Lazy<Mutex<Option<UiSettings>>> = Lazy::new(|| Mutex::new(None));
 
-pub fn load_settings() -> Option<UiSettings> {
-    // Do not fetch or fabricate defaults here. Until DB is ready and cache is hydrated,
-    // return None so callers can gate behavior appropriately.
-    SETTINGS_CACHE.lock().unwrap().clone()
-}
+macro_rules! persisted_fields {
+    ($($f:ident),+ $(,)?) => {
+        /// Names of the persisted settings fields (every field except `id` and `egui_preferences`).
+        pub const PERSISTED_FIELDS: &[&str] = &[$(stringify!($f)),+];
 
-pub fn save_settings(s: &UiSettings) {
-    // Update cache immediately and persist asynchronously.
-    *SETTINGS_CACHE.lock().unwrap() = Some(s.clone());
-    let to_save = s.clone();
-    task::spawn(async move {
-        if let Err(e) = save_settings_in_db(to_save).await {
-            log::error!("[settings] save_settings failed: {e}");
-        } else {
-            // After a successful save, refresh the cache from DB to ensure it's in sync.
-            match get_settings().await {
-                Ok(svr) => {
-                    *SETTINGS_CACHE.lock().unwrap() = Some(svr);
-                }
-                Err(e) => log::warn!("[settings] get_settings after save failed: {e}"),
+        /// Persisted fields whose value differs between `a` and `b`.
+        pub fn changed_fields(a: &UiSettings, b: &UiSettings) -> Vec<&'static str> {
+            let mut out = Vec::new();
+            $(if a.$f != b.$f { out.push(stringify!($f)); })+
+            out
+        }
+
+        /// Copies the named persisted fields from `src` into `dst`.
+        pub fn copy_fields(dst: &mut UiSettings, src: &UiSettings, fields: &[&str]) {
+            for field in fields {
+                $(if *field == stringify!($f) { dst.$f = src.$f.clone(); })+
             }
         }
-    });
+
+        fn copy_fields_db(dst: &mut UiSettingsDb, src: &UiSettingsDb, fields: &[&str]) {
+            for field in fields {
+                $(if *field == stringify!($f) { dst.$f = src.$f.clone(); })+
+            }
+        }
+    };
 }
 
+persisted_fields!(
+    ext_enabled, excluded_dirs, group_by_category, auto_indexing, ai_prompt_template,
+    overwrite_descriptions, filter_modified_after, filter_modified_before, filter_skip_icons,
+    db_min_size_bytes, db_max_size_bytes, db_excluded_exts, auto_clip_embeddings,
+    clip_augment_with_text, clip_overwrite_embeddings, clip_model, recent_paths, recent_models,
+    last_used_model, auto_save_to_database, joycaption_model_dir, reranker_model, jina_max_length,
+    jina_doc_type, jina_query_type, jina_enable_multimodal, scan_found_batch_max,
+    ai_chat_provider, openai_api_key, grok_api_key, gemini_api_key, groq_api_key,
+    openrouter_api_key, openai_base_url, openai_default_model, openai_organization,
+    mcp_stdio_enabled,
+);
+
+/// Record id of the single user settings document.
+pub fn settings_id() -> RecordId {
+    RecordId::new(USER_SETTINGS, "ShadowbrokerPC")
+}
+
+/// The persisted fields of `s` as a JSON object, `id` excluded.
+pub fn persisted_json(s: &UiSettings) -> serde_json::Map<String, serde_json::Value> {
+    match serde_json::to_value(UiSettingsDb::from(s)) {
+        Ok(serde_json::Value::Object(mut map)) => {
+            map.remove("id");
+            map
+        }
+        _ => serde_json::Map::new(),
+    }
+}
+
+// Read-only mirror of the settings store for code that cannot depend on the UI layer.
+pub static SETTINGS_CACHE: Lazy<Mutex<Option<UiSettings>>> = Lazy::new(|| Mutex::new(None));
+
+/// The loaded settings, or `None` until the store has hydrated from the database.
+pub fn load_settings() -> Option<UiSettings> {
+    crate::settings::store().snapshot_loaded()
+}
+
+/// Applies the fields of `s` that differ from the live settings as a patch.
+pub fn save_settings(s: &UiSettings) {
+    crate::settings::store().merge_from("legacy:save_settings", s);
+}
+
+/// Writes the whole record; prefer [`merge_settings_in_db`], which never overwrites untouched fields.
 pub async fn save_settings_in_db(s: UiSettings) -> anyhow::Result<(), anyhow::Error> {
     let _ga = db_activity("UPSERT user settings");
     db_set_detail("Saving user settings".to_string());
     let db_settings: UiSettingsDb = (&s).into();
     super::DB
-        .upsert::<Option<UiSettingsDb>>(UiSettings::default().id)
+        .upsert::<Option<UiSettingsDb>>(settings_id())
         .content::<UiSettingsDb>(db_settings)
         .await
         .map_err(|e| { db_set_error(format!("Save settings failed: {e}")); e })?;
     Ok(())
 }
 
+/// Overlays the named fields of `s` onto the stored record read fresh from the database.
+pub async fn merge_settings_in_db(fields: &[&'static str], s: &UiSettings) -> anyhow::Result<(), anyhow::Error> {
+    let _ga = db_activity("MERGE user settings");
+    db_set_detail("Saving user settings".to_string());
+    let id = settings_id();
+    let stored: Option<UiSettingsDb> = super::DB
+        .select(id.clone())
+        .await
+        .map_err(|e| { db_set_error(format!("Read settings before save failed: {e}")); e })?;
+    let src: UiSettingsDb = s.into();
+    let merged = match stored {
+        Some(mut base) => {
+            copy_fields_db(&mut base, &src, fields);
+            base
+        }
+        None => src,
+    };
+    super::DB
+        .upsert::<Option<UiSettingsDb>>(id)
+        .content::<UiSettingsDb>(merged)
+        .await
+        .map_err(|e| { db_set_error(format!("Save settings failed: {e}")); e })?;
+    Ok(())
+}
+
 pub async fn get_settings() -> anyhow::Result<UiSettings, anyhow::Error> {
+    Ok(get_settings_checked().await?.0)
+}
+
+/// The stored settings plus whether a record existed; defaults when none exists, an error when the record cannot be read.
+pub async fn get_settings_checked() -> anyhow::Result<(UiSettings, bool), anyhow::Error> {
     let _ga = db_activity("SELECT user settings");
     db_set_detail("Loading user settings".to_string());
-    let settings_res: Option<UiSettingsDb> = super::DB.select(UiSettings::default().id).await?;
-    if let Some(settings) = settings_res {
-        return Ok(settings.into());
-    } else {
-        Ok(UiSettings::default())
+    let stored: Option<UiSettingsDb> = super::DB.select(settings_id()).await?;
+    Ok(match stored {
+        Some(settings) => (settings.into(), true),
+        None => (UiSettings::default(), false),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn changed_fields_lists_only_differing_persisted_fields() {
+        let a = UiSettings::default();
+        let mut b = a.clone();
+        assert!(changed_fields(&a, &b).is_empty());
+        b.filter_skip_icons = !a.filter_skip_icons;
+        b.openai_base_url = Some("http://x/v1".into());
+        assert_eq!(changed_fields(&a, &b), vec!["filter_skip_icons", "openai_base_url"]);
+    }
+
+    #[test]
+    fn copy_fields_touches_only_the_named_fields() {
+        let mut dst = UiSettings::default();
+        let mut src = dst.clone();
+        src.auto_indexing = true;
+        src.clip_model = Some("other".into());
+        copy_fields(&mut dst, &src, &["auto_indexing"]);
+        assert!(dst.auto_indexing);
+        assert_eq!(dst.clip_model, UiSettings::default().clip_model);
+    }
+
+    #[test]
+    fn persisted_field_names_cover_every_json_key() {
+        let json = persisted_json(&UiSettings::default());
+        assert!(!json.contains_key("id"));
+        for key in json.keys() {
+            assert!(PERSISTED_FIELDS.contains(&key.as_str()), "{key} missing from PERSISTED_FIELDS");
+        }
+        assert_eq!(json.len(), PERSISTED_FIELDS.len());
     }
 }

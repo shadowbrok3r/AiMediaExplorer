@@ -1,146 +1,291 @@
-use eframe::egui::*;
-use egui::{containers::menu::{MenuButton, MenuConfig}, style::StyleModifier};
+use std::collections::HashSet;
+use std::path::PathBuf;
 
+use eframe::egui::*;
+use egui::containers::menu::{MenuButton, MenuConfig};
+use egui_toast::ToastKind;
+use surrealdb::types::RecordId;
+
+use crate::database::Thumbnail;
+use crate::ui::dialogs;
 use crate::ui::file_table::table::ExplorerMode;
 
+/// Names listed in a confirmation before the rest are summarised as a count.
+const NAME_PREVIEW: usize = 5;
+
+/// Non-directory rows whose path is selected; an empty selection selects nothing.
+pub fn selected_file_rows<'a>(rows: impl IntoIterator<Item = &'a Thumbnail>, selected: &HashSet<String>) -> Vec<&'a Thumbnail> {
+    if selected.is_empty() {
+        return Vec::new();
+    }
+    rows.into_iter().filter(|r| r.file_type != "<DIR>" && selected.contains(&r.path)).collect()
+}
+
+/// Paths of selected directory rows.
+pub fn selected_dir_paths<'a>(rows: impl IntoIterator<Item = &'a Thumbnail>, selected: &HashSet<String>) -> Vec<String> {
+    if selected.is_empty() {
+        return Vec::new();
+    }
+    rows.into_iter().filter(|r| r.file_type == "<DIR>" && selected.contains(&r.path)).map(|r| r.path.clone()).collect()
+}
+
+/// First `max` names joined, with a trailing "and N more".
+pub fn name_preview(names: &[String], max: usize) -> String {
+    let shown = names.iter().take(max).cloned().collect::<Vec<_>>().join(", ");
+    match names.len().saturating_sub(max) {
+        0 => shown,
+        more => format!("{shown} and {more} more"),
+    }
+}
+
+/// Rows a delete would remove; `None` when nothing is selected.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeletePlan {
+    pub ids: Vec<RecordId>,
+    pub paths: Vec<String>,
+    pub names: Vec<String>,
+}
+
+pub fn plan_delete(rows: &[&Thumbnail]) -> Option<DeletePlan> {
+    if rows.is_empty() {
+        return None;
+    }
+    Some(DeletePlan {
+        ids: rows.iter().map(|r| r.id.clone()).collect(),
+        paths: rows.iter().map(|r| r.path.clone()).collect(),
+        names: rows.iter().map(|r| r.filename.clone()).collect(),
+    })
+}
+
+#[derive(Clone)]
+enum Pending {
+    Delete(DeletePlan),
+    Move { paths: Vec<PathBuf>, names: Vec<String> },
+}
+
 impl crate::ui::file_table::FileExplorer {
-    pub fn selection_menu(&mut self, ui: &mut Ui) {
-        let style = StyleModifier::default();
-        style.apply(ui.style_mut());
-        // Selection operations menu
-        MenuButton::new(format!("Select ({})", self.selection_count()))
-        .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside).style(style.clone()))
+    /// Text of the Select menu button.
+    pub fn selection_label(&self) -> String {
+        format!("Select ({})", self.selection_count())
+    }
+
+    /// Select menu button plus the confirmation dialogs it raises; `owner` keys per-tab state.
+    pub fn selection_menu(&mut self, ui: &mut Ui, owner: &str) {
+        let pending_id = Id::new(("ame_selection_pending", owner));
+        self.show_pending(ui.ctx(), pending_id);
+
+        MenuButton::new(self.selection_label())
+        .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside))
         .ui(ui, |ui| {
             ui.set_width(350.);
-            ui.vertical_centered(|ui| 
-                ui.heading(RichText::new("Backup Files").underline().color(ui.style().visuals.error_fg_color))
+            ui.vertical_centered(|ui|
+                ui.heading(RichText::new("Backup Files").underline().color(crate::theme::primary(ui)))
             );
 
-            let selected_dirs: Vec<String> = self
-                .table
-                .iter()
-                .filter(|r| r.file_type == "<DIR>" && self.viewer.selected.contains(&r.path))
-                .map(|r| r.path.clone())
-                .collect();
-
-            let all_paths: Vec<String> = self
-                .table
-                .iter()
-                .map(|r| r.path.clone())
-                .collect();
-            
-            let selected_files: Vec<String> = self
-                .table
-                .iter()
-                .filter(|r| r.file_type != "<DIR>" && self.viewer.selected.contains(&r.path))
-                .map(|r| r.path.clone())
-                .collect();
-
-            let selected_to_copy = if selected_files.is_empty() {
-                all_paths
-            } else {
-                selected_files
-            };
-
-            let len = selected_to_copy.len();
-            let count = selected_dirs.len();
+            let files = selected_file_rows(self.table.iter(), &self.viewer.selected);
+            let file_paths: Vec<String> = files.iter().map(|r| r.path.clone()).collect();
+            let file_names: Vec<String> = files.iter().map(|r| r.filename.clone()).collect();
+            let delete_plan = plan_delete(&files);
+            let selected_dirs = selected_dir_paths(self.table.iter(), &self.viewer.selected);
+            let n = file_paths.len();
+            let has_files = n > 0;
+            let hint = if has_files { "Acts on the selected files only" } else { "Select files in the table first" };
 
             ui.horizontal(|ui| {
-                let hover_txt = "Operates on all non-directory rows currently visible in the table.";
-                if ui.button(format!("Copy {len} items...")).on_hover_text(hover_txt).clicked() {
-                    if let Some(dir) = rfd::FileDialog::new().set_title("Choose backup destination").pick_folder() {
-                        self.backup_copy_visible_to_dir(dir);
-                    }
+                if ui.add_enabled(has_files, Button::new(format!("Copy {n} items..."))).on_hover_text(hint).clicked() {
+                    let paths: Vec<PathBuf> = file_paths.iter().map(PathBuf::from).collect();
+                    dialogs::pick_folder(ui.ctx(), "Choose backup destination", move |dir| {
+                        crate::ui::file_table::FileExplorer::backup_copy_files(paths, dir);
+                    });
+                    ui.close();
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.button(format!("Move {len} items...")).on_hover_text(hover_txt).clicked() {
-                        if let Some(dir) = rfd::FileDialog::new().set_title("Choose destination for move").pick_folder() {
-                            self.backup_move_visible_to_dir(dir);
-                        }
+                    if ui.add_enabled(has_files, Button::new(format!("Move {n} items..."))).on_hover_text(hint).clicked() {
+                        let paths: Vec<PathBuf> = file_paths.iter().map(PathBuf::from).collect();
+                        ui.ctx().data_mut(|d| d.insert_temp(pending_id, Pending::Move { paths, names: file_names.clone() }));
+                        ui.close();
                     }
                 });
             });
 
             ui.separator();
 
-            if count == 0 {
+            if selected_dirs.is_empty() {
                 ui.label(RichText::new("No directories selected").weak());
             } else {
-                ui.label(format!("Selected directories: {}", count));
+                ui.label(format!("Selected directories: {}", selected_dirs.len()));
             }
             ui.separator();
-            let disabled = count == 0;
-            let btn = ui.add_enabled(!disabled, Button::new("Exclude selected directories from recursive scans").small());
-            if btn.clicked() {
-                if self.viewer.ui_settings.excluded_dirs.is_none() {
-                    self.viewer.ui_settings.excluded_dirs = Some(Vec::new());
-                }
-                if let Some(ref mut dirs) = self.viewer.ui_settings.excluded_dirs {
-                    for p in selected_dirs.into_iter() {
-                        if !dirs.contains(&p) { dirs.push(p); }
+            let exclude = ui.add_enabled(!selected_dirs.is_empty(), Button::new("Exclude selected directories from recursive scans").small());
+            if exclude.clicked() {
+                crate::settings::update("selection:exclude-dirs", |s| {
+                    let dirs = s.excluded_dirs.get_or_insert_with(Vec::new);
+                    for p in &selected_dirs {
+                        if !dirs.contains(p) { dirs.push(p.clone()); }
                     }
-                }
-                crate::database::settings::save_settings(&self.viewer.ui_settings);
+                });
                 self.apply_filters_to_current_table();
                 ui.close();
             }
-        
+
             if self.viewer.mode == ExplorerMode::Database {
                 ui.horizontal(|ui| {
-                    if ui.button(RichText::new("Attach to chat window").color(ui.style().visuals.strong_text_color())).clicked() {
-                        // Send selected file paths to chat window as attachments
-                        let selected_files: Vec<String> = self
-                            .table
-                            .iter()
-                            .filter(|r| r.file_type != "<DIR>" && self.viewer.selected.contains(&r.path))
-                            .map(|r| r.path.clone())
-                            .collect();
-                        crate::ui::assistant::request_attach_to_chat(selected_files);
+                    if ui.add_enabled(has_files, Button::new("Attach to chat window")).on_hover_text(hint).clicked() {
+                        crate::ui::assistant::request_attach_to_chat(file_paths.clone());
                         ui.close();
                     }
-                    if ui.button(RichText::new(format!("Delete {} From DB", self.selection_count())).color(ui.style().visuals.error_fg_color))
-                        .on_hover_text("Delete all currently visible (filtered) rows from the database, including their CLIP embeddings. Files on disk are NOT affected.")
-                        .clicked()
-                    {
-                        // Confirm destructive action
-                        let count = self.table.iter().filter(|r| r.file_type != "<DIR>").count();
-                        if count > 0 {
-                            if rfd::MessageDialog::new()
-                                .set_title("Delete from Database")
-                                .set_description(&format!("Permanently delete {} records from the database (and their embeddings)? This will not delete files on disk.", count))
-                                .set_level(rfd::MessageLevel::Warning)
-                                .set_buttons(rfd::MessageButtons::YesNo)
-                                .show() == rfd::MessageDialogResult::Yes
-                            {
-                                let paths: Vec<surrealdb::types::RecordId> = self
-                                    .table
-                                    .iter()
-                                    .filter(|r| r.file_type != "<DIR>")
-                                    .map(|r| r.id.clone())
-                                    .collect();
-                                tokio::spawn(async move {
-                                    match crate::database::delete_thumbnails_and_embeddings_by_paths(paths).await {
-                                        Ok((emb, thumbs)) => log::info!("Deleted {} embeddings and {} thumbnails.", emb, thumbs),
-                                        Err(e) => log::error!("Delete visible failed: {e:?}"),
-                                    }
-                                });
-                                // Remove from the current table immediately for UX
-                                self.table.retain(|r| r.file_type == "<DIR>");
-                            }
+                    let delete = ui.add_enabled(delete_plan.is_some(), crate::theme::danger_button(format!("Delete {n} From DB")))
+                        .on_hover_text("Remove the selected rows from the database, including their CLIP embeddings. Files on disk are NOT affected.");
+                    if delete.clicked() {
+                        if let Some(plan) = delete_plan.clone() {
+                            ui.ctx().data_mut(|d| d.insert_temp(pending_id, Pending::Delete(plan)));
+                            ui.close();
                         }
                     }
-                    if ui.button(RichText::new("Refine selection").color(ui.style().visuals.warn_fg_color)).on_hover_text("Send current selection to AI Refinements tab").clicked() {
-                        let paths: Vec<String> = self
-                            .table
-                            .iter()
-                            .filter(|r| r.file_type != "<DIR>" && self.viewer.selected.contains(&r.path))
-                            .map(|r| r.path.clone())
-                            .collect();
-                        crate::ui::refine::request_refine_for_paths(paths);
+                    if ui.add_enabled(has_files, Button::new("Refine selection")).on_hover_text("Send the selected files to the AI Refinements tab").clicked() {
+                        crate::ui::refine::request_refine_for_paths(file_paths.clone());
                         ui.close();
                     }
                 });
             }
         });
+    }
+
+    /// Draws the pending confirmation, if any, and runs the action once confirmed.
+    fn show_pending(&mut self, ctx: &Context, id: Id) {
+        let Some(pending) = ctx.data(|d| d.get_temp::<Pending>(id)) else { return };
+        let (title, body, names, confirm_label) = match &pending {
+            Pending::Delete(plan) => (
+                "Delete from database",
+                format!("Permanently delete {} records from the database, including their embeddings? Files on disk are not touched.", plan.ids.len()),
+                &plan.names,
+                format!("Delete {}", plan.ids.len()),
+            ),
+            Pending::Move { paths, names } => (
+                "Move files",
+                format!("Move {} files out of their current folders into a folder you choose next?", paths.len()),
+                names,
+                format!("Choose folder and move {}", paths.len()),
+            ),
+        };
+        let mut decision: Option<bool> = None;
+        let gap = crate::theme::metrics(ctx).gap.y;
+        Window::new(title)
+            .id(id.with("window"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.set_max_width(420.0);
+                ui.label(body);
+                ui.add_space(gap);
+                ui.label(RichText::new(name_preview(names, NAME_PREVIEW)).weak());
+                ui.add_space(gap * 2.0);
+                ui.horizontal(|ui| {
+                    if ui.add(crate::theme::danger_button(confirm_label)).clicked() { decision = Some(true); }
+                    if ui.button("Cancel").clicked() { decision = Some(false); }
+                });
+            });
+        if ctx.input(|i| i.key_pressed(Key::Escape)) {
+            decision = Some(false);
+        }
+        let Some(confirmed) = decision else { return };
+        ctx.data_mut(|d| d.remove::<Pending>(id));
+        if !confirmed {
+            return;
+        }
+        match pending {
+            Pending::Delete(plan) => self.delete_rows_from_db(plan),
+            Pending::Move { paths, .. } => {
+                dialogs::pick_folder(ctx, "Choose destination for move", move |dir| {
+                    crate::ui::file_table::FileExplorer::backup_move_files(paths, dir);
+                });
+            }
+        }
+    }
+
+    fn delete_rows_from_db(&mut self, plan: DeletePlan) {
+        let removed: HashSet<String> = plan.paths.iter().cloned().collect();
+        self.table.retain(|r| !removed.contains(&r.path));
+        self.table_index.clear();
+        for (i, r) in self.table.iter().enumerate() {
+            self.table_index.insert(r.path.clone(), i);
+        }
+        self.viewer.selected.retain(|p| !removed.contains(p));
+        let (ids, paths) = (plan.ids, plan.paths);
+        tokio::spawn(async move {
+            match super::db_delete::delete_rows(ids, paths).await {
+                Ok((emb, thumbs)) => {
+                    log::info!("Deleted {emb} embeddings and {thumbs} thumbnails.");
+                    dialogs::toast(ToastKind::Success, format!("Deleted {thumbs} records and {emb} embeddings"));
+                }
+                Err(e) => {
+                    log::error!("Delete selected failed: {e:?}");
+                    dialogs::toast(ToastKind::Error, format!("Delete failed: {e}"));
+                }
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(path: &str, kind: &str) -> Thumbnail {
+        let mut t = Thumbnail::default();
+        t.path = path.into();
+        t.filename = path.rsplit('/').next().unwrap_or(path).into();
+        t.file_type = kind.into();
+        t
+    }
+
+    fn sel(paths: &[&str]) -> HashSet<String> {
+        paths.iter().map(|p| p.to_string()).collect()
+    }
+
+    #[test]
+    fn an_empty_selection_never_falls_back_to_all_rows() {
+        let rows = vec![row("/a/1.jpg", "jpg"), row("/a/2.jpg", "jpg")];
+        assert!(selected_file_rows(&rows, &HashSet::new()).is_empty());
+        assert!(plan_delete(&selected_file_rows(&rows, &HashSet::new())).is_none());
+    }
+
+    #[test]
+    fn only_selected_non_directory_rows_are_resolved() {
+        let rows = vec![row("/a/1.jpg", "jpg"), row("/a/2.jpg", "jpg"), row("/a/sub", "<DIR>"), row("/a/3.jpg", "jpg")];
+        let picked = selected_file_rows(&rows, &sel(&["/a/2.jpg", "/a/sub", "/gone/9.jpg"]));
+        let paths: Vec<_> = picked.iter().map(|r| r.path.as_str()).collect();
+        assert_eq!(paths, vec!["/a/2.jpg"], "directories and rows no longer in the table are dropped");
+    }
+
+    #[test]
+    fn selected_directories_are_resolved_separately() {
+        let rows = vec![row("/a/1.jpg", "jpg"), row("/a/sub", "<DIR>")];
+        assert_eq!(selected_dir_paths(&rows, &sel(&["/a/1.jpg", "/a/sub"])), vec!["/a/sub".to_string()]);
+    }
+
+    #[test]
+    fn the_delete_plan_carries_the_exact_selection() {
+        let rows = vec![row("/a/1.jpg", "jpg"), row("/a/2.jpg", "jpg"), row("/a/3.jpg", "jpg")];
+        let picked = selected_file_rows(&rows, &sel(&["/a/1.jpg", "/a/3.jpg"]));
+        let plan = plan_delete(&picked).expect("two rows selected");
+        assert_eq!(plan.paths, vec!["/a/1.jpg".to_string(), "/a/3.jpg".to_string()]);
+        assert_eq!(plan.names, vec!["1.jpg".to_string(), "3.jpg".to_string()]);
+        assert_eq!(plan.ids.len(), 2);
+    }
+
+    #[test]
+    fn name_preview_lists_the_first_names_then_a_count() {
+        let names: Vec<String> = (1..=8).map(|i| format!("{i}.jpg")).collect();
+        assert_eq!(name_preview(&names[..3], 5), "1.jpg, 2.jpg, 3.jpg");
+        assert_eq!(name_preview(&names, 5), "1.jpg, 2.jpg, 3.jpg, 4.jpg, 5.jpg and 3 more");
+        assert_eq!(name_preview(&[], 5), "");
+    }
+
+    #[test]
+    fn exactly_the_preview_count_has_no_remainder() {
+        let names: Vec<String> = (1..=5).map(|i| format!("{i}.jpg")).collect();
+        assert_eq!(name_preview(&names, 5), "1.jpg, 2.jpg, 3.jpg, 4.jpg, 5.jpg");
     }
 }

@@ -67,9 +67,6 @@ impl crate::ui::file_table::FileExplorer {
             } else {
                 log::debug!("Opening preview for: {}", thumbnail.filename);
                 self.current_thumb = thumbnail;
-                if !self.current_thumb.filename.is_empty() {
-                    self.open_preview_pane = true;
-                }
             }
         } else {
             // Database mode:
@@ -99,11 +96,7 @@ impl crate::ui::file_table::FileExplorer {
                     }
                 }
             } else {
-                // Selection event: open preview
                 self.current_thumb = thumbnail.clone();
-                if !self.current_thumb.filename.is_empty() {
-                    self.open_preview_pane = true;
-                }
             }
         }
     }

@@ -1,3 +1,4 @@
+use crate::icons::svg;
 use eframe::egui::*;
 use once_cell::sync::Lazy;
 use std::sync::RwLock;
@@ -211,9 +212,23 @@ pub static LAST_ERROR_TS_MS: Lazy<AtomicU64> = Lazy::new(|| AtomicU64::new(0));
 
 /// Render a compact horizontal status bar section suitable for embedding in a toolbar.
 pub fn status_bar_inline(ui: &mut Ui) {
-    for meta in all_snapshots() {
+    for meta in ordered_snapshots() {
         indicator_small(ui, &meta);
     }
+}
+
+/// Indicator order: the core engines first, then any others by name.
+const INDICATOR_ORDER: [&str; 6] = ["DB", "VISION", "CLIP", "RERANK", "QWEN-EDIT", "ASSIST"];
+
+fn order_key(name: &str) -> (usize, String) {
+    let rank = INDICATOR_ORDER.iter().position(|n| *n == name).unwrap_or(INDICATOR_ORDER.len());
+    (rank, name.to_string())
+}
+
+fn ordered_snapshots() -> Vec<StatusMeta> {
+    let mut all = all_snapshots();
+    all.sort_by_key(|m| order_key(m.name));
+    all
 }
 
 fn indicator_small(ui: &mut Ui, meta: &StatusMeta) {
@@ -249,14 +264,13 @@ fn indicator_small(ui: &mut Ui, meta: &StatusMeta) {
 
     if let Some(rect) = atom_layout.rect(custom_button_id) {
         if show_spinner {
-            ui.put(
-                rect,
-                GearSpinner::new()
-                    .color(ui.style().visuals.error_fg_color)
-                    .size(18.),
-            );
+            let angle = ui.input(|i| i.time) as f32 * std::f32::consts::TAU * 0.6;
+            ui.ctx().request_repaint();
+            let tint = crate::theme::primary(ui);
+            ui.put(rect, svg::GEAR.image(14.0).rotate(angle, Vec2::splat(0.5)).tint(tint));
         } else {
-            ui.put(rect, Label::new(RichText::new("⚙").weak()).selectable(false));
+            let tint = ui.visuals().weak_text_color();
+            ui.put(rect, svg::GEAR.image(14.0).tint(tint));
         }
     }
 
@@ -326,7 +340,6 @@ fn indicator_small(ui: &mut Ui, meta: &StatusMeta) {
                 ProgressBar::new(pct).show_percentage().ui(ui);
             });
         }
-        let _ = ui.button("X");
     });
     ui.add_space(5.);
 }
@@ -386,7 +399,7 @@ impl GearSpinner {
                 if let Some(color) = self.color {
                     color
                 } else {
-                    ui.style().visuals.error_fg_color
+                    crate::theme::primary(ui)
                 },
             );
             if let Shape::Text(ts) = &mut s {
@@ -411,5 +424,17 @@ impl Widget for GearSpinner {
         self.paint_at(ui, rect);
 
         response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn indicators_keep_a_fixed_engine_order() {
+        let mut names = vec!["ASSIST", "ZZZ", "DB", "CLIP", "AAA", "VISION"];
+        names.sort_by_key(|n| order_key(n));
+        assert_eq!(names, vec!["DB", "VISION", "CLIP", "ASSIST", "AAA", "ZZZ"]);
     }
 }

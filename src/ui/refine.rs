@@ -61,7 +61,69 @@ pub struct RefinementProposal {
     pub generator: String,
 }
 
+/// True when `filter` is empty or occurs in the proposal's path, category or tags.
+pub fn matches_filter(p: &RefinementProposal, filter: &str) -> bool {
+    if filter.is_empty() {
+        return true;
+    }
+    let hay = format!("{} {:?} {:?}", p.path, p.current_category, p.current_tags).to_ascii_lowercase();
+    hay.contains(&filter.to_ascii_lowercase())
+}
+
+/// Indices of flagged proposals; with `visible_only` only those the filter shows.
+pub fn accept_indices(proposals: &[RefinementProposal], filter: &str, visible_only: bool) -> Vec<usize> {
+    proposals
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.selected && (!visible_only || matches_filter(p, filter)))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+fn text_or_none(value: &Option<String>) -> String {
+    value.as_deref().filter(|v| !v.is_empty()).map(str::to_string).unwrap_or_else(|| "(none)".into())
+}
+
+fn tags_text(tags: &[String]) -> String {
+    if tags.is_empty() { "(none)".into() } else { tags.join(", ") }
+}
+
+/// Writes the proposals to the database and toasts how many were applied.
+fn accept_proposals(batch: Vec<RefinementProposal>, toast_tx: Sender<(egui_toast::ToastKind, String)>) {
+    if batch.is_empty() {
+        return;
+    }
+    tokio::spawn(async move {
+        let total = batch.len();
+        let mut ok = 0usize;
+        for p in batch {
+            if let Some(thumb) = crate::Thumbnail::get_thumbnail_by_path(&p.path).await.ok().flatten() {
+                let meta = super::super::Thumbnail { id: thumb.id.clone(), db_created: thumb.db_created.clone(), path: thumb.path.clone(), filename: thumb.filename.clone(), file_type: thumb.file_type.clone(), size: thumb.size, description: p.new_description.clone(), caption: p.new_caption.clone(), tags: p.new_tags.clone(), category: p.new_category.clone(), thumbnail_b64: thumb.thumbnail_b64.clone(), modified: thumb.modified.clone(), hash: thumb.hash.clone(), parent_dir: thumb.parent_dir.clone(), logical_group: thumb.logical_group.clone(), };
+                if thumb.update_or_create_thumbnail(&meta, meta.thumbnail_b64.clone()).await.is_ok() { ok += 1; }
+            }
+        }
+        let _ = toast_tx.send((egui_toast::ToastKind::Success, format!("Accepted {ok}/{total} proposals")));
+    });
+}
+
 impl RefinementsPanel {
+    /// Applies the proposals at `indices` and removes them from the list.
+    fn accept_at(&mut self, indices: &[usize]) {
+        let batch: Vec<RefinementProposal> = indices.iter().filter_map(|i| self.proposals.get(*i).cloned()).collect();
+        let accepted: std::collections::HashSet<usize> = indices.iter().copied().collect();
+        accept_proposals(batch, self.toast_tx.clone());
+        self.remove_at(&accepted);
+    }
+
+    fn remove_at(&mut self, indices: &std::collections::HashSet<usize>) {
+        let mut index = 0;
+        self.proposals.retain(|_| {
+            let keep = !indices.contains(&index);
+            index += 1;
+            keep
+        });
+    }
+
     pub fn ui(&mut self, ui: &mut Ui) {
         // Drain queued selection scope requests
         {
@@ -78,7 +140,7 @@ impl RefinementsPanel {
             let scope_len = set.len();
             let mut clear = false;
             ui.horizontal(|ui| {
-                ui.colored_label(ui.style().visuals.warn_fg_color, format!("Selection scope: {} items", scope_len));
+                ui.colored_label(crate::theme::warn(ui), format!("Selection scope: {} items", scope_len));
                 if icons::button(ui, svg::X_CIRCLE, "Clear Scope").clicked() { clear = true; }
             });
             if clear { self.limit_paths = None; }
@@ -211,7 +273,7 @@ impl RefinementsPanel {
                             log::info!("[Refine/Cloud] Fallback produced {} seed rows", batch.len());
                         }
                         // Prepare provider config (reuse assistant logic-lite)
-                        let settings = crate::database::settings::load_settings().unwrap_or_default();
+                        let settings = crate::settings::snapshot();
                         let model_to_use = if cloud_model.trim().is_empty() {
                             settings.openai_default_model.clone().unwrap_or_else(|| "gpt-5-mini".into())
                         } else { cloud_model.clone() };
@@ -379,35 +441,15 @@ impl RefinementsPanel {
             ui.add_sized([240.0, 20.0], TextEdit::singleline(&mut self.filter_text).hint_text("Filter by tag/category/path"));
         
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if icons::button(ui, svg::CHECKS, "Accept All").clicked() {
-                    let to_apply = self.proposals.clone();
-                    let toast_tx = self.toast_tx.clone();
-                    tokio::spawn(async move {
-                        let mut ok = 0usize; let total = to_apply.len();
-                        for p in to_apply {
-                            if let Some(thumb) = crate::Thumbnail::get_thumbnail_by_path(&p.path).await.ok().flatten() {
-                                let meta = super::super::Thumbnail { id: thumb.id.clone(), db_created: thumb.db_created.clone(), path: thumb.path.clone(), filename: thumb.filename.clone(), file_type: thumb.file_type.clone(), size: thumb.size, description: p.new_description.clone(), caption: p.new_caption.clone(), tags: p.new_tags.clone(), category: p.new_category.clone(), thumbnail_b64: thumb.thumbnail_b64.clone(), modified: thumb.modified.clone(), hash: thumb.hash.clone(), parent_dir: thumb.parent_dir.clone(), logical_group: thumb.logical_group.clone(), };
-                                if thumb.update_or_create_thumbnail(&meta, meta.thumbnail_b64.clone()).await.is_ok() { ok += 1; }
-                            }
-                        }
-                        let _ = toast_tx.send((egui_toast::ToastKind::Success, format!("Accepted {ok}/{total} proposals")));
-                    });
+                if icons::button(ui, svg::CHECKS, "Accept All").on_hover_text("Apply every flagged proposal that the filter shows").clicked() {
+                    let indices = accept_indices(&self.proposals, &self.filter_text, true);
+                    self.accept_at(&indices);
                 }
                 if icons::button(ui, svg::MINUS_CIRCLE, "Deselect All").clicked() { for p in &mut self.proposals { p.selected = false; } }
                 if icons::button(ui, svg::LIST_CHECKS, "Select All").clicked() { for p in &mut self.proposals { p.selected = true; } }
-                if icons::button(ui, svg::CHECK_CIRCLE, "Accept Selected").clicked() {
-                    let to_apply: Vec<_> = self.proposals.iter().filter(|p| p.selected).cloned().collect();
-                    let toast_tx = self.toast_tx.clone();
-                    tokio::spawn(async move {
-                        let mut ok = 0usize; let total = to_apply.len();
-                        for p in to_apply {
-                            if let Some(thumb) = crate::Thumbnail::get_thumbnail_by_path(&p.path).await.ok().flatten() {
-                                let meta = super::super::Thumbnail { id: thumb.id.clone(), db_created: thumb.db_created.clone(), path: thumb.path.clone(), filename: thumb.filename.clone(), file_type: thumb.file_type.clone(), size: thumb.size, description: p.new_description.clone(), caption: p.new_caption.clone(), tags: p.new_tags.clone(), category: p.new_category.clone(), thumbnail_b64: thumb.thumbnail_b64.clone(), modified: thumb.modified.clone(), hash: thumb.hash.clone(), parent_dir: thumb.parent_dir.clone(), logical_group: thumb.logical_group.clone(), };
-                                if thumb.update_or_create_thumbnail(&meta, meta.thumbnail_b64.clone()).await.is_ok() { ok += 1; }
-                            }
-                        }
-                        let _ = toast_tx.send((egui_toast::ToastKind::Success, format!("Accepted {ok}/{total} proposals")));
-                    });
+                if icons::button(ui, svg::CHECK_CIRCLE, "Accept Selected").on_hover_text("Apply every flagged proposal, including ones the filter hides").clicked() {
+                    let indices = accept_indices(&self.proposals, &self.filter_text, false);
+                    self.accept_at(&indices);
                 }
             });
         });
@@ -420,15 +462,13 @@ impl RefinementsPanel {
                 ui.weak(label);
                 return;
             }
-                for (idx, p) in self.proposals.iter_mut().enumerate() {
-                if !self.filter_text.is_empty() {
-                    let f = self.filter_text.to_ascii_lowercase();
-                    let hay = format!("{} {:?} {:?}", p.path, p.current_category, p.current_tags).to_ascii_lowercase();
-                    if !hay.contains(&f) { continue; }
-                }
+            let mut accept_row: Option<usize> = None;
+            let mut reject_row: Option<usize> = None;
+            for (idx, p) in self.proposals.iter_mut().enumerate() {
+                if !matches_filter(p, &self.filter_text) { continue; }
                 ui.group(|ui| {
                     ui.horizontal(|ui| {
-                            ui.checkbox(&mut p.selected, "");
+                        ui.checkbox(&mut p.selected, "");
                         ui.label(RichText::new(format!("#{}", idx+1)).strong().underline());
                         ui.monospace(&p.path);
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -451,15 +491,15 @@ impl RefinementsPanel {
                     ui.vertical_centered(|ui| icons::heading(ui, svg::AME_CATEGORY, "Category"));
                     if p.new_category.is_some() {
                         ui.columns(2, |ui| {
-                            ui[0].label(format!("{:?}", p.current_category));
-                            ui[1].label(format!("{:?}", p.new_category));
+                            ui[0].label(text_or_none(&p.current_category));
+                            ui[1].label(text_or_none(&p.new_category));
                         });
                         ui.separator();
                     }
                     if !p.new_tags.is_empty() {
                         ui.columns(2, |ui| {
-                            ui[0].label(format!("{:#?}", p.current_tags));
-                            ui[1].label(format!("{:#?}", p.new_tags));
+                            ui[0].label(tags_text(&p.current_tags));
+                            ui[1].label(tags_text(&p.new_tags));
                         });
                     }
 
@@ -467,8 +507,8 @@ impl RefinementsPanel {
                     if p.current_caption.is_some() || p.new_caption.is_some() {
                         ui.separator();
                         ui.columns(2, |ui| {
-                            ui[0].label(format!("{:?}", p.current_caption));
-                            ui[1].label(format!("{:?}", p.new_caption));
+                            ui[0].label(text_or_none(&p.current_caption));
+                            ui[1].label(text_or_none(&p.new_caption));
                         });
                     }
 
@@ -476,46 +516,27 @@ impl RefinementsPanel {
                     if p.current_description.is_some() || p.new_description.is_some() {
                         ui.separator();
                         ui.columns(2, |ui| {
-                            ui[0].label(format!("{:?}", p.current_description));
-                            ui[1].label(format!("{:?}", p.new_description));
+                            ui[0].label(text_or_none(&p.current_description));
+                            ui[1].label(text_or_none(&p.new_description));
                         });
                     }
 
                     ui.separator();
                     ui.horizontal(|ui| {
-                        if icons::button(ui, svg::CHECK, "Accept").clicked() {
-                            let path = p.path.clone();
-                            let cat = p.new_category.clone();
-                            let tags = p.new_tags.clone();
-                            let cap = p.new_caption.clone();
-                            let desc = p.new_description.clone();
-                            tokio::spawn(async move {
-                                if let Some(thumb) = crate::Thumbnail::get_thumbnail_by_path(&path).await.ok().flatten() {
-                                    let meta = super::super::Thumbnail {
-                                        id: thumb.id.clone(),
-                                        db_created: thumb.db_created.clone(),
-                                        path: thumb.path.clone(),
-                                        filename: thumb.filename.clone(),
-                                        file_type: thumb.file_type.clone(),
-                                        size: thumb.size,
-                                        description: desc.clone(),
-                                        caption: cap.clone(),
-                                        tags: tags.clone(),
-                                        category: cat.clone(),
-                                        thumbnail_b64: thumb.thumbnail_b64.clone(),
-                                        modified: thumb.modified.clone(),
-                                        hash: thumb.hash.clone(),
-                                        parent_dir: thumb.parent_dir.clone(),
-                                        logical_group: thumb.logical_group.clone(),
-                                    };
-                                    let _ = thumb.update_or_create_thumbnail(&meta, meta.thumbnail_b64.clone()).await;
-                                }
-                            });
+                        if icons::button(ui, svg::CHECK, "Accept").on_hover_text("Apply this proposal").clicked() {
+                            accept_row = Some(idx);
                         }
-                        ui.add_enabled(false, icons::button_widget(ui, svg::X, "Reject"));
+                        if icons::button(ui, svg::X, "Reject").on_hover_text("Drop this proposal without applying it").clicked() {
+                            reject_row = Some(idx);
+                        }
                     });
                 });
                 ui.separator();
+            }
+            if let Some(idx) = accept_row {
+                self.accept_at(&[idx]);
+            } else if let Some(idx) = reject_row {
+                self.remove_at(&std::collections::HashSet::from([idx]));
             }
         });
     }
@@ -544,4 +565,82 @@ fn parse_jsonish(text: &str) -> Option<serde_json::Value> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn proposal(path: &str, selected: bool, category: Option<&str>) -> RefinementProposal {
+        RefinementProposal {
+            path: path.into(),
+            current_category: category.map(str::to_string),
+            current_tags: vec!["beach".into()],
+            current_caption: None,
+            current_description: None,
+            new_category: None,
+            new_tags: Vec::new(),
+            new_caption: None,
+            new_description: None,
+            selected,
+            generator: "test".into(),
+        }
+    }
+
+    fn sample() -> Vec<RefinementProposal> {
+        vec![
+            proposal("/a/sunset.jpg", true, Some("nature")),
+            proposal("/a/city.jpg", false, Some("urban")),
+            proposal("/b/sunrise.jpg", true, Some("nature")),
+        ]
+    }
+
+    #[test]
+    fn accept_all_honors_per_row_flags() {
+        assert_eq!(accept_indices(&sample(), "", true), vec![0, 2]);
+    }
+
+    #[test]
+    fn accept_all_honors_the_filter_but_accept_selected_does_not() {
+        let p = sample();
+        assert_eq!(accept_indices(&p, "sunset", true), vec![0]);
+        assert_eq!(accept_indices(&p, "sunset", false), vec![0, 2]);
+    }
+
+    #[test]
+    fn nothing_flagged_accepts_nothing() {
+        let mut p = sample();
+        p.iter_mut().for_each(|x| x.selected = false);
+        assert!(accept_indices(&p, "", true).is_empty());
+        assert!(accept_indices(&p, "", false).is_empty());
+    }
+
+    #[test]
+    fn the_filter_matches_path_category_and_tags_case_insensitively() {
+        let p = proposal("/a/Sunset.jpg", true, Some("Nature"));
+        assert!(matches_filter(&p, "SUNSET"));
+        assert!(matches_filter(&p, "nature"));
+        assert!(matches_filter(&p, "beach"));
+        assert!(!matches_filter(&p, "forest"));
+    }
+
+    #[test]
+    fn proposals_render_as_plain_text_not_debug_output() {
+        assert_eq!(text_or_none(&Some("x".into())), "x");
+        assert_eq!(text_or_none(&None), "(none)");
+        assert_eq!(text_or_none(&Some(String::new())), "(none)");
+        assert_eq!(tags_text(&["a".into(), "b".into()]), "a, b");
+        assert_eq!(tags_text(&[]), "(none)");
+    }
+
+    #[test]
+    fn reject_removes_only_the_chosen_row() {
+        let (updates_tx, _updates_rx) = crossbeam::channel::unbounded();
+        let (toast_tx, _toast_rx) = crossbeam::channel::unbounded();
+        let mut panel = RefinementsPanel::new(updates_tx, toast_tx);
+        panel.proposals = sample();
+        panel.remove_at(&std::collections::HashSet::from([1]));
+        let paths: Vec<_> = panel.proposals.iter().map(|p| p.path.as_str()).collect();
+        assert_eq!(paths, vec!["/a/sunset.jpg", "/b/sunrise.jpg"]);
+    }
 }

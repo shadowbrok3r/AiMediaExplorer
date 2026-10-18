@@ -48,6 +48,8 @@ pub struct FileTableViewer {
     pub bulk_cancel_requested: bool,
     pub ui_settings: crate::UiSettings,
     #[serde(skip)]
+    pub settings_gen: u64,
+    #[serde(skip)]
     pub ai_update_tx: Sender<AIUpdate>,
     #[serde(skip)]
     pub clip_embedding_tx: Sender<crate::ClipEmbeddingRow>,
@@ -82,6 +84,7 @@ pub enum TabAction { OpenCategory(String), OpenTag(String), OpenSimilar(String),
 
 impl FileTableViewer {
     pub fn new(thumbnail_tx: Sender<Thumbnail>, ai_update_tx: Sender<AIUpdate>, clip_embedding_tx: Sender<crate::ClipEmbeddingRow>) -> Self {
+        let (ui_settings, settings_gen) = crate::settings::new_mirror();
         Self {
             filter: Default::default(),
             row_protection: false,
@@ -90,7 +93,8 @@ impl FileTableViewer {
             thumb_cache: HashMap::new(),
             thumbnail_tx,
             mode: ExplorerMode::default(),
-            ui_settings: UiSettings::default(),
+            ui_settings,
+            settings_gen,
             bulk_cancel_requested: false,
             clip_embedding_tx,
             ai_update_tx,
@@ -105,6 +109,11 @@ impl FileTableViewer {
             archive_passwords: std::collections::HashMap::new(),
             selected: std::collections::HashSet::new(),
         }
+    }
+
+    /// Refreshes the read-only settings mirror when the store changed.
+    pub fn sync_settings(&mut self) -> bool {
+        crate::settings::sync_mirror(&mut self.ui_settings, &mut self.settings_gen)
     }
 
     // Immutable helper to check if a row passes current viewer filters
@@ -1057,18 +1066,15 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                     .filter(|p| !p.trim().is_empty())
                     .collect();
                 if add.is_empty() { return; }
-                // Ensure settings vector exists and extend with unique values
-                if self.ui_settings.excluded_dirs.is_none() {
-                    self.ui_settings.excluded_dirs = Some(Vec::new());
-                }
-                if let Some(ref mut dirs) = self.ui_settings.excluded_dirs {
+                crate::settings::update("table:exclude-dirs", |s| {
+                    let dirs = s.excluded_dirs.get_or_insert_with(Vec::new);
                     for p in add.drain(..) {
                         if !dirs.contains(&p) {
                             dirs.push(p);
                         }
                     }
-                }
-                crate::database::settings::save_settings(&self.ui_settings);
+                });
+                self.sync_settings();
                 log::info!("Added selected directories to excluded_dirs for recursive scans");
             }
             "find_similar" => {

@@ -49,6 +49,8 @@ impl crate::ui::file_table::FileExplorer {
             filters.include_images = self.viewer.types_show_images;
             filters.include_videos = self.viewer.types_show_videos;
             filters.skip_icons = self.viewer.ui_settings.filter_skip_icons;
+            filters.modified_after = self.viewer.ui_settings.filter_modified_after.clone();
+            filters.modified_before = self.viewer.ui_settings.filter_modified_before.clone();
             filters.excluded_terms = self.excluded_terms.clone();
             // Add excluded directories from UI settings (normalize + absolute for robust matching)
             if let Some(ref excluded_dirs) = self.viewer.ui_settings.excluded_dirs {
@@ -90,10 +92,9 @@ impl crate::ui::file_table::FileExplorer {
 
     pub fn push_history(&mut self, new_path: String) {
         if self.current_path != new_path {
-            // save to settings recent paths (only if settings are loaded from DB)
-            if let Some(mut s) = crate::database::settings::load_settings() {
-                s.push_recent_path(new_path.clone());
-                crate::database::settings::save_settings(&s);
+            if crate::settings::store().is_loaded() {
+                let recent = new_path.clone();
+                crate::settings::update("explorer:recent-path", |s| s.push_recent_path(recent));
             }
             self.back_stack.push(self.current_path.clone());
             self.forward_stack.clear();
@@ -167,19 +168,16 @@ impl crate::ui::file_table::FileExplorer {
     }
 
     pub fn nav_home(&mut self) {
-        if let Some(ud) = directories::UserDirs::new() {
-            let home = ud.home_dir();
-            let hp = home.to_string_lossy().to_string();
-            self.push_history(hp);
-            if self.viewer.mode == crate::ui::file_table::table::ExplorerMode::Database {
-                self.db_offset = 0;
-                self.db_last_batch_len = 0;
-                self.load_database_rows();
-            } else {
-                self.populate_current_directory();
-            }
-            let _ = self.thumbnail_tx.try_send(self.current_thumb.clone());
+        let hp = crate::settings::dirs::home_dir().to_string_lossy().to_string();
+        self.push_history(hp);
+        if self.viewer.mode == crate::ui::file_table::table::ExplorerMode::Database {
+            self.db_offset = 0;
+            self.db_last_batch_len = 0;
+            self.load_database_rows();
+        } else {
+            self.populate_current_directory();
         }
+        let _ = self.thumbnail_tx.try_send(self.current_thumb.clone());
     }
 
     pub fn refresh(&mut self) {

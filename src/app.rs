@@ -1,6 +1,6 @@
 use eframe::egui::Context;
 use crossbeam::channel::{Receiver, Sender};
-use egui_dock::{DockState, SurfaceIndex};
+use egui_dock::{DockState, NodePath, SurfaceIndex};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use once_cell::sync::Lazy;
@@ -22,12 +22,15 @@ pub struct SmartMediaApp {
     pub egui_ctx: Context,
 }
 
+/// Preferences window state: the settings when it opened and the copy being edited.
+pub struct PrefsDraft {
+    pub baseline: UiSettings,
+    pub draft: UiSettings,
+}
+
 pub struct SmartMediaContext {
     pub first_run: bool,
     pub page: Page,
-    pub ui_settings: UiSettings,
-    pub ui_settings_tx: Sender<UiSettings>,
-    pub ui_settings_rx: Receiver<UiSettings>,
     pub db_ready_tx: Sender<()>,
     pub db_ready_rx: Receiver<()>,
     pub db_ready: bool,
@@ -42,8 +45,12 @@ pub struct SmartMediaContext {
     // AI init status flags
     pub ai_initializing: bool,
     pub ai_ready: bool,
-    // Draft copy of settings while editing in modal
-    pub settings_draft: Option<UiSettings>,
+    // Preferences edits, present only while the window is open
+    pub prefs: Option<PrefsDraft>,
+    // Set by the Egui Settings Save button; handled once the frame storage is reachable
+    pub egui_prefs_save_requested: bool,
+    // Dock add-button presses waiting to become new explorer tabs
+    pub pending_tab_adds: Vec<NodePath>,
     pub file_explorer: crate::ui::file_table::FileExplorer,
     pub open_tabs: HashSet<String>,
     // Map of dynamic tab title -> a dedicated FileExplorer instance with filters applied
@@ -63,7 +70,7 @@ pub struct SmartMediaContext {
     // Channel for AI Refinements proposals
     pub refine_tx: Sender<Vec<crate::ui::refine::RefinementProposal>>,
     pub refine_rx: Receiver<Vec<crate::ui::refine::RefinementProposal>>,
-    // Currently focused tab title (updated by TabViewer::ui)
+    // Title of the focused explorer tab (updated each frame from the dock state)
     pub active_tab_title: Option<String>,
     pub ref_old_category: String,
     pub ref_new_category: String,
@@ -89,7 +96,7 @@ pub enum DbSelectMode {
 impl SmartMediaApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         crate::theme::bootstrap(cc);
-        let (ui_settings_tx, ui_settings_rx) = crossbeam::channel::bounded(1);
+        restore_egui_preferences(&cc.egui_ctx, cc.storage);
         let (db_ready_tx, db_ready_rx) = crossbeam::channel::bounded(1);
         let (toast_tx, toast_rx) = crossbeam::channel::unbounded();
         let (refine_tx, refine_rx) = crossbeam::channel::unbounded();
@@ -116,8 +123,6 @@ impl SmartMediaApp {
         let context = SmartMediaContext {
             first_run: true,
             page: Default::default(),
-            ui_settings: UiSettings::default(),
-            ui_settings_tx, ui_settings_rx,
             db_ready_tx, db_ready_rx,
             db_ready: false,
             show_db_select_modal: false,
@@ -128,7 +133,9 @@ impl SmartMediaApp {
             open_settings_modal: false,
             ai_initializing: false,
             ai_ready: false,
-            settings_draft: None,
+            prefs: None,
+            egui_prefs_save_requested: false,
+            pending_tab_adds: Vec::new(),
             file_explorer: FileExplorer::new(false),
             open_tabs,
             filtered_tabs: std::collections::HashMap::new(),
@@ -162,18 +169,9 @@ impl SmartMediaApp {
 
 
 impl SmartMediaContext {
-    /// Returns a mutable reference to the FileExplorer corresponding to the currently active tab.
-    /// Falls back to the main file_explorer if the active tab is unknown.
+    /// The explorer of the focused explorer tab, or the main explorer when that tab is unknown.
     pub fn active_explorer(&mut self) -> &mut crate::ui::file_table::FileExplorer {
-        if let Some(title) = self.active_tab_title.clone() {
-            if title == "File Explorer" {
-                return &mut self.file_explorer;
-            }
-            if let Some(ex) = self.filtered_tabs.get_mut(&title) {
-                return ex;
-            }
-        }
-        &mut self.file_explorer
+        explorer_for(&mut self.file_explorer, &mut self.filtered_tabs, self.active_tab_title.as_deref())
     }
 
     pub fn open_image_edit_with_path(&mut self, path: &str, tree: &mut egui_dock::DockState<String>) {
@@ -184,5 +182,74 @@ impl SmartMediaContext {
             self.open_tabs.insert(title.clone());
         }
         self.image_edit.open_with_path(path);
+    }
+}
+
+/// Title of the always-present main explorer tab.
+pub const MAIN_EXPLORER_TAB: &str = "File Explorer";
+
+/// The explorer shown in tab `title`, or `main` for the main tab and unknown titles.
+pub fn explorer_for<'a>(
+    main: &'a mut FileExplorer,
+    tabs: &'a mut std::collections::HashMap<String, FileExplorer>,
+    title: Option<&str>,
+) -> &'a mut FileExplorer {
+    if let Some(title) = title.filter(|t| *t != MAIN_EXPLORER_TAB) {
+        if let Some(ex) = tabs.get_mut(title) {
+            return ex;
+        }
+    }
+    main
+}
+
+/// True for tab titles that render a file explorer.
+pub fn is_explorer_tab(title: &str, tabs: &std::collections::HashMap<String, FileExplorer>) -> bool {
+    title == MAIN_EXPLORER_TAB || tabs.contains_key(title)
+}
+
+const EGUI_PREFS_KEY: &str = "ame_egui_options_v1";
+
+/// Writes the live egui options to eframe storage.
+pub fn save_egui_preferences(ctx: &Context, storage: &mut dyn eframe::Storage) {
+    let options = ctx.options(|o| o.clone());
+    eframe::set_value(storage, EGUI_PREFS_KEY, &options);
+}
+
+/// Applies the options written by [`save_egui_preferences`], keeping the installed theme styles.
+pub fn restore_egui_preferences(ctx: &Context, storage: Option<&dyn eframe::Storage>) {
+    if let Some(options) = storage.and_then(|s| eframe::get_value::<eframe::egui::Options>(s, EGUI_PREFS_KEY)) {
+        crate::theme::apply_preferences(ctx, options);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn marked(path: &str) -> FileExplorer {
+        let mut ex = FileExplorer::new(true);
+        ex.current_path = path.to_string();
+        ex
+    }
+
+    #[tokio::test]
+    async fn the_focused_tab_selects_its_own_explorer() {
+        let mut main = marked("main");
+        let mut tabs = std::collections::HashMap::new();
+        tabs.insert("Scan: x".to_string(), marked("scan"));
+        assert_eq!(explorer_for(&mut main, &mut tabs, Some("Scan: x")).current_path, "scan");
+        assert_eq!(explorer_for(&mut main, &mut tabs, Some(MAIN_EXPLORER_TAB)).current_path, "main");
+        assert_eq!(explorer_for(&mut main, &mut tabs, Some("closed tab")).current_path, "main");
+        assert_eq!(explorer_for(&mut main, &mut tabs, None).current_path, "main");
+    }
+
+    #[tokio::test]
+    async fn only_explorer_tabs_count_as_explorers() {
+        let mut tabs = std::collections::HashMap::new();
+        tabs.insert("Scan: x".to_string(), marked("scan"));
+        assert!(is_explorer_tab(MAIN_EXPLORER_TAB, &tabs));
+        assert!(is_explorer_tab("Scan: x", &tabs));
+        assert!(!is_explorer_tab("Logs", &tabs));
+        assert!(!is_explorer_tab("AI Refinements", &tabs));
     }
 }

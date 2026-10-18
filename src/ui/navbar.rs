@@ -1,7 +1,7 @@
-use crate::{icons::{self, svg}, utilities::windows::{gpu_mem_mb, system_mem_mb, smoothed_cpu01, smoothed_ram01, smoothed_vram01}, ui::{status::{self, GlobalStatusIndicator}, tabs::TABS}};
+use crate::{icons::{self, svg}, ui::{dialogs, status::{self, GlobalStatusIndicator}, tabs::TABS}};
 use eframe::egui::*;
 use egui_dock::SurfaceIndex;
-use humansize::DECIMAL;
+use egui_toast::ToastKind;
 
 impl crate::app::SmartMediaApp {
     pub fn navbar(&mut self, ui: &mut Ui) {
@@ -18,92 +18,70 @@ impl crate::app::SmartMediaApp {
                                 .push(crate::ui::file_table::FilterRequest::OpenDatabaseAll { title: "Entire Database".to_string(), background: false });
                         }
                         if icons::button(ui, svg::AME_REFINE, "Refine (AI, DB-only)").on_hover_text("Open AI Refinements panel to generate proposals from the database").clicked() {
-                            // Ensure tab is open/focused
-                            let label = "AI Refinements".to_string();
-                            if let Some(path) = self.tree.find_tab(&label) {
-                                self.tree.set_focused_node_and_surface(path.node_path());
-                            } else {
-                                self.tree[SurfaceIndex::main()].push_to_focused_leaf(label.clone());
-                                self.context.open_tabs.insert(label);
-                            }
+                            self.focus_or_open_tab("AI Refinements");
                             ui.close();
                         }
                         if icons::button(ui, svg::AME_CATEGORY, "Group by Categories").on_hover_text("Show virtual folders for each category").clicked() {
-                            self.context.file_explorer.viewer.mode = super::file_table::table::ExplorerMode::Database;
-                            self.context.file_explorer.load_virtual_categories_view();
+                            let ex = self.context.active_explorer();
+                            ex.viewer.mode = super::file_table::table::ExplorerMode::Database;
+                            ex.load_virtual_categories_view();
                             ui.close();
                         }
                         if icons::button(ui, svg::TAG, "Group by Tags").on_hover_text("Show virtual folders for each tag").clicked() {
-                            self.context.file_explorer.viewer.mode = super::file_table::table::ExplorerMode::Database;
-                            self.context.file_explorer.load_virtual_tags_view();
+                            let ex = self.context.active_explorer();
+                            ex.viewer.mode = super::file_table::table::ExplorerMode::Database;
+                            ex.load_virtual_tags_view();
                             ui.close();
                         }
                         ui.separator();
                         if icons::button(ui, svg::FOLDER_OPEN, "Choose DB Folder…").clicked() {
-                            if let Some(dir) = rfd::FileDialog::new().set_title("Choose database folder").pick_folder() {
+                            dialogs::pick_folder(ui.ctx(), "Choose database folder", move |dir| {
                                 let path_str = dir.display().to_string();
-                                // Persist path and reconnect DB
-                                if let Err(e) = crate::database::set_db_path(&path_str) { log::error!("set_db_path failed: {e}"); }
-                                // Reconnect asynchronously and refresh state
-                                let db_ready_tx = self.context.db_ready_tx.clone();
-                                tokio::spawn(async move {
-                                    // Close and re-init is not exposed directly; re-call new() which connects and defines schema
-                                    crate::ui::status::DB_STATUS.set_state(crate::ui::status::StatusState::Initializing, format!("Opening DB at {}", path_str));
-                                    let _ = crate::database::new(db_ready_tx.clone()).await;
-                                    crate::ui::status::DB_STATUS.set_state(crate::ui::status::StatusState::Idle, "Ready");
-                                });
-                                ui.close();
-                            }
+                                match crate::database::set_db_path(&path_str) {
+                                    Ok(()) => dialogs::toast(egui_toast::ToastKind::Info, format!("Database folder set to {path_str}. Restart the app to open it.")),
+                                    Err(e) => {
+                                        log::error!("set_db_path failed: {e}");
+                                        dialogs::toast(egui_toast::ToastKind::Error, format!("Could not set the database folder: {e}"));
+                                    }
+                                }
+                            });
+                            ui.close();
+                        }
+                        if icons::button(ui, svg::AME_DATABASE, "Database maintenance…").clicked() {
+                            crate::ui::devtools::toggle_db_maintenance(ui.ctx());
+                            ui.close();
                         }
                         if icons::button(ui, svg::AME_DB_EXPORT, "Export Backup…").clicked() {
-                            if let Some(file) = rfd::FileDialog::new()
-                                .set_title("Export SurrealDB backup to .surql")
-                                .add_filter("SurrealQL", &["surql"])
-                                .set_file_name("backup.surql")
-                                .save_file()
-                            {
-                                // Confirm export
-                                let do_it = rfd::MessageDialog::new()
-                                    .set_title("Export Database")
-                                    .set_description(&format!("Export database to {}?", file.display()))
-                                    .set_level(rfd::MessageLevel::Info)
-                                    .set_buttons(rfd::MessageButtons::YesNo)
-                                    .show();
-                                if do_it == rfd::MessageDialogResult::Yes {
-                                    let tx = self.context.toast_tx.clone();
+                            let ctx = ui.ctx().clone();
+                            let confirm_ctx = ctx.clone();
+                            dialogs::save_file(&ctx, "Export SurrealDB backup to .surql", "backup.surql", Some(("SurrealQL", &["surql"])), move |file| {
+                                let description = format!("Export database to {}?", file.display());
+                                dialogs::confirm(&confirm_ctx, "Export Database", &description, rfd::MessageLevel::Info, move || {
                                     tokio::spawn(async move {
-                                        match crate::database::export_to(&file) .await {
-                                            Ok(_) => { let _ = tx.try_send((egui_toast::ToastKind::Success, format!("Exported DB to {}", file.display()))); },
-                                            Err(e) => { let _ = tx.try_send((egui_toast::ToastKind::Error, format!("DB export failed: {e}"))); },
+                                        match crate::database::export_to(&file).await {
+                                            Ok(_) => dialogs::toast(ToastKind::Success, format!("Exported DB to {}", file.display())),
+                                            Err(e) => dialogs::toast(ToastKind::Error, format!("DB export failed: {e}")),
                                         }
                                     });
-                                }
-                                ui.close();
-                            }
+                                });
+                            });
+                            ui.close();
                         }
                         if icons::button(ui, svg::AME_DB_IMPORT, "Import…").clicked() {
-                            if let Some(file) = rfd::FileDialog::new()
-                                .set_title("Import SurrealDB .surql file")
-                                .add_filter("SurrealQL", &["surql"]).pick_file()
-                            {
-                                // Confirm import (can overwrite)
-                                let do_it = rfd::MessageDialog::new()
-                                    .set_title("Import Database")
-                                    .set_description(&format!("Import from {}? This may overwrite existing data.", file.display()))
-                                    .set_level(rfd::MessageLevel::Warning)
-                                    .set_buttons(rfd::MessageButtons::YesNo)
-                                    .show();
-                                if do_it == rfd::MessageDialogResult::Yes {
-                                    let tx = self.context.toast_tx.clone();
+                            let ctx = ui.ctx().clone();
+                            let confirm_ctx = ctx.clone();
+                            dialogs::pick_file(&ctx, "Import SurrealDB .surql file", move |file| {
+                                let description = format!("Import from {}? This may overwrite existing data.", file.display());
+                                dialogs::confirm(&confirm_ctx, "Import Database", &description, rfd::MessageLevel::Warning, move || {
                                     tokio::spawn(async move {
                                         match crate::database::import_from(&file).await {
-                                            Ok(_) => { let _ = tx.try_send((egui_toast::ToastKind::Success, format!("Imported DB from {}", file.display()))); },
-                                            Err(e) => { let _ = tx.try_send((egui_toast::ToastKind::Error, format!("DB import failed: {e}"))); },
+                                            Ok(_) => dialogs::toast(ToastKind::Success, format!("Imported DB from {}", file.display())),
+                                            Err(e) => dialogs::toast(ToastKind::Error, format!("DB import failed: {e}")),
                                         }
                                     });
-                                }
-                                ui.close();
-                            }
+                                });
+                            });
+                            ui.close();
                         }
                     });
 
@@ -143,7 +121,7 @@ impl crate::app::SmartMediaApp {
                             });
                         }
                         if icons::button(ui, svg::CURSOR_CLICK, "Generate CLIP (Selected)").clicked() {
-                            let path = self.context.file_explorer.current_thumb.path.clone();
+                            let path = self.context.active_explorer().current_thumb.path.clone();
                             if !path.is_empty() {
                                 status::CLIP_STATUS.set_state(status::StatusState::Running, "Selected path");
                                 tokio::spawn(async move {
@@ -187,6 +165,7 @@ impl crate::app::SmartMediaApp {
                             } else {
                                 self.tree[SurfaceIndex::main()]
                                     .push_to_focused_leaf(tab.to_string());
+                                self.context.open_tabs.insert(tab.to_string());
                             }
 
                             ui.close();
@@ -198,8 +177,6 @@ impl crate::app::SmartMediaApp {
                     let mut was_open = self.context.assistant_window_open;
                     if icons::checkbox(ui, &mut was_open, svg::AME_ASSISTANT, "AI Assistant Window").clicked() {
                         self.context.assistant_window_open = was_open;
-                        // If toggled off, we can optionally request the OS window to close next frame.
-                        // Not strictly needed: when flag is false, we simply stop showing it.
                     }
                     ui.separator();
                     if icons::button(ui, svg::SLIDERS, "Theme panel").clicked() {
@@ -210,20 +187,30 @@ impl crate::app::SmartMediaApp {
                         icons::gallery::toggle(ui.ctx());
                         ui.close();
                     }
+                    icons::menu_button(ui, svg::WRENCH, "Devtools", |ui| {
+                        if icons::button(ui, svg::DATABASE, "Settings store").clicked() {
+                            crate::ui::devtools::toggle_settings_store(ui.ctx());
+                            ui.close();
+                        }
+                        if icons::button(ui, svg::AME_DATABASE, "Database maintenance").clicked() {
+                            crate::ui::devtools::toggle_db_maintenance(ui.ctx());
+                            ui.close();
+                        }
+                    });
                 });
 
                 ui.add_space(5.);
                 ui.separator();
                 ui.add_space(5.);
 
-                let current_path_clone = self.context.file_explorer.current_path.clone();
+                let current_path_clone = self.context.active_explorer().current_path.clone();
 
                 let parts: Vec<String> = current_path_clone
                     .split(['\\', '/'])
                     .filter(|s| !s.is_empty())
                     .map(|s| s.to_string())
                     .collect();
-                
+
                 let root_has_slash = current_path_clone.starts_with('/');
 
                 let mut accum = if root_has_slash {
@@ -247,14 +234,15 @@ impl crate::app::SmartMediaApp {
                             .selectable_label(false, RichText::new(display).underline())
                             .clicked()
                         {
-                            self.context.file_explorer.push_history(accum.clone());
-                            if self.context.file_explorer.viewer.mode == crate::ui::file_table::table::ExplorerMode::Database {
+                            let ex = self.context.active_explorer();
+                            ex.push_history(accum.clone());
+                            if ex.viewer.mode == crate::ui::file_table::table::ExplorerMode::Database {
                                 // In DB mode, treat breadcrumbs as path prefix changes
-                                self.context.file_explorer.db_offset = 0;
-                                self.context.file_explorer.db_last_batch_len = 0;
-                                self.context.file_explorer.load_database_rows();
+                                ex.db_offset = 0;
+                                ex.db_last_batch_len = 0;
+                                ex.load_database_rows();
                             } else {
-                                self.context.file_explorer.populate_current_directory();
+                                ex.populate_current_directory();
                             }
                         }
                         if i < parts.len() - 1 {
@@ -262,7 +250,6 @@ impl crate::app::SmartMediaApp {
                             let weak = ui.visuals().weak_text_color();
                             svg::CARET_RIGHT.show_tinted(ui, size, weak);
                         }
-                        // Remove trailing segment for next iteration accumulation clone safety
                     }
                 });
 
@@ -274,185 +261,12 @@ impl crate::app::SmartMediaApp {
 
         icons::gallery::show_window(ui.ctx());
 
-        Panel::bottom("FileExplorer Bottom Panel")
-        .exact_size(24.)
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                // Use active explorer (current tab) for progress and stats
-                let ex = self.context.active_explorer();
-
-                if ex.file_scan_progress > 0.0 {
-                    let mut bar = ProgressBar::new(ex.file_scan_progress)
-                        .animate(true)
-                        .desired_width(100.)
-                        .show_percentage();
-
-                    if ex.scan_done {
-                        ex.file_scan_progress = 0.;
-                        bar = bar.text(RichText::new("Scan Complete").color(Color32::LIGHT_GREEN));
-                    }
-                    bar.ui(ui);
-                    ui.add_space(5.);
-                    ui.separator();
-                    ui.add_space(5.);
-                }
-
-                // AI status/progress moved to global indicators (JOY/CLIP); no local bars here
-                ui.ctx().request_repaint_after(std::time::Duration::from_millis(300));
-                let vram01 = smoothed_vram01();
-                let (v_used, v_total) = gpu_mem_mb().unwrap_or_default();
-                icons::label(ui, svg::AME_GPU, format!("VRAM: {:.0}/{:.0} MiB", v_used, v_total));
-                ProgressBar::new(vram01)
-                .desired_width(100.)
-                .desired_height(3.)
-                .fill(ui.style().visuals.error_fg_color)
-                .ui(ui);
-
-                ui.separator();
-
-                // System metrics (CPU, RAM, VRAM)
-                let cpu01 = smoothed_cpu01();
-                icons::label(ui, svg::CPU, format!("CPU: {:.2}%", cpu01 * 100.0));
-                ProgressBar::new(cpu01)
-                .desired_width(100.)
-                .desired_height(3.)
-                .fill(ui.style().visuals.error_fg_color)
-                .ui(ui);
-
-                ui.separator(); 
-
-                let ram01 = smoothed_ram01();
-                if let Some((used_mb, total_mb)) = system_mem_mb() {
-                    icons::label(ui, svg::MEMORY, format!("RAM: {:.0}/{:.0} MiB", used_mb, total_mb));
-                } else {
-                    icons::label(ui, svg::MEMORY, "RAM: n/a");
-                }
-                ProgressBar::new(ram01)
-                .desired_width(100.)
-                .desired_height(3.)
-                .fill(ui.style().visuals.error_fg_color)
-                .ui(ui);
-                    
-                ui.separator(); 
-
-                // Thumbnail generation progress (visible, non-dir, image/video entries)
-                let mut thumbs_total = 0usize;
-                let mut thumbs_done = 0usize;
-                {
-                    let viewer = &ex.viewer;
-                    for r in ex.table.iter() {
-                        if !viewer.row_passes_filter(&r) { continue; }
-                        if r.file_type == "<DIR>" { continue; }
-                        if let Some(ext) = std::path::Path::new(&r.path)
-                            .extension()
-                            .and_then(|e| e.to_str())
-                            .map(|s| s.to_ascii_lowercase())
-                        {
-                            if crate::is_image(ext.as_str()) || crate::is_video(ext.as_str()) {
-                                thumbs_total += 1;
-                                if viewer.thumb_cache.contains_key(&r.path) { thumbs_done += 1; }
-                            }
-                        }
-                    }
-                }
-                let prog = if thumbs_total == 0 { 0.0 } else { thumbs_done as f32 / thumbs_total as f32 };
-                icons::label(ui, svg::AME_THUMBNAIL_GRID, format!("Thumbs: {thumbs_done}/{thumbs_total}"));
-                ProgressBar::new(prog)
-                    .desired_width(100.)
-                    .desired_height(3.)
-                    .fill(ui.style().visuals.selection.bg_fill)
-                    .ui(ui);
-                ui.separator();
-
-                ui.add_space(10.);
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    // Selected count (from table selection)
-                    let selected_cnt = ex.selection_count();
-
-                    // Visible vs filtered counts using current viewer row filter
-                    let mut visible_cnt = 0usize;
-                    let mut all_img_cnt = 0usize;
-                    let mut all_vid_cnt = 0usize;
-                    let mut all_dir_cnt = 0usize;
-                    let mut all_total_size = 0u64; // sum across visible non-dirs
-
-                    // Selected-only tallies
-                    let mut sel_img_cnt = 0usize;
-                    let mut sel_vid_cnt = 0usize;
-                    let mut sel_dir_cnt = 0usize; // will generally be 0 (dirs not selected)
-                    let mut sel_total_size = 0u64;
-
-                    {
-                        let viewer = &ex.viewer;
-                        for r in ex.table.iter() {
-                            let is_visible = viewer.row_passes_filter(&r);
-                            if is_visible {
-                                visible_cnt += 1;
-                                if r.file_type == "<DIR>" {
-                                    all_dir_cnt += 1;
-                                } else {
-                                    all_total_size = all_total_size.saturating_add(r.size);
-                                    if let Some(ext) = std::path::Path::new(&r.path)
-                                        .extension()
-                                        .and_then(|e| e.to_str())
-                                        .map(|s| s.to_ascii_lowercase())
-                                    {
-                                        if crate::is_image(ext.as_str()) { all_img_cnt += 1; }
-                                        if crate::is_video(ext.as_str()) { all_vid_cnt += 1; }
-                                    }
-                                }
-                            }
-
-                            if viewer.selected.contains(&r.path) {
-                                if r.file_type == "<DIR>" {
-                                    sel_dir_cnt += 1; // typically 0 due to selection rules
-                                } else {
-                                    sel_total_size = sel_total_size.saturating_add(r.size);
-                                    if let Some(ext) = std::path::Path::new(&r.path)
-                                        .extension()
-                                        .and_then(|e| e.to_str())
-                                        .map(|s| s.to_ascii_lowercase())
-                                    {
-                                        if crate::is_image(ext.as_str()) { sel_img_cnt += 1; }
-                                        if crate::is_video(ext.as_str()) { sel_vid_cnt += 1; }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    // Global filtered vs total (for recursive scans) falls back to page if not recursive
-                    let (global_filtered, global_total) = if ex.is_recursive_scan() {
-                        (ex.recursive_total_filtered(), ex.recursive_total_unfiltered())
-                    } else { (visible_cnt, ex.table.len()) };
-                    let filtered_out = global_total.saturating_sub(global_filtered);
-
-                    // Decide which stats to display: selected vs full table
-                    let show_selected = selected_cnt > 0;
-                    let (img_cnt, vid_cnt, dir_cnt, total_size) = if show_selected {
-                        (sel_img_cnt, sel_vid_cnt, sel_dir_cnt, sel_total_size)
-                    } else {
-                        (all_img_cnt, all_vid_cnt, all_dir_cnt, all_total_size)
-                    };
-
-                    icons::label(ui, svg::HARD_DRIVE, format!(
-                        "Total Size: {}",
-                        humansize::format_size(total_size, DECIMAL)
-                    ));
-                    ui.separator();
-                    icons::label(ui, svg::VIDEO_CAMERA, format!("Videos: {vid_cnt}"));
-                    ui.separator();
-                    icons::label(ui, svg::IMAGE, format!("Images: {img_cnt}"));
-                    ui.separator();
-                    icons::label(ui, svg::FOLDER, format!("Dirs: {dir_cnt}"));
-                    ui.separator();
-                    icons::label(ui, svg::FUNNEL, format!("Filtered {global_filtered} of {global_total} (out: {filtered_out})"));
-                    ui.separator();
-                    ex.selection_menu(ui);
-                    ui.separator();
-                    ex.logical_group_menu(ui);
-                });
-            });
-        });
+        let owner = self
+            .context
+            .active_tab_title
+            .clone()
+            .unwrap_or_else(|| crate::app::MAIN_EXPLORER_TAB.to_string());
+        crate::ui::statusbar::show(ui, self.context.active_explorer(), &owner);
     }
 }
 

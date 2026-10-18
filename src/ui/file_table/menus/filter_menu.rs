@@ -1,18 +1,18 @@
 use chrono::{DateTime, Local};
 use eframe::egui::*;
-use egui::{containers::menu::{MenuButton, MenuConfig}, style::StyleModifier};
+use egui::containers::menu::{MenuButton, MenuConfig};
+
+use crate::icons::{self, svg};
 
 impl crate::ui::file_table::FileExplorer {
     pub fn filter_menu(&mut self, ui: &mut Ui) {
-        let style = StyleModifier::default();
-        style.apply(ui.style_mut());
-        
-        MenuButton::new("🔻")
-        .config(MenuConfig::new().close_behavior(PopupCloseBehavior::IgnoreClicks).style(style))
+        let button = icons::icon_button_widget(ui, svg::FUNNEL, icons::IconSize::Md);
+        let (button_response, _) = MenuButton::from_button(button)
+        .config(MenuConfig::new().close_behavior(PopupCloseBehavior::IgnoreClicks))
         .ui(ui, |ui| {
             ui.set_width(300.);
             ui.vertical_centered(|ui| 
-                ui.heading(RichText::new("Excluded Terms").underline().color(ui.style().visuals.error_fg_color))
+                ui.heading(RichText::new("Excluded Terms").underline().color(crate::theme::primary(ui)))
             );
             ui.add_space(5.);
             ui.horizontal(|ui| {
@@ -53,7 +53,7 @@ impl crate::ui::file_table::FileExplorer {
             ui.separator();
             ui.add_space(5.);
             ui.vertical_centered(|ui| 
-                ui.heading(RichText::new("Filter by Date Range").underline().color(ui.style().visuals.error_fg_color))
+                ui.heading(RichText::new("Filter by Date Range").underline().color(crate::theme::primary(ui)))
             );
             ui.add_space(5.);
             ui.horizontal(|ui| {
@@ -76,9 +76,9 @@ impl crate::ui::file_table::FileExplorer {
                 .id_salt(&after_id)
                 .ui(ui);
 
-                if ui.button("✖").on_hover_text("Clear start date").clicked() {
-                    self.viewer.ui_settings.filter_modified_after = None;
-                    crate::database::settings::save_settings(&self.viewer.ui_settings);
+                if icons::icon_button(ui, svg::X, "Clear start date").clicked() {
+                    crate::settings::update("filters:clear-start-date", |s| s.filter_modified_after = None);
+                    self.viewer.sync_settings();
                     self.active_filter_group = None;
                     self.apply_filters_to_current_table();
                 }
@@ -90,22 +90,24 @@ impl crate::ui::file_table::FileExplorer {
                 .id_salt(&before_id)
                 .ui(ui);
 
-                if ui.button("✖").on_hover_text("Clear end date").clicked() {
-                    self.viewer.ui_settings.filter_modified_before = None;
-                    crate::database::settings::save_settings(&self.viewer.ui_settings);
+                if icons::icon_button(ui, svg::X, "Clear end date").clicked() {
+                    crate::settings::update("filters:clear-end-date", |s| s.filter_modified_before = None);
+                    self.viewer.sync_settings();
                     self.active_filter_group = None;
                     self.apply_filters_to_current_table();
                 }
 
                 if resp_after.changed() {
-                    self.viewer.ui_settings.filter_modified_after = Some(after_date.to_string());
-                    crate::database::settings::save_settings(&self.viewer.ui_settings);
+                    let picked = after_date.to_string();
+                    crate::settings::update("filters:start-date", |s| s.filter_modified_after = Some(picked));
+                    self.viewer.sync_settings();
                     self.active_filter_group = None;
                     self.apply_filters_to_current_table();
                 }
                 if resp_before.changed() {
-                    self.viewer.ui_settings.filter_modified_before = Some(before_date.to_string());
-                    crate::database::settings::save_settings(&self.viewer.ui_settings);
+                    let picked = before_date.to_string();
+                    crate::settings::update("filters:end-date", |s| s.filter_modified_before = Some(picked));
+                    self.viewer.sync_settings();
                     self.active_filter_group = None;
                     self.apply_filters_to_current_table();
                 }
@@ -114,7 +116,7 @@ impl crate::ui::file_table::FileExplorer {
             ui.horizontal_wrapped(|ui| {
                 let mut remove_idx: Option<usize> = None;
                 for (i, term) in self.excluded_terms.iter().enumerate() {
-                    if ui.add(Button::new(format!("{} ✖", term)).small()).clicked() { remove_idx = Some(i); }
+                    if icons::small_button(ui, svg::X, term.as_str()).clicked() { remove_idx = Some(i); }
                 }
                 if let Some(i) = remove_idx { 
                     self.excluded_terms.remove(i);
@@ -138,7 +140,7 @@ impl crate::ui::file_table::FileExplorer {
             ui.add_space(5.);
 
             ui.vertical_centered(|ui| 
-                ui.heading(RichText::new("Size Filters (KB)").underline().color(ui.style().visuals.error_fg_color))
+                ui.heading(RichText::new("Size Filters (KB)").underline().color(crate::theme::primary(ui)))
             );
 
             ui.add_space(5.);
@@ -161,9 +163,11 @@ impl crate::ui::file_table::FileExplorer {
                     if ui.button("Clear").on_hover_text("Clear size constraints").clicked() {
                         self.min_size_mb_input.clear();
                         self.max_size_mb_input.clear();
-                        self.viewer.ui_settings.db_min_size_bytes = None;
-                        self.viewer.ui_settings.db_max_size_bytes = None;
-                        crate::database::settings::save_settings(&self.viewer.ui_settings);
+                        crate::settings::update("filters:clear-size", |s| {
+                            s.db_min_size_bytes = None;
+                            s.db_max_size_bytes = None;
+                        });
+                        self.viewer.sync_settings();
                         self.active_filter_group = None;
                     }
                     if changed || ui.button("Apply").clicked() {
@@ -174,13 +178,14 @@ impl crate::ui::file_table::FileExplorer {
                             (Some(a), Some(b)) if a > b => (Some(b), Some(a)),
                             other => other,
                         };
-                        self.viewer.ui_settings.db_min_size_bytes = min_b;
-                        self.viewer.ui_settings.db_max_size_bytes = max_b;
-                        crate::database::settings::save_settings(&self.viewer.ui_settings);
+                        crate::settings::update("filters:size", |s| {
+                            s.db_min_size_bytes = min_b;
+                            s.db_max_size_bytes = max_b;
+                        });
+                        self.viewer.sync_settings();
                         self.active_filter_group = None;
                         // Apply to current table view
-                        let minb = self.viewer.ui_settings.db_min_size_bytes;
-                        let maxb = self.viewer.ui_settings.db_max_size_bytes;
+                        let (minb, maxb) = (min_b, max_b);
                         self.table.retain(|r| {
                             if r.file_type == "<DIR>" { return true; }
                             let ok_min = minb.map(|m| r.size >= m).unwrap_or(true);
@@ -196,7 +201,7 @@ impl crate::ui::file_table::FileExplorer {
             ui.add_space(5.);
 
             ui.vertical_centered(|ui| 
-                ui.heading(RichText::new("Extension filters").underline().color(ui.style().visuals.error_fg_color))
+                ui.heading(RichText::new("Extension filters").underline().color(crate::theme::primary(ui)))
             );
             ui.add_space(5.);
             ui.vertical(|ui| {
@@ -210,8 +215,8 @@ impl crate::ui::file_table::FileExplorer {
 
                 let mut skip_icons = self.viewer.ui_settings.filter_skip_icons;
                 if ui.checkbox(&mut skip_icons, "Skip likely icons").on_hover_text("Filter out tiny images (.ico, <= 16–64px, and small files)").changed() {
-                    self.viewer.ui_settings.filter_skip_icons = skip_icons;
-                    crate::database::settings::save_settings(&self.viewer.ui_settings);
+                    crate::settings::update("filters:skip-icons", |s| s.filter_skip_icons = skip_icons);
+                    self.viewer.sync_settings();
                     self.active_filter_group = None;
                     if skip_icons {
                         // Apply to current table using same heuristic as scanner
@@ -251,7 +256,7 @@ impl crate::ui::file_table::FileExplorer {
             ui.separator();
             ui.add_space(5.);
             ui.vertical_centered(|ui| 
-                ui.heading(RichText::new("Save filters as group").underline().color(ui.style().visuals.error_fg_color))
+                ui.heading(RichText::new("Save filters as group").underline().color(crate::theme::primary(ui)))
             );
             ui.add_space(5.);
             ui.horizontal(|ui| {
@@ -301,13 +306,13 @@ impl crate::ui::file_table::FileExplorer {
             ui.separator();
             ui.add_space(5.);
             ui.vertical_centered(|ui| 
-                ui.heading(RichText::new("Saved filter groups").underline().color(ui.style().visuals.error_fg_color))
+                ui.heading(RichText::new("Saved filter groups").underline().color(crate::theme::primary(ui)))
             );
             ui.add_space(5.);
             ui.horizontal(|ui| {
                 ui.label("");
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.button("⟲").clicked() {
+                    if icons::icon_button(ui, svg::ARROWS_CLOCKWISE, "Refresh saved groups").clicked() {
                         let tx = self.filter_groups_tx.clone();
                         tokio::spawn(async move {
                             match crate::database::list_filter_groups().await {
@@ -331,10 +336,12 @@ impl crate::ui::file_table::FileExplorer {
                                 self.viewer.types_show_images = g.include_images;
                                 self.viewer.types_show_videos = g.include_videos;
                                 self.viewer.types_show_dirs = g.include_dirs;
-                                self.viewer.ui_settings.filter_skip_icons = g.skip_icons;
-                                self.viewer.ui_settings.db_min_size_bytes = g.min_size_bytes;
-                                self.viewer.ui_settings.db_max_size_bytes = g.max_size_bytes;
-                                crate::database::settings::save_settings(&self.viewer.ui_settings);
+                                crate::settings::update("filters:apply-group", |s| {
+                                    s.filter_skip_icons = g.skip_icons;
+                                    s.db_min_size_bytes = g.min_size_bytes;
+                                    s.db_max_size_bytes = g.max_size_bytes;
+                                });
+                                self.viewer.sync_settings();
                                 self.excluded_terms = g.excluded_terms.clone();
                                 self.excluded_term_input.clear();
                                 self.active_filter_group = Some(g.name.clone());
@@ -381,6 +388,7 @@ impl crate::ui::file_table::FileExplorer {
                 });
             }
         });
+        button_response.on_hover_text("Filters");
     }
 
     pub fn apply_filters_to_current_table(&mut self) {

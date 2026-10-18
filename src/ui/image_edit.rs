@@ -38,6 +38,8 @@ pub struct ImageEditPanel {
     preview_every_n: usize,
     preview_rx: Option<crossbeam::channel::Receiver<Vec<u8>>>,
     cancel_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    // True while an edit result for the current source is cached
+    has_result: bool,
 }
 
 impl Default for ImageEditPanel {
@@ -80,6 +82,7 @@ impl Default for ImageEditPanel {
             preview_every_n: 0,
             preview_rx: None,
             cancel_flag: None,
+            has_result: false,
         }
     }
 }
@@ -93,7 +96,7 @@ impl ImageEditPanel {
         if let Some(path) = &self.current_path {
             // If we have a generated result, show it side-by-side or below
             let result_key = format!("imageedit::result::{}", path);
-            let has_result = &mut false;
+            self.has_result = self.thumb_cache.lock().map(|cache| cache.contains_key(&result_key)).unwrap_or(false);
             // Model controls
             ui.horizontal(|ui| {
                 icons::label(ui, svg::FILE_IMAGE, RichText::new("Source:").underline().strong());
@@ -101,7 +104,7 @@ impl ImageEditPanel {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let can_load = !self.loading_model && !self.model_repo.trim().is_empty();
                     if self.loading_model {
-                        Spinner::new().color(ui.style().visuals.error_fg_color).ui(ui); 
+                        Spinner::new().color(crate::theme::primary(ui)).ui(ui); 
                         ui.label("Loading model…");
                         // Poll loader status channel for completion or error
                         if let Ok(msg) = self.status_rx.try_recv() {
@@ -111,7 +114,7 @@ impl ImageEditPanel {
                                 Err(e) => { self.model_loaded = false; self.model_error = Some(e); }
                             }
                         }
-                    } else if let Some(err) = &self.model_error { ui.colored_label(Color32::RED, err); }
+                    } else if let Some(err) = &self.model_error { ui.colored_label(crate::theme::error(ui), err); }
 
                     if ui.add_enabled(can_load, icons::button_widget(ui, if self.model_loaded { svg::ARROWS_CLOCKWISE } else { svg::AME_MODEL }, if self.model_loaded { "Reload Model" } else { "Load Model" })).clicked() {
                         self.loading_model = true;
@@ -414,19 +417,15 @@ impl ImageEditPanel {
                     if icons::button(ui, svg::STOP, "Cancel Run").clicked() {
                         if let Some(f) = &self.cancel_flag { f.store(true, std::sync::atomic::Ordering::Relaxed); }
                     }
-                    if *has_result && icons::button(ui, svg::FLOPPY_DISK, "Save Result As…").clicked() {
-                        // Offer a save dialog and write PNG bytes from cache
-                        if let Some(file) = rfd::FileDialog::new()
-                            .set_title("Save edited image as PNG")
-                            .add_filter("PNG", &["png"]) 
-                            .set_file_name("edited.png")
-                            .save_file() {
-                            if let Ok(cache) = self.thumb_cache.lock() {
-                                if let Some(bytes_arc) = cache.get(&result_key) {
-                                    let bytes: Vec<u8> = bytes_arc.as_ref().to_vec();
-                                    let _ = std::fs::write(&file, bytes);
+                    if self.has_result && icons::button(ui, svg::FLOPPY_DISK, "Save Result As…").clicked() {
+                        let bytes = self.thumb_cache.lock().ok().and_then(|cache| cache.get(&result_key).cloned());
+                        if let Some(bytes) = bytes {
+                            crate::ui::dialogs::save_file(ui.ctx(), "Save edited image as PNG", "edited.png", Some(("PNG", &["png"])), move |file| {
+                                match std::fs::write(&file, bytes.as_ref()) {
+                                    Ok(()) => crate::ui::dialogs::toast(egui_toast::ToastKind::Success, format!("Saved {}", file.display())),
+                                    Err(e) => crate::ui::dialogs::toast(egui_toast::ToastKind::Error, format!("Save failed: {e}")),
                                 }
-                            }
+                            });
                         }
                     }
                 });
@@ -509,7 +508,6 @@ impl ImageEditPanel {
 
                     if let Ok(cache) = self.thumb_cache.lock() {
                         if let Some(bytes_arc) = cache.get(&result_key) {
-                            *has_result = true;
                             ui.separator();
                             icons::label(ui, svg::IMAGE, RichText::new("Result:").underline().strong());
                             let img_src = eframe::egui::ImageSource::Bytes {
@@ -526,5 +524,53 @@ impl ImageEditPanel {
         } else {
             ui.weak("No image selected.");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eframe::egui::{CentralPanel, Context, Pos2, RawInput, Rect, Shape};
+
+    fn frame_text(ctx: &Context, panel: &mut ImageEditPanel) -> String {
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1100.0, 800.0))),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            CentralPanel::default().show(ui, |ui| panel.ui(ui));
+        });
+        out.textures_delta.clear();
+        let mut text = String::new();
+        fn walk(shape: &Shape, text: &mut String) {
+            match shape {
+                Shape::Text(t) => {
+                    text.push_str(t.galley.text());
+                    text.push('\n');
+                }
+                Shape::Vec(v) => v.iter().for_each(|s| walk(s, text)),
+                _ => {}
+            }
+        }
+        out.shapes.iter().for_each(|c| walk(&c.shape, &mut text));
+        text
+    }
+
+    #[tokio::test]
+    async fn save_result_appears_once_a_result_is_cached() {
+        let ctx = Context::default();
+        ctx.set_fonts(crate::theme::fonts::definitions(crate::theme::fonts::TextScale::Normal));
+        crate::theme::bootstrap_startup_theme(&ctx);
+        let mut panel = ImageEditPanel::default();
+        panel.open_with_path("/nonexistent/source.png");
+        frame_text(&ctx, &mut panel);
+        assert!(!panel.has_result);
+        assert!(!frame_text(&ctx, &mut panel).contains("Save Result As"));
+
+        let key = "imageedit::result::/nonexistent/source.png".to_string();
+        panel.thumb_cache.lock().unwrap().insert(key, Arc::from(vec![1u8, 2, 3].into_boxed_slice()));
+        let text = frame_text(&ctx, &mut panel);
+        assert!(panel.has_result, "result state is kept on the panel");
+        assert!(text.contains("Save Result As"), "the save button is reachable:\n{text}");
     }
 }
