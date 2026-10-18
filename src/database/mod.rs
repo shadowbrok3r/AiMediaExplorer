@@ -19,6 +19,7 @@ pub mod maintenance;
 pub mod cli;
 pub mod thumb_blobs;
 pub mod thumb_migration;
+pub mod legacy;
 pub mod ui_themes;
 #[cfg(test)]
 mod tests;

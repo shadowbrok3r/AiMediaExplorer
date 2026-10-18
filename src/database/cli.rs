@@ -4,6 +4,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+use super::legacy::job::{Job, PhaseState};
+use super::legacy::pathmap::Policy;
+use super::legacy::{self, ImportRequest, Target};
 use super::snapshot::{self, ProgressFn, human, store_has_data, store_in_use};
 use super::surql::{self, ExportOptions, VerifyOptions, VerifyTarget};
 use super::thumb_blobs;
@@ -22,8 +25,80 @@ enum ThumbsAction {
     Missing,
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+struct LegacyArgs {
+    old_store: PathBuf,
+    path_map: Option<PathBuf>,
+    merge: bool,
+    into_new_store: Option<PathBuf>,
+    missing: Option<Policy>,
+    unmapped: Option<Policy>,
+    settings: Option<String>,
+    drop_b64: bool,
+    dry_run: bool,
+    report: Option<PathBuf>,
+    work_dir: Option<PathBuf>,
+    surreal_bin: Option<PathBuf>,
+    keep_export: bool,
+    then_migrate_thumbs: bool,
+    old_ns: Option<String>,
+    old_db: Option<String>,
+    from_export: Option<PathBuf>,
+    no_snapshot: bool,
+    accept_suggested_map: bool,
+}
+
+impl LegacyArgs {
+    fn set_flag(&mut self, flag: &str) -> bool {
+        match flag {
+            "--merge" => self.merge = true,
+            "--drop-b64" => self.drop_b64 = true,
+            "--dry-run" => self.dry_run = true,
+            "--keep-export" => self.keep_export = true,
+            "--then-migrate-thumbs" => self.then_migrate_thumbs = true,
+            "--no-snapshot" => self.no_snapshot = true,
+            "--accept-suggested-map" => self.accept_suggested_map = true,
+            _ => return false,
+        }
+        true
+    }
+
+    fn set_value(&mut self, flag: &str, v: String) -> Result<bool, String> {
+        let path = || PathBuf::from(&v);
+        match flag {
+            "--path-map" => self.path_map = Some(path()),
+            "--into-new-store" => self.into_new_store = Some(path()),
+            "--report" => self.report = Some(path()),
+            "--work-dir" => self.work_dir = Some(path()),
+            "--surreal-bin" => self.surreal_bin = Some(path()),
+            "--from-export" => self.from_export = Some(path()),
+            "--missing" => self.missing = Some(v.parse().map_err(|e| format!("--missing: {e}"))?),
+            "--unmapped" => self.unmapped = Some(v.parse().map_err(|e| format!("--unmapped: {e}"))?),
+            "--settings" => self.settings = Some(v),
+            "--old-ns" => self.old_ns = Some(v),
+            "--old-db" => self.old_db = Some(v),
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    fn settings_fields(&self) -> Result<Vec<String>, String> {
+        match self.settings.as_deref() {
+            None | Some("skip") => Ok(Vec::new()),
+            Some(s) => match s.strip_prefix("fields:") {
+                Some(list) => {
+                    let names: Vec<String> = list.split(',').map(|f| f.trim().to_string()).filter(|f| !f.is_empty()).collect();
+                    if names.is_empty() { Err("--settings fields: needs at least one field name".into()) } else { Ok(names) }
+                }
+                None => Err(format!("--settings expects skip or fields:<name>,<name>, not '{s}'")),
+            },
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum Command {
+    LegacyImport(Box<LegacyArgs>),
     Snapshot,
     Export { file: PathBuf, with_thumbs: bool },
     Import { file: PathBuf, force: bool },
@@ -39,7 +114,7 @@ struct Parsed {
     db_path: Option<PathBuf>,
 }
 
-const DB_FLAGS: [&str; 7] = ["--db-snapshot", "--db-export", "--db-import", "--db-verify", "--db-restore", "--db-info", "--db-thumbs"];
+const DB_FLAGS: [&str; 8] = ["--db-snapshot", "--db-export", "--db-import", "--db-verify", "--db-restore", "--db-info", "--db-thumbs", "--db-import-legacy"];
 
 fn split_flag(arg: &str) -> (&str, Option<&str>) {
     match arg.split_once('=') {
@@ -59,6 +134,7 @@ fn parse(args: &[String]) -> Option<Result<Parsed, String>> {
     let mut no_compare = false;
     let mut with_thumbs = false;
     let mut clear_undecodable = false;
+    let mut legacy = LegacyArgs::default();
     let mut i = 0;
     let mut value = |i: &mut usize, inline: Option<&str>, flag: &str| -> Result<String, String> {
         if let Some(v) = inline {
@@ -86,6 +162,12 @@ fn parse(args: &[String]) -> Option<Result<Parsed, String>> {
             "--db-import" => Some(value(&mut i, inline, flag).map(|v| Command::Import { file: PathBuf::from(v), force: false })),
             "--db-verify" => Some(value(&mut i, inline, flag).map(|v| Command::Verify { target: PathBuf::from(v), no_compare: false, with_thumbs: false })),
             "--db-restore" => Some(value(&mut i, inline, flag).map(|v| Command::Restore(PathBuf::from(v)))),
+            "--db-import-legacy" => Some(value(&mut i, inline, flag).map(|v| Command::LegacyImport(Box::new(LegacyArgs { old_store: PathBuf::from(v), ..Default::default() })))),
+            "--path-map" | "--into-new-store" | "--report" | "--work-dir" | "--surreal-bin" | "--from-export" | "--missing" | "--unmapped" | "--settings" | "--old-ns" | "--old-db" => match value(&mut i, inline, flag).and_then(|v| legacy.set_value(flag, v)) {
+                Ok(_) => None,
+                Err(e) => return Some(Err(e)),
+            },
+            f if legacy.set_flag(f) => None,
             "--db-path" => match value(&mut i, inline, flag) {
                 Ok(v) => {
                     db_path = Some(PathBuf::from(v));
@@ -114,7 +196,7 @@ fn parse(args: &[String]) -> Option<Result<Parsed, String>> {
         match next {
             Some(Ok(c)) => {
                 if command.is_some() {
-                    return Some(Err("only one of --db-snapshot, --db-export, --db-import, --db-verify, --db-restore, --db-info, --db-thumbs may be given".into()));
+                    return Some(Err("only one of --db-snapshot, --db-export, --db-import, --db-import-legacy, --db-verify, --db-restore, --db-info, --db-thumbs may be given".into()));
                 }
                 command = Some(c);
             }
@@ -132,6 +214,16 @@ fn parse(args: &[String]) -> Option<Result<Parsed, String>> {
         }
         Command::Export { with_thumbs: w, .. } => *w = with_thumbs,
         Command::Thumbs { clear_undecodable: c, .. } => *c = clear_undecodable,
+        Command::LegacyImport(a) => {
+            let old_store = std::mem::take(&mut a.old_store);
+            **a = LegacyArgs { old_store, ..legacy };
+            if a.merge && a.into_new_store.is_some() {
+                return Some(Err("--merge and --into-new-store cannot be combined".into()));
+            }
+            if let Err(e) = a.settings_fields() {
+                return Some(Err(e));
+            }
+        }
         _ => {}
     }
     Some(Ok(Parsed { command, db_path }))
@@ -139,6 +231,11 @@ fn parse(args: &[String]) -> Option<Result<Parsed, String>> {
 
 fn usage() -> &'static str {
     "database flags:\n  --db-info                         print engine, stamp and snapshots as JSON (does not open the store)\n  --db-snapshot                     copy the store folder into <db>/snapshots (store must not be in use)\n  --db-export <file.surql> [--with-thumbs]  export the database to a .surql file (thumbnail blob records are left out unless --with-thumbs)\n  --db-import <file.surql> [--force]  import into a new or empty store (--force to import into a populated one)\n  --db-verify <file.surql|dir> [--no-compare] [--with-thumbs]  import into a scratch store and compare with the store (dir: deep-verify a snapshot copy; --with-thumbs also compares thumbnail blob records)\n  --db-thumbs <info|migrate|finish|missing> [--clear-undecodable]  thumbnail blob storage: stats, copy inline thumbnails into blobs, verify and clear the inline copies, list rows without a blob\n  --db-restore <snapshot dir>       replace the store with a snapshot (old store kept as <store>.replaced-<ts>; store must not be in use)
+  --db-import-legacy <old store dir> [--path-map <file.toml>] [--merge | --into-new-store <dir>] [--missing keep|drop|tag] [--unmapped keep|drop|tag]
+        [--settings fields:a,b] [--drop-b64] [--dry-run] [--report <file.json>] [--work-dir <dir>] [--surreal-bin <path>] [--keep-export] [--then-migrate-thumbs]
+        [--old-ns <ns> --old-db <db>] [--from-export <file.surql>] [--no-snapshot] [--accept-suggested-map]
+                                    import a SurrealDB 2.x library (for example from Windows) via a pinned 2.x CLI run on a copy of the old store;
+                                    exit codes: 0 ok, 1 failed, 2 usage, 3 in use, 4 engine unavailable, 5 verification problems, 6 path map needs review, 7 cancelled
   --db-path <dir>                   store folder to use instead of the configured one"
 }
 
@@ -272,10 +369,116 @@ async fn run_thumbs(store: &Path, action: ThumbsAction, clear_undecodable: bool)
     code
 }
 
+fn fmt_duration(d: Duration) -> String {
+    let s = d.as_secs();
+    if s >= 3600 { format!("{}h {}m", s / 3600, s % 3600 / 60) } else if s >= 60 { format!("{}m {}s", s / 60, s % 60) } else { format!("{s}s") }
+}
+
+fn spawn_job_reporter(job: &Arc<Job>) -> tokio::task::JoinHandle<()> {
+    let job = Arc::clone(job);
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            for v in job.views().into_iter().filter(|v| v.state == PhaseState::Running) {
+                let bytes = !matches!(v.phase, legacy::job::PhaseId::Verify | legacy::job::PhaseId::Thumbs);
+                let fmt = |n: u64| if bytes { human(n) } else { n.to_string() };
+                let pct = v.fraction().map(|f| format!(" ({:.0}%)", f * 100.0)).unwrap_or_default();
+                let eta = v.eta().map(|d| format!(", about {} left", fmt_duration(d))).unwrap_or_default();
+                let of = if v.total > 0 { format!(" of {}", fmt(v.total)) } else { String::new() };
+                eprintln!("[{}] {}: {}{of}{pct}{eta}", v.phase.label().to_lowercase(), v.what, fmt(v.done));
+            }
+        }
+    })
+}
+
+fn print_mapping_table(report: &legacy::convert::ConvertReport) {
+    eprintln!("path mapping ({} thumbnail rows, {:.1}% map to an existing file):", report.thumbnail_rows, report.exists_rate() * 100.0);
+    eprintln!("{:<34} {:>8} {:>8} {:>8}  {}", "rule", "rows", "exists", "case-fix", "missing prefixes");
+    for r in &report.path_rules {
+        let rule = if r.rule.is_none() { "(no rule matched)".to_string() } else if r.to.is_empty() { format!("{} (unmapped)", r.from) } else { format!("{} -> {}", r.from, r.to) };
+        let missing = r.missing_top_prefixes.iter().take(3).map(|(p, n)| format!("{p} ({n})")).collect::<Vec<_>>().join("; ");
+        eprintln!("{:<34} {:>8} {:>7.1}% {:>8}  {}", rule, r.rows, r.exists_rate * 100.0, r.case_fixed_rows, missing);
+    }
+}
+
+async fn run_legacy(a: LegacyArgs, store: PathBuf) -> i32 {
+    let fields = match a.settings_fields() {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return EXIT_USAGE;
+        }
+    };
+    let target = match (&a.into_new_store, a.merge) {
+        (Some(dir), _) => Target::NewStore(dir.clone()),
+        (None, true) => Target::Merge(store.clone()),
+        (None, false) if store_has_data(&store) => Target::Merge(store.clone()),
+        (None, false) => Target::NewStore(store.clone()),
+    };
+    let mut req = ImportRequest::new(a.old_store.clone(), target);
+    req.path_map = a.path_map;
+    req.accept_suggested = a.accept_suggested_map;
+    req.missing = a.missing;
+    req.unmapped = a.unmapped;
+    req.settings_fields = fields;
+    req.drop_b64 = a.drop_b64;
+    req.dry_run = a.dry_run;
+    req.report = a.report;
+    req.work_dir = a.work_dir;
+    req.surreal_bin = a.surreal_bin;
+    req.keep_export = a.keep_export;
+    req.then_migrate_thumbs = a.then_migrate_thumbs;
+    req.old_ns = a.old_ns;
+    req.old_db = a.old_db;
+    req.from_export = a.from_export;
+    req.skip_snapshot = a.no_snapshot;
+    let job = Job::new();
+    let reporter = spawn_job_reporter(&job);
+    let interrupt = {
+        let job = Arc::clone(&job);
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                eprintln!("interrupted: cancelling and removing scratch files (press Ctrl-C again to quit at once)");
+                job.cancel();
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    std::process::exit(130);
+                }
+            }
+        })
+    };
+    let outcome = legacy::run(req, job).await;
+    reporter.abort();
+    interrupt.abort();
+    if let Some(c) = &outcome.report.convert {
+        print_mapping_table(c);
+    }
+    if let Some(m) = &outcome.report.path_map {
+        eprintln!("path map: {}{}", m.file, if m.generated { " (generated from this machine's volumes; review before relying on it)" } else { "" });
+        for w in &m.warnings {
+            eprintln!("warning: {w}");
+        }
+    }
+    for w in &outcome.report.warnings {
+        eprintln!("warning: {w}");
+    }
+    for n in &outcome.report.next_steps {
+        eprintln!("next: {n}");
+    }
+    print_json(&serde_json::to_value(&outcome.report).unwrap_or(Value::Null));
+    match outcome.result {
+        Ok(()) => EXIT_OK,
+        Err(e) => {
+            eprintln!("error: {}", e.message());
+            e.exit_code()
+        }
+    }
+}
+
 async fn run_command(parsed: Parsed) -> i32 {
     let store = parsed.db_path.unwrap_or_else(|| PathBuf::from(super::get_db_path()));
     let progress = cli_progress();
     match parsed.command {
+        Command::LegacyImport(a) => run_legacy(*a, store).await,
         Command::Info => {
             print_json(&super::maintenance::info_json(&store));
             EXIT_OK
@@ -478,6 +681,58 @@ mod tests {
         assert_eq!(parse(&args(&["--db-info"])).unwrap().unwrap().command, Command::Info);
         assert_eq!(parse(&args(&["--db-snapshot"])).unwrap().unwrap().command, Command::Snapshot);
         assert_eq!(parse(&args(&["--db-restore", "snap"])).unwrap().unwrap().command, Command::Restore("snap".into()));
+    }
+
+    #[test]
+    fn parses_legacy_import_flags() {
+        let p = parse(&args(&[
+            "--db-import-legacy", "/old/ai_search", "--path-map", "m.toml", "--into-new-store", "/new", "--missing", "tag", "--unmapped=drop", "--settings", "fields:recent_paths,excluded_dirs", "--drop-b64", "--dry-run",
+            "--report", "r.json", "--work-dir", "/w", "--surreal-bin", "/b/surreal", "--keep-export", "--then-migrate-thumbs", "--old-ns", "a", "--old-db", "b", "--from-export", "e.surql", "--no-snapshot", "--accept-suggested-map", "--db-path", "d",
+        ]))
+        .unwrap()
+        .unwrap();
+        assert_eq!(p.db_path, Some("d".into()));
+        let Command::LegacyImport(a) = p.command else { panic!("legacy command expected") };
+        assert_eq!(a.old_store, PathBuf::from("/old/ai_search"));
+        assert_eq!((a.path_map.as_deref(), a.into_new_store.as_deref()), (Some(Path::new("m.toml")), Some(Path::new("/new"))));
+        assert_eq!((a.missing, a.unmapped), (Some(Policy::Tag), Some(Policy::Drop)));
+        assert_eq!(a.settings_fields().unwrap(), vec!["recent_paths".to_string(), "excluded_dirs".to_string()]);
+        assert!(a.drop_b64 && a.dry_run && a.keep_export && a.then_migrate_thumbs && a.no_snapshot && a.accept_suggested_map && !a.merge);
+        assert_eq!((a.old_ns.as_deref(), a.old_db.as_deref(), a.from_export.as_deref()), (Some("a"), Some("b"), Some(Path::new("e.surql"))));
+        assert_eq!((a.report.as_deref(), a.work_dir.as_deref(), a.surreal_bin.as_deref()), (Some(Path::new("r.json")), Some(Path::new("/w")), Some(Path::new("/b/surreal"))));
+        let m = parse(&args(&["--db-import-legacy=/old", "--merge"])).unwrap().unwrap();
+        let Command::LegacyImport(a) = m.command else { panic!("legacy command expected") };
+        assert!(a.merge && a.into_new_store.is_none() && a.settings_fields().unwrap().is_empty());
+    }
+
+    #[test]
+    fn rejects_bad_legacy_usage() {
+        assert!(parse(&args(&["--db-import-legacy"])).unwrap().is_err());
+        assert!(parse(&args(&["--db-import-legacy", "/o", "--merge", "--into-new-store", "/n"])).unwrap().is_err());
+        assert!(parse(&args(&["--db-import-legacy", "/o", "--missing", "maybe"])).unwrap().is_err());
+        assert!(parse(&args(&["--db-import-legacy", "/o", "--settings", "all"])).unwrap().is_err());
+        assert!(parse(&args(&["--db-import-legacy", "/o", "--settings", "fields:"])).unwrap().is_err());
+        assert!(parse(&args(&["--db-import-legacy", "/o", "--db-info"])).unwrap().is_err());
+        assert_eq!(run(&args(&["--db-import-legacy", "/o", "--missing", "maybe"])), Some(EXIT_USAGE));
+    }
+
+    #[test]
+    fn legacy_exit_codes_are_distinct() {
+        use crate::database::legacy::LegacyError;
+        let codes = [
+            LegacyError::Usage("u".into()).exit_code(),
+            LegacyError::InUse("p".into()).exit_code(),
+            LegacyError::Engine("e".into()).exit_code(),
+            LegacyError::VerifyFailed.exit_code(),
+            LegacyError::MapReview("m".into()).exit_code(),
+            LegacyError::Cancelled.exit_code(),
+            LegacyError::Failed("f".into()).exit_code(),
+        ];
+        let mut sorted = codes.to_vec();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), codes.len());
+        assert!(!codes.contains(&EXIT_OK));
     }
 
     #[test]
