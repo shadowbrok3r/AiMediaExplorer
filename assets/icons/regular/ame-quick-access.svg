@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none" stroke="#ffffff" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" data-glyph="LIGHTNING">
+<defs><mask id="cut" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256"><rect width="256" height="256" fill="#ffffff" stroke="none"/><path d="M212,120L164,180H204L184,224" fill="#000000" stroke="#000000" stroke-width="40"/></mask></defs>
+<g mask="url(#cut)">
+<path d="M184,176H40a8,8,0,0,1,-8,-8V56a8,8,0,0,1,8,-8H92L114,70H184a8,8,0,0,1,8,8V168a8,8,0,0,1,-8,8Z"/>
+</g>
+<path d="M212,120L164,180H204L184,224"/>
+</svg>

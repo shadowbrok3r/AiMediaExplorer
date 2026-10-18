@@ -5,6 +5,7 @@ pub mod ai;
 pub mod app;
 pub mod ui;
 pub mod receive;
+pub mod icons;
 
 pub use utilities::{explorer::*, scan::*, thumbs::*, types::*};
 pub use database::*;

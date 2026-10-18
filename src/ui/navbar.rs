@@ -1,4 +1,4 @@
-use crate::{utilities::windows::{gpu_mem_mb, system_mem_mb, smoothed_cpu01, smoothed_ram01, smoothed_vram01}, ui::{status::{self, GlobalStatusIndicator}, tabs::TABS}};
+use crate::{icons::{self, svg}, utilities::windows::{gpu_mem_mb, system_mem_mb, smoothed_cpu01, smoothed_ram01, smoothed_vram01}, ui::{status::{self, GlobalStatusIndicator}, tabs::TABS}};
 use eframe::egui::*;
 use egui_dock::SurfaceIndex;
 use humansize::DECIMAL;
@@ -10,14 +10,14 @@ impl crate::app::SmartMediaApp {
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.menu_button(" File ", |ui| {
-                    ui.menu_button("Database", |ui| {
-                        if ui.button("View Entire Database").on_hover_text("Show all thumbnails from all directories").clicked() {
+                    icons::menu_button(ui, svg::AME_DATABASE, "Database", |ui| {
+                        if icons::button(ui, svg::AME_THUMBNAIL_GRID, "View Entire Database").on_hover_text("Show all thumbnails from all directories").clicked() {
                             crate::app::OPEN_TAB_REQUESTS
                                 .lock()
                                 .unwrap()
                                 .push(crate::ui::file_table::FilterRequest::OpenDatabaseAll { title: "Entire Database".to_string(), background: false });
                         }
-                        if ui.button("Refine (AI, DB-only)").on_hover_text("Open AI Refinements panel to generate proposals from the database").clicked() {
+                        if icons::button(ui, svg::AME_REFINE, "Refine (AI, DB-only)").on_hover_text("Open AI Refinements panel to generate proposals from the database").clicked() {
                             // Ensure tab is open/focused
                             let label = "AI Refinements".to_string();
                             if let Some(path) = self.tree.find_tab(&label) {
@@ -28,18 +28,18 @@ impl crate::app::SmartMediaApp {
                             }
                             ui.close();
                         }
-                        if ui.button("Group by Categories").on_hover_text("Show virtual folders for each category").clicked() {
+                        if icons::button(ui, svg::AME_CATEGORY, "Group by Categories").on_hover_text("Show virtual folders for each category").clicked() {
                             self.context.file_explorer.viewer.mode = super::file_table::table::ExplorerMode::Database;
                             self.context.file_explorer.load_virtual_categories_view();
                             ui.close();
                         }
-                        if ui.button("Group by Tags").on_hover_text("Show virtual folders for each tag").clicked() {
+                        if icons::button(ui, svg::TAG, "Group by Tags").on_hover_text("Show virtual folders for each tag").clicked() {
                             self.context.file_explorer.viewer.mode = super::file_table::table::ExplorerMode::Database;
                             self.context.file_explorer.load_virtual_tags_view();
                             ui.close();
                         }
                         ui.separator();
-                        if ui.button("Choose DB Folder…").clicked() {
+                        if icons::button(ui, svg::FOLDER_OPEN, "Choose DB Folder…").clicked() {
                             if let Some(dir) = rfd::FileDialog::new().set_title("Choose database folder").pick_folder() {
                                 let path_str = dir.display().to_string();
                                 // Persist path and reconnect DB
@@ -55,7 +55,7 @@ impl crate::app::SmartMediaApp {
                                 ui.close();
                             }
                         }
-                        if ui.button("Export Backup…").clicked() {
+                        if icons::button(ui, svg::AME_DB_EXPORT, "Export Backup…").clicked() {
                             if let Some(file) = rfd::FileDialog::new()
                                 .set_title("Export SurrealDB backup to .surql")
                                 .add_filter("SurrealQL", &["surql"])
@@ -81,7 +81,7 @@ impl crate::app::SmartMediaApp {
                                 ui.close();
                             }
                         }
-                        if ui.button("Import…").clicked() {
+                        if icons::button(ui, svg::AME_DB_IMPORT, "Import…").clicked() {
                             if let Some(file) = rfd::FileDialog::new()
                                 .set_title("Import SurrealDB .surql file")
                                 .add_filter("SurrealQL", &["surql"]).pick_file()
@@ -107,21 +107,21 @@ impl crate::app::SmartMediaApp {
                         }
                     });
 
-                    ui.menu_button("AI", |ui| {
+                    icons::menu_button(ui, svg::AME_MODEL, "AI", |ui| {
                         // Enable AI Search: spawn async global init if not already in progress
-                        if ui.button("Enable AI Search").clicked() {
+                        if icons::button(ui, svg::AME_SEMANTIC_SEARCH, "Enable AI Search").clicked() {
                             status::VISION_STATUS.set_state(status::StatusState::Initializing, "Loading vision model");
                             tokio::spawn(async move {
                                 crate::ai::init_global_ai_engine_async().await;
                                 status::VISION_STATUS.set_state(status::StatusState::Idle, "Ready");
                             });
                         }
-                        if ui.button("Enable Auto Indexing").clicked() {
+                        if icons::button(ui, svg::AME_AI_DESCRIBE, "Enable Auto Indexing").clicked() {
                             // Toggle auto indexing flag inside global engine (atomic set true)
                             crate::ai::GLOBAL_AI_ENGINE.auto_descriptions_enabled.store(true, std::sync::atomic::Ordering::Relaxed);
                             status::VISION_STATUS.set_state(status::StatusState::Running, "Auto descriptions enabled");
                         }
-                        if ui.button("Enable Auto CLIP").clicked() {
+                        if icons::button(ui, svg::AME_CLIP_EMBED, "Enable Auto CLIP").clicked() {
                             crate::ai::GLOBAL_AI_ENGINE.auto_clip_enabled.store(true, std::sync::atomic::Ordering::Relaxed);
                             status::CLIP_STATUS.set_state(status::StatusState::Running, "Auto CLIP backfill");
                             tokio::spawn(async move {
@@ -131,7 +131,7 @@ impl crate::app::SmartMediaApp {
                                 Ok::<(), anyhow::Error>(())
                             });
                         }
-                        if ui.button("Generate CLIP (Missing)").clicked() {
+                        if icons::button(ui, svg::AME_EMBEDDING, "Generate CLIP (Missing)").clicked() {
                             status::CLIP_STATUS.set_state(status::StatusState::Running, "Generating missing");
                             tokio::spawn(async move {
                                 let count_before = crate::ai::GLOBAL_AI_ENGINE.clip_missing_count().await;
@@ -142,7 +142,7 @@ impl crate::app::SmartMediaApp {
                                 Ok::<(), anyhow::Error>(())
                             });
                         }
-                        if ui.button("Generate CLIP (Selected)").clicked() {
+                        if icons::button(ui, svg::CURSOR_CLICK, "Generate CLIP (Selected)").clicked() {
                             let path = self.context.file_explorer.current_thumb.path.clone();
                             if !path.is_empty() {
                                 status::CLIP_STATUS.set_state(status::StatusState::Running, "Selected path");
@@ -158,7 +158,7 @@ impl crate::app::SmartMediaApp {
                                 log::warn!("[CLIP] No current preview path set for generation");
                             }
                         }
-                        if ui.button("CLIP Missing Count").clicked() {
+                        if icons::button(ui, svg::GAUGE, "CLIP Missing Count").clicked() {
                             tokio::spawn(async move {
                                 let missing = crate::ai::GLOBAL_AI_ENGINE.clip_missing_count().await;
                                 log::info!("[CLIP] Missing embeddings: {missing}");
@@ -166,20 +166,19 @@ impl crate::app::SmartMediaApp {
                             });
                         }
                     });
-                    if ui.button("Preferences").clicked() {
+                    if icons::button(ui, svg::GEAR, "Preferences").clicked() {
                         crate::app::OPEN_SETTINGS_REQUEST.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
                 });
 
                 ui.menu_button(" View ", |ui| {
-                    if ui.button("Egui Settings").clicked() {
+                    if icons::button(ui, svg::PALETTE, "Egui Settings").clicked() {
                         self.context.open_ui_settings = true;
                     }
 
                     // allow certain tabs to be toggled
                     for tab in TABS {
-                        if ui
-                            .selectable_label(self.context.open_tabs.contains(tab), tab)
+                        if icons::selectable_button(ui, tab_icon(tab), self.context.open_tabs.contains(tab), tab)
                             .clicked()
                         {
                             if let Some(index) = self.tree.find_tab(&tab.to_string()) {
@@ -197,10 +196,15 @@ impl crate::app::SmartMediaApp {
                     ui.separator();
                     // Toggle for Assistant Viewport window
                     let mut was_open = self.context.assistant_window_open;
-                    if ui.checkbox(&mut was_open, "AI Assistant Window").clicked() {
+                    if icons::checkbox(ui, &mut was_open, svg::AME_ASSISTANT, "AI Assistant Window").clicked() {
                         self.context.assistant_window_open = was_open;
                         // If toggled off, we can optionally request the OS window to close next frame.
                         // Not strictly needed: when flag is false, we simply stop showing it.
+                    }
+                    ui.separator();
+                    if icons::button(ui, svg::AME_LOGO, "Icon gallery").clicked() {
+                        icons::gallery::toggle(ui.ctx());
+                        ui.close();
                     }
                 });
 
@@ -250,7 +254,9 @@ impl crate::app::SmartMediaApp {
                             }
                         }
                         if i < parts.len() - 1 {
-                            ui.label(RichText::new("›").weak());
+                            let size = icons::IconSize::Sm.px(ui);
+                            let weak = ui.visuals().weak_text_color();
+                            svg::CARET_RIGHT.show_tinted(ui, size, weak);
                         }
                         // Remove trailing segment for next iteration accumulation clone safety
                     }
@@ -261,6 +267,8 @@ impl crate::app::SmartMediaApp {
                 });
             });
         });
+
+        icons::gallery::show_window(ui.ctx());
 
         Panel::bottom("FileExplorer Bottom Panel")
         .exact_size(24.)
@@ -289,7 +297,7 @@ impl crate::app::SmartMediaApp {
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(300));
                 let vram01 = smoothed_vram01();
                 let (v_used, v_total) = gpu_mem_mb().unwrap_or_default();
-                ui.label(format!("VRAM: {:.0}/{:.0} MiB", v_used, v_total)); 
+                icons::label(ui, svg::AME_GPU, format!("VRAM: {:.0}/{:.0} MiB", v_used, v_total));
                 ProgressBar::new(vram01)
                 .desired_width(100.)
                 .desired_height(3.)
@@ -300,7 +308,7 @@ impl crate::app::SmartMediaApp {
 
                 // System metrics (CPU, RAM, VRAM)
                 let cpu01 = smoothed_cpu01();
-                ui.label(format!("CPU: {:.2}%", cpu01 * 100.0));
+                icons::label(ui, svg::CPU, format!("CPU: {:.2}%", cpu01 * 100.0));
                 ProgressBar::new(cpu01)
                 .desired_width(100.)
                 .desired_height(3.)
@@ -311,9 +319,9 @@ impl crate::app::SmartMediaApp {
 
                 let ram01 = smoothed_ram01();
                 if let Some((used_mb, total_mb)) = system_mem_mb() {
-                    ui.label(format!("RAM: {:.0}/{:.0} MiB", used_mb, total_mb));
+                    icons::label(ui, svg::MEMORY, format!("RAM: {:.0}/{:.0} MiB", used_mb, total_mb));
                 } else {
-                    ui.label("RAM: n/a");
+                    icons::label(ui, svg::MEMORY, "RAM: n/a");
                 }
                 ProgressBar::new(ram01)
                 .desired_width(100.)
@@ -344,7 +352,7 @@ impl crate::app::SmartMediaApp {
                     }
                 }
                 let prog = if thumbs_total == 0 { 0.0 } else { thumbs_done as f32 / thumbs_total as f32 };
-                ui.label(format!("Thumbs: {thumbs_done}/{thumbs_total}"));
+                icons::label(ui, svg::AME_THUMBNAIL_GRID, format!("Thumbs: {thumbs_done}/{thumbs_total}"));
                 ProgressBar::new(prog)
                     .desired_width(100.)
                     .desired_height(3.)
@@ -422,18 +430,18 @@ impl crate::app::SmartMediaApp {
                         (all_img_cnt, all_vid_cnt, all_dir_cnt, all_total_size)
                     };
 
-                    ui.label(format!(
+                    icons::label(ui, svg::HARD_DRIVE, format!(
                         "Total Size: {}",
                         humansize::format_size(total_size, DECIMAL)
                     ));
                     ui.separator();
-                    ui.label(format!("Videos: {vid_cnt}"));
+                    icons::label(ui, svg::VIDEO_CAMERA, format!("Videos: {vid_cnt}"));
                     ui.separator();
-                    ui.label(format!("Images: {img_cnt}"));
+                    icons::label(ui, svg::IMAGE, format!("Images: {img_cnt}"));
                     ui.separator();
-                    ui.label(format!("Dirs: {dir_cnt}"));
+                    icons::label(ui, svg::FOLDER, format!("Dirs: {dir_cnt}"));
                     ui.separator();
-                    ui.label(format!("Filtered {global_filtered} of {global_total} (out: {filtered_out})"));
+                    icons::label(ui, svg::FUNNEL, format!("Filtered {global_filtered} of {global_total} (out: {filtered_out})"));
                     ui.separator();
                     ex.selection_menu(ui);
                     ui.separator();
@@ -444,3 +452,12 @@ impl crate::app::SmartMediaApp {
     }
 }
 
+/// Icon of a dockable tab by title.
+fn tab_icon(tab: &str) -> icons::Icon {
+    match tab {
+        "File Explorer" => svg::FOLDER_OPEN,
+        "Logs" => svg::TERMINAL_WINDOW,
+        "AI Refinements" => svg::AME_REFINE,
+        _ => svg::TABS,
+    }
+}

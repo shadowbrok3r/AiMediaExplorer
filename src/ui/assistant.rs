@@ -2,7 +2,7 @@ use egui_json_tree::{DefaultExpand, JsonTree, JsonTreeStyle, JsonTreeVisuals, To
 use egui::{style::StyleModifier, containers::menu::{MenuButton, MenuConfig}};
 use crossbeam::channel::{Receiver, Sender, unbounded, bounded};
 use egui_extras::syntax_highlighting::{CodeTheme, highlight};
-use crate::{UiSettings, ui::status::GlobalStatusIndicator};
+use crate::{UiSettings, icons::{self, svg}, ui::status::GlobalStatusIndicator};
 use crate::ai::openai_compat::OpenRouterModel;
 use std::collections::{HashMap, HashSet};
 use tokio::task::JoinHandle;
@@ -196,7 +196,7 @@ impl AssistantPanel {
         // TOP PANEL
         Panel::top("assistant_top").show(ui, |ui| {
             ui.horizontal(|ui| {
-                if ui.button("Model Options").clicked() {
+                if icons::button(ui, svg::SLIDERS_HORIZONTAL, "Model Options").clicked() {
                     self.open_model_opts = !self.open_model_opts;
                 }
 
@@ -215,14 +215,14 @@ impl AssistantPanel {
             MenuBar::new().config(menu_cfg).style(style).ui(ui, |ui| {
                 
                 // Plus menu to add attachments
-                ui.menu_button("➕", |ui| {
-                    if ui.button("Attach current selection").clicked() {
+                icons::icon_menu_button(ui, svg::PLUS, "Attach", |ui| {
+                    if icons::button(ui, svg::CURSOR_CLICK, "Attach current selection").clicked() {
                         if !explorer.current_thumb.path.is_empty() {
                             self.suppress_selected_attachment = false;
                         }
                         ui.close_kind(UiKind::Menu);
                     }
-                    if ui.button("Attach file…").clicked() {
+                    if icons::button(ui, svg::PAPERCLIP, "Attach file…").clicked() {
                         if let Some(file) = rfd::FileDialog::new()
                             .set_title("Attach image or file")
                             .pick_file()
@@ -237,12 +237,12 @@ impl AssistantPanel {
                 ui.separator();
                 ui.add_space(4.);
 
-                ui.menu_button("MCP Tools", |ui| {
+                icons::menu_button(ui, svg::AME_MCP, "MCP Tools", |ui| {
                     // Ping
                     ui.label(RichText::new("Ping (util.ping)").strong());
                     ui.horizontal(|ui| {
                         ui.add(TextEdit::singleline(&mut self.mcp_ping_text).hint_text("message"));
-                        if ui.button("Send").clicked() {
+                        if icons::button(ui, svg::PAPER_PLANE_RIGHT, "Send").clicked() {
                             let msg = self.mcp_ping_text.clone();
                             tokio::spawn(async move {
                                 match crate::ai::mcp::ping_tool(msg).await {
@@ -258,7 +258,7 @@ impl AssistantPanel {
                     ui.label(RichText::new("Media Search (media.search)").strong());
                     ui.horizontal(|ui| {
                         ui.add(TextEdit::singleline(&mut self.mcp_search_text).hint_text("query"));
-                        if ui.button("Run").clicked() {
+                        if icons::button(ui, svg::PLAY, "Run").clicked() {
                             let q = self.mcp_search_text.clone();
                             let tx_updates = explorer.viewer.ai_update_tx.clone();
                             tokio::spawn(async move {
@@ -295,7 +295,7 @@ impl AssistantPanel {
                     ui.separator();
                     // Describe
                     ui.label(RichText::new("Describe Selected (media.describe)").strong());
-                    if ui.button("Describe current selection").clicked() {
+                    if icons::button(ui, svg::AME_AI_DESCRIBE, "Describe current selection").clicked() {
                         let path = explorer.current_thumb.path.clone();
                         if !path.is_empty() {
                             tokio::spawn(async move {
@@ -320,7 +320,7 @@ impl AssistantPanel {
                 let style = StyleModifier::default();
                 style.apply(ui.style_mut());
                 let menu_cfg = MenuConfig::default().close_behavior(PopupCloseBehavior::CloseOnClickOutside).style(style);
-                MenuButton::new(menu_txt).config(menu_cfg).ui(ui, |ui| {
+                MenuButton::from_button(icons::button_widget(ui, svg::AME_MODEL, menu_txt)).config(menu_cfg).ui(ui, |ui| {
                     let mut settings = self.settings.clone();
                     ui.label("Endpoint (OpenAI-compatible base URL)");
                     ui.add(
@@ -334,7 +334,7 @@ impl AssistantPanel {
                     ui.label("Temperature");
                     ui.add(Slider::new(&mut self.temp, 0.0..=1.5).logarithmic(false));
                     ui.add_space(6.0);
-                    if ui.button("Save Settings").clicked() {
+                    if icons::button(ui, svg::FLOPPY_DISK, "Save Settings").clicked() {
                         crate::database::settings::save_settings(&settings);
                     }
                 });
@@ -366,7 +366,7 @@ impl AssistantPanel {
                 });
 
                 if self.selected_provider == "openrouter" {
-                    if Button::new("List OpenRouter models").ui(ui).on_hover_text("Fetch available models via OpenRouter").clicked() {
+                    if icons::button_widget(ui, svg::LIST_MAGNIFYING_GLASS, "List OpenRouter models").ui(ui).on_hover_text("Fetch available models via OpenRouter").clicked() {
                         self.show_models_modal = true;
                         self.models_list.clear();
                         self.models_json.clear();
@@ -422,12 +422,14 @@ impl AssistantPanel {
                     // Auto-attachment tag for current selection
                     let selected_path = explorer.current_thumb.path.clone();
                     if !selected_path.is_empty() && !self.suppress_selected_attachment {
-                        // show auto-selected tag by default; user can hide via ✕
+                        // show auto-selected tag by default; user can hide via the remove button
                         Frame::new().show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                ui.label(
+                                icons::label(
+                                    ui,
+                                    svg::PAPERCLIP,
                                     RichText::new(format!(
-                                        "📎 {}",
+                                        "{}",
                                         std::path::Path::new(&selected_path)
                                             .file_name()
                                             .and_then(|s| s.to_str())
@@ -435,7 +437,7 @@ impl AssistantPanel {
                                     ))
                                     .monospace(),
                                 );
-                                if ui.button("✕").on_hover_text("Remove").clicked() {
+                                if icons::icon_button(ui, svg::X, "Remove").clicked() {
                                     suppress_auto_selected = true;
                                 }
                             });
@@ -457,7 +459,7 @@ impl AssistantPanel {
                                     .and_then(|s| s.to_str())
                                     .unwrap_or(p);
                                 ui.label(RichText::new(format!(" {}", fname)).monospace());
-                                if ui.button("🗙").clicked() {
+                                if icons::icon_button(ui, svg::X, "Remove attachment").clicked() {
                                     remove_index = Some(i);
                                 }
                             });
@@ -474,18 +476,18 @@ impl AssistantPanel {
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     // Send / Stop / Regenerate icons
-                    if ui.button("⬈").on_hover_text("Send").clicked()
+                    if icons::icon_button(ui, svg::PAPER_PLANE_RIGHT, "Send").clicked()
                         && !self.prompt.trim().is_empty()
                     {
                         self.send_current_prompt(explorer);
                     }
-                    if ui.button("⏹").on_hover_text("Stop").clicked() {
+                    if icons::icon_button(ui, svg::STOP, "Stop").clicked() {
                         self.chat_streaming = false;
                         if let Some(h) = self.assistant_task.take() {
                             h.abort();
                         }
                     }
-                    if ui.button("↻").on_hover_text("Regenerate").clicked() {
+                    if icons::icon_button(ui, svg::AME_REGENERATE, "Regenerate").clicked() {
                         if let Some(last_user) = self
                             .messages
                             .iter()
@@ -529,7 +531,7 @@ impl AssistantPanel {
             if !recent_models_vec.is_empty() || last_used_model_opt.is_some() {
                 ui.vertical_centered(|ui| ui.heading(RichText::new("Recent Models").color(ui.style().visuals.error_fg_color)));
                 ui.horizontal(|ui| {
-                    if ui.button("Clear Recent Models").on_hover_text("Remove all stored recent models").clicked() {
+                    if icons::button(ui, svg::BROOM, "Clear Recent Models").on_hover_text("Remove all stored recent models").clicked() {
                         let mut s2 = self.settings.clone();
                         s2.recent_models.clear();
                         // Optionally also clear last_used_model; keep it if you want separate
@@ -575,14 +577,15 @@ impl AssistantPanel {
             ui.horizontal(|ui| {
                 ui.heading(RichText::new("Sessions").color(ui.style().visuals.error_fg_color));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.button(RichText::new("🗙").color(ui.style().visuals.error_fg_color)).on_hover_text("Double Click to Clear ALL Sessions").double_clicked() {
+                    let err_color = ui.style().visuals.error_fg_color;
+                    if icons::icon_button_tinted(ui, svg::TRASH, "Double Click to Clear ALL Sessions", err_color).double_clicked() {
                         self.messages.clear();
                         if let Some((title, store)) = self.sessions.get_mut(self.active_session) {
                             *store = self.messages.clone();
                             *title = format!("Chat {}", self.active_session + 1);
                         }
                     }
-                    if ui.button("➕").on_hover_text("Create a new chat session").clicked() {
+                    if icons::icon_button(ui, svg::AME_NEW_CHAT, "Create a new chat session").clicked() {
                         let new_title = format!("Chat {}", self.sessions.len() + 1);
                         tokio::spawn({
                             let title_clone = new_title.clone();
@@ -609,7 +612,7 @@ impl AssistantPanel {
                                 log::info!("Switching to session {i} '{title}'");
                             }
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if ui.button("🗙").on_hover_text("Delete this session").clicked() {
+                                if icons::icon_button(ui, svg::TRASH, "Delete this session").clicked() {
                                     // Defer deletion until after the list iteration
                                     // We can't mutate self.sessions while iterating; mark index
                                     // We'll handle it below the list rendering
@@ -905,10 +908,10 @@ impl AssistantPanel {
                         ui.separator();
                         ui.label("Sort");
                         let sort_label = match self.model_sort {
-                            ModelSort::NameAsc => "Name ⬆",
-                            ModelSort::NameDesc => "Name ⬇",
-                            ModelSort::PriceAsc => "Price ⬆",
-                            ModelSort::PriceDesc => "Price ⬇",
+                            ModelSort::NameAsc => "Name A-Z",
+                            ModelSort::NameDesc => "Name Z-A",
+                            ModelSort::PriceAsc => "Price low-high",
+                            ModelSort::PriceDesc => "Price high-low",
                         };
                         ComboBox::from_id_salt("model_sort_combo")
                             .selected_text(sort_label)
@@ -916,25 +919,25 @@ impl AssistantPanel {
                                 ui.selectable_value(
                                     &mut self.model_sort,
                                     ModelSort::NameAsc,
-                                    "Name ⬆",
+                                    icons::atoms(ui, svg::SORT_ASCENDING, "Name A-Z"),
                                 );
                                 ui.selectable_value(
                                     &mut self.model_sort,
                                     ModelSort::NameDesc,
-                                    "Name ⬇",
+                                    icons::atoms(ui, svg::SORT_DESCENDING, "Name Z-A"),
                                 );
                                 ui.selectable_value(
                                     &mut self.model_sort,
                                     ModelSort::PriceAsc,
-                                    "Price ⬆",
+                                    icons::atoms(ui, svg::SORT_ASCENDING, "Price low-high"),
                                 );
                                 ui.selectable_value(
                                     &mut self.model_sort,
                                     ModelSort::PriceDesc,
-                                    "Price ⬇",
+                                    icons::atoms(ui, svg::SORT_DESCENDING, "Price high-low"),
                                 );
                             });
-                        if ui.button("Refresh").clicked() {
+                        if icons::button(ui, svg::ARROW_CLOCKWISE, "Refresh").clicked() {
                             let settings = self.settings.clone();
                             let api_key =
                                 env_or(&settings.openrouter_api_key, "OPENROUTER_API_KEY");
@@ -1067,21 +1070,21 @@ impl AssistantPanel {
                         for model in shown {
                             let id = &model.id;
                             let is_open = self.models_open.contains(id);
-                            let toggle = if is_open { "⏷" } else { "▶" };
+                            let toggle = if is_open { svg::CARET_DOWN } else { svg::CARET_RIGHT };
                             let arch = model.architecture.as_ref();
-                            let mut icons = String::new();
+                            let mut modalities: Vec<icons::Icon> = Vec::new();
                             if let Some(a) = arch {
                                 if a.input_modalities.iter().any(|m| m.contains("text")) {
-                                    icons.push_str("🖹 ");
+                                    modalities.push(svg::FILE_TEXT);
                                 }
                                 if a.input_modalities.iter().any(|m| m.contains("image")) {
-                                    icons.push_str("🖼 ");
+                                    modalities.push(svg::IMAGE);
                                 }
                                 if a.input_modalities.iter().any(|m| m.contains("audio")) {
-                                    icons.push_str("🎵 ");
+                                    modalities.push(svg::MUSIC_NOTES);
                                 }
                                 if a.input_modalities.iter().any(|m| m.contains("video")) {
-                                    icons.push_str("🎬 ");
+                                    modalities.push(svg::VIDEO_CAMERA);
                                 }
                             }
                             let price_suffix = if let Some(pr) = &model.pricing {
@@ -1101,14 +1104,17 @@ impl AssistantPanel {
                             } else {
                                 String::new()
                             };
-                            let label_text = format!("{toggle} {id}");
-                            let prices = format!("{price_suffix} {icons}");
                             ui.horizontal(|ui| {
-                                let btn = Button::selectable(is_open, label_text)
+                                let tint = ui.visuals().text_color();
+                                let edge = icons::IconSize::Sm.px(ui);
+                                let accent = ui.style().visuals.error_fg_color;
+                                let mut right = Atoms::new(RichText::new(price_suffix.clone()).color(accent));
+                                for modality in &modalities {
+                                    right.push_right(modality.image(edge).tint(accent));
+                                }
+                                let btn = Button::selectable(is_open, (toggle.image(edge).tint(tint), id.clone()))
                                     .min_size([ui.available_width() / 1.1, 15.].into())
-                                    .right_text(
-                                        RichText::new(prices).color(ui.style().visuals.error_fg_color),
-                                    )
+                                    .right_text(right)
                                     .ui(ui);
                                 if btn.clicked() {
                                     if is_open {
@@ -1118,8 +1124,7 @@ impl AssistantPanel {
                                     }
                                 }
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    if ui
-                                        .button("Use")
+                                    if icons::button(ui, svg::CHECK, "Use")
                                         .on_hover_text("Set as current model")
                                         .clicked()
                                     {
@@ -1138,7 +1143,7 @@ impl AssistantPanel {
                                             let _ = tx_clone.try_send((id, model_title));
                                         });
                                     }
-                                    if ui.button("Copy").on_hover_text("Copy model id").clicked() {
+                                    if icons::button(ui, svg::COPY, "Copy").on_hover_text("Copy model id").clicked() {
                                         ui.ctx().copy_text(id.clone());
                                     }
                                 });
@@ -1629,13 +1634,13 @@ impl AssistantPanel {
                         let is_long = content_clone.len() > 1200 || content_clone.lines().count() > 20;
                         if is_long {
                             let is_collapsed = self.collapsed.contains(&idx);
-                            let label = if is_collapsed { "Expand" } else { "Collapse" };
-                            if ui.button(label).clicked() {
+                            let (label, label_icon) = if is_collapsed { ("Expand", svg::CARET_DOWN) } else { ("Collapse", svg::CARET_UP) };
+                            if icons::button(ui, label_icon, label).clicked() {
                                 if is_collapsed { self.collapsed.remove(&idx); } else { self.collapsed.insert(idx); }
                             }
                             ui.separator();
                         }
-                        if ui.button("Copy").clicked() { ui.ctx().copy_text(content_clone.clone()); }
+                        if icons::button(ui, svg::COPY, "Copy").clicked() { ui.ctx().copy_text(content_clone.clone()); }
                         if let Some(atts) = &msg.attachments {
                             if !atts.is_empty() {
                                 ui.add_space(6.0);
@@ -1644,7 +1649,7 @@ impl AssistantPanel {
                                         if let Some(tex) = self.thumb_cache.get(p) {
                                             ui.image((tex.id(), egui::vec2(40.0, 40.0))).on_hover_text(p);
                                         } else {
-                                            if ui.button(RichText::new("[att]").small()).on_hover_text(p).clicked() {
+                                            if icons::small_button(ui, svg::PAPERCLIP, RichText::new("att").small()).on_hover_text(p).clicked() {
                                                 self.request_db_thumb(p);
                                             }
                                         }
@@ -1760,7 +1765,7 @@ impl AssistantPanel {
                 Seg::Code { lang, code } => {
                     // Header with copy + language
                     ui.horizontal(|ui| {
-                        if ui.button("Copy").clicked() {
+                        if icons::button(ui, svg::COPY, "Copy").clicked() {
                             ui.ctx().copy_text(code.clone());
                         }
                         if !lang.is_empty() {

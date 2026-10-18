@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none" stroke="#ffffff" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" data-glyph="DATABASE">
+<defs><mask id="cut" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256"><rect width="256" height="256" fill="#ffffff" stroke="none"/><path d="M200,144V224M172,196L200,224L228,196" fill="#000000" stroke="#000000" stroke-width="40"/></mask></defs>
+<g mask="url(#cut)">
+<ellipse cx="104" cy="64" rx="64" ry="24"/>
+<path d="M40,64V148a64,24,0,0,0,128,0V64"/>
+<path d="M40,106a64,24,0,0,0,128,0"/>
+</g>
+<path d="M200,144V224M172,196L200,224L228,196"/>
+</svg>

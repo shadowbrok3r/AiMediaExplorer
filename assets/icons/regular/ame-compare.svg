@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none" stroke="#ffffff" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" data-glyph="COLUMNS">
+<rect x="32" y="48" width="192" height="160" rx="8"/>
+<path d="M128,48L128,208"/>
+<path d="M32,176L80,128L112,160L128,144"/>
+<path d="M176,96Q183.04,120.96 208,128Q183.04,135.04 176,160Q168.96,135.04 144,128Q168.96,120.96 176,96Z"/>
+</svg>

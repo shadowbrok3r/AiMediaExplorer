@@ -1,0 +1,16 @@
+Icon assets
+
+regular/*.svg (except ame-*.svg) and duo/*.svg (except ame-*.svg) are derived
+from Phosphor Icons, @phosphor-icons/core 2.1.1, MIT License, Copyright (c)
+2023 Phosphor Icons. See LICENSE in this directory.
+https://github.com/phosphor-icons/core
+
+Modifications: fill="currentColor" is replaced with #ffffff so the icons can be
+tinted at paint time. duo/<name>.svg holds only the opacity="0.2" back layer of
+duotone/<name>-duotone.svg, with the opacity attribute removed.
+
+regular/ame-*.svg and duo/ame-*.svg are original Smart Media Explorer glyphs
+drawn on the same 256 grid and stroke weight. ame-filter-group, ame-archive-browse
+and ame-regenerate reuse the Phosphor funnel, archive and arrow-clockwise
+outlines as their base shape. Every ame-*.svg names the Phosphor glyph used for
+font fallback in its root data-glyph attribute.

@@ -1,4 +1,5 @@
 use eframe::egui::*;
+use crate::icons::{self, svg};
 use crate::ui::status::GlobalStatusIndicator;
 use base64::Engine as _;
 use std::collections::HashMap;
@@ -95,7 +96,7 @@ impl ImageEditPanel {
             let has_result = &mut false;
             // Model controls
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Source:").underline().strong());
+                icons::label(ui, svg::FILE_IMAGE, RichText::new("Source:").underline().strong());
                 ui.monospace(path);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let can_load = !self.loading_model && !self.model_repo.trim().is_empty();
@@ -112,7 +113,7 @@ impl ImageEditPanel {
                         }
                     } else if let Some(err) = &self.model_error { ui.colored_label(Color32::RED, err); }
 
-                    if ui.add_enabled(can_load, Button::new(if self.model_loaded { "Reload Model" } else { "Load Model" })).clicked() {
+                    if ui.add_enabled(can_load, icons::button_widget(ui, if self.model_loaded { svg::ARROWS_CLOCKWISE } else { svg::AME_MODEL }, if self.model_loaded { "Reload Model" } else { "Load Model" })).clicked() {
                         self.loading_model = true;
                         self.model_error = None;
                         crate::ui::status::QWEN_EDIT_STATUS.set_state(crate::ui::status::StatusState::Initializing, "Loading model");
@@ -177,12 +178,12 @@ impl ImageEditPanel {
                     }
                     let hint = if self.model_repo.trim().is_empty() { "e.g. Qwen/Qwen-Image-Edit" } else { "" };
                     TextEdit::singleline(&mut self.model_repo).hint_text(hint).desired_width(250.).ui(ui);
-                    ui.label("Model repo:");
+                    icons::label(ui, svg::AME_MODEL, "Model repo:");
                 });
             });
             // GGUF controls row
             ui.horizontal(|ui| {
-                ui.label(RichText::new("GGUF from repo:").underline());
+                icons::label(ui, svg::CLOUD_ARROW_DOWN, RichText::new("GGUF from repo:").underline());
                 TextEdit::singleline(&mut self.gguf_repo)
                     .hint_text("e.g. QuantStack/Qwen-Image-Edit-GGUF")
                     .desired_width(260.)
@@ -192,7 +193,7 @@ impl ImageEditPanel {
                     .desired_width(220.)
                     .ui(ui);
                 let can_fetch = !self.gguf_fetching && !self.gguf_repo.trim().is_empty() && !self.gguf_file.trim().is_empty();
-                if ui.add_enabled(can_fetch, Button::new("Fetch GGUF")).clicked() {
+                if ui.add_enabled(can_fetch, icons::button_widget(ui, svg::CLOUD_ARROW_DOWN, "Fetch GGUF")).clicked() {
                     self.gguf_fetching = true;
                     self.gguf_status = Some("Downloading…".to_string());
                     let repo = self.gguf_repo.clone();
@@ -231,9 +232,9 @@ impl ImageEditPanel {
             ui.separator();
             ui.add_space(6.0);
 
-            ui.label("Prompt:");
+            icons::label(ui, svg::CHAT_TEXT, "Prompt:");
             TextEdit::singleline(&mut self.prompt).desired_width(400.).ui(ui);
-            ui.label("Negative:");
+            icons::label(ui, svg::PROHIBIT, "Negative:");
             TextEdit::singleline(&mut self.negative_prompt).desired_width(400.).ui(ui);
 
             Slider::new(&mut self.guidance_scale, 1.0..=12.0).text("Guidance").ui(ui);
@@ -250,7 +251,7 @@ impl ImageEditPanel {
             
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                if ui.add_enabled(!self.loading_model && self.current_path.is_some(), Button::new("Run Edit")).clicked() {
+                if ui.add_enabled(!self.loading_model && self.current_path.is_some(), icons::button_widget(ui, svg::AME_IMAGE_EDIT, "Run Edit")).clicked() {
                     // Lazily load the model if not loaded yet, preferring GGUF override if present
                     if !self.model_loaded {
                         self.loading_model = true;
@@ -410,10 +411,10 @@ impl ImageEditPanel {
                     }
                 }
                 ui.horizontal(|ui| {
-                    if ui.button("Cancel Run").clicked() {
+                    if icons::button(ui, svg::STOP, "Cancel Run").clicked() {
                         if let Some(f) = &self.cancel_flag { f.store(true, std::sync::atomic::Ordering::Relaxed); }
                     }
-                    if *has_result && ui.button("Save Result As…").clicked() {
+                    if *has_result && icons::button(ui, svg::FLOPPY_DISK, "Save Result As…").clicked() {
                         // Offer a save dialog and write PNG bytes from cache
                         if let Some(file) = rfd::FileDialog::new()
                             .set_title("Save edited image as PNG")
@@ -429,10 +430,10 @@ impl ImageEditPanel {
                         }
                     }
                 });
-                if ui.button("Open Source Folder").clicked() {
+                if icons::button(ui, svg::AME_REVEAL_IN_EXPLORER, "Open Source Folder").clicked() {
                     if let Some(pb) = std::path::Path::new(path).parent() { let _ = open::that(pb); }
                 }
-                if ui.button("Open Source File").clicked() { let _ = open::that(path); }
+                if icons::button(ui, svg::ARROW_SQUARE_OUT, "Open Source File").clicked() { let _ = open::that(path); }
             });
             ui.separator();
             ui.columns(2, |ui| {
@@ -491,7 +492,7 @@ impl ImageEditPanel {
                         let key = format!("imageedit::preview_step::{}", path);
                         if let Ok(cache) = self.thumb_cache.lock() {
                             if let Some(bytes_arc) = cache.get(&key) {
-                                ui.label(RichText::new("Live Preview:").underline().strong());
+                                icons::label(ui, svg::EYE, RichText::new("Live Preview:").underline().strong());
                                 let img_src = eframe::egui::ImageSource::Bytes {
                                     uri: std::borrow::Cow::from(format!("bytes://{}", key)),
                                     bytes: eframe::egui::load::Bytes::Shared(bytes_arc.clone()),
@@ -507,7 +508,7 @@ impl ImageEditPanel {
                         if let Some(bytes_arc) = cache.get(&result_key) {
                             *has_result = true;
                             ui.separator();
-                            ui.label(RichText::new("Result:").underline().strong());
+                            icons::label(ui, svg::IMAGE, RichText::new("Result:").underline().strong());
                             let img_src = eframe::egui::ImageSource::Bytes {
                                 uri: std::borrow::Cow::from(format!("bytes://{}", result_key)),
                                 bytes: eframe::egui::load::Bytes::Shared(bytes_arc.clone()),

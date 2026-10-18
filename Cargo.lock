@@ -2244,6 +2244,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui-phosphor"
+version = "0.14.0"
+source = "git+https://github.com/shadowbrok3r/egui-phosphor?branch=egui-037#7275d267f6a615004784d57bef7f39d619288739"
+dependencies = [
+ "egui",
+]
+
+[[package]]
 name = "egui-toast"
 version = "0.22.0"
 source = "git+https://github.com/shadowbrok3r/egui-toast?branch=egui-037#552ef27599b61426e24eb6ca9ee6c0b02dfc7893"
@@ -8291,6 +8299,7 @@ dependencies = [
  "eframe",
  "egui",
  "egui-data-table",
+ "egui-phosphor",
  "egui-toast",
  "egui_dock",
  "egui_extras",
@@ -8317,6 +8326,7 @@ dependencies = [
  "rayon",
  "regex",
  "reqwest 0.13.5",
+ "resvg",
  "rfd",
  "rmcp",
  "safetensors 0.8.0",

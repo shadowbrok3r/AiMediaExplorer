@@ -1,4 +1,5 @@
 use eframe::egui::*;
+use crate::icons::{self, svg};
 use crate::ui::status::GlobalStatusIndicator;
 use crossbeam::channel::Sender;
 use once_cell::sync::Lazy;
@@ -71,14 +72,14 @@ impl RefinementsPanel {
                 if set.is_empty() { self.limit_paths = None; } else { self.limit_paths = Some(set); }
             }
         }
-        ui.heading("AI Refinements");
+        icons::heading(ui, svg::AME_REFINE, "AI Refinements");
         ui.label("Generate proposed improvements for categories/tags/captions/descriptions. If a selection scope is active, only those files are processed.");
         if let Some(set) = self.limit_paths.as_ref() {
             let scope_len = set.len();
             let mut clear = false;
             ui.horizontal(|ui| {
                 ui.colored_label(ui.style().visuals.warn_fg_color, format!("Selection scope: {} items", scope_len));
-                if ui.button("Clear Scope").clicked() { clear = true; }
+                if icons::button(ui, svg::X_CIRCLE, "Clear Scope").clicked() { clear = true; }
             });
             if clear { self.limit_paths = None; }
         }
@@ -116,7 +117,7 @@ impl RefinementsPanel {
                 ui.selectable_value(&mut self.reranker_choice, crate::ai::refine::RerankerType::QwenReranker, "Qwen (placeholder)");
             });
             
-            if ui.add_enabled(!self.generating, Button::new("Generate Proposals")).clicked() {
+            if ui.add_enabled(!self.generating, icons::button_widget(ui, svg::AME_PROPOSAL, "Generate Proposals")).clicked() {
                 self.generating = true;
                 self.proposals.clear();
                 let sel = self.reranker_choice; // capture
@@ -371,14 +372,14 @@ impl RefinementsPanel {
                     crate::ui::status::RERANK_STATUS.set_state(crate::ui::status::StatusState::Idle, "Done");
                 });
             }
-            if ui.button("Clear").clicked() {
+            if icons::button(ui, svg::BROOM, "Clear").clicked() {
                 self.proposals.clear();
                 self.generating = false;
             }
             ui.add_sized([240.0, 20.0], TextEdit::singleline(&mut self.filter_text).hint_text("Filter by tag/category/path"));
         
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.button("Accept All").clicked() {
+                if icons::button(ui, svg::CHECKS, "Accept All").clicked() {
                     let to_apply = self.proposals.clone();
                     let toast_tx = self.toast_tx.clone();
                     tokio::spawn(async move {
@@ -392,9 +393,9 @@ impl RefinementsPanel {
                         let _ = toast_tx.send((egui_toast::ToastKind::Success, format!("Accepted {ok}/{total} proposals")));
                     });
                 }
-                if ui.button("Deselect All").clicked() { for p in &mut self.proposals { p.selected = false; } }
-                if ui.button("Select All").clicked() { for p in &mut self.proposals { p.selected = true; } }
-                if ui.button("Accept Selected").clicked() {
+                if icons::button(ui, svg::MINUS_CIRCLE, "Deselect All").clicked() { for p in &mut self.proposals { p.selected = false; } }
+                if icons::button(ui, svg::LIST_CHECKS, "Select All").clicked() { for p in &mut self.proposals { p.selected = true; } }
+                if icons::button(ui, svg::CHECK_CIRCLE, "Accept Selected").clicked() {
                     let to_apply: Vec<_> = self.proposals.iter().filter(|p| p.selected).cloned().collect();
                     let toast_tx = self.toast_tx.clone();
                     tokio::spawn(async move {
@@ -438,16 +439,16 @@ impl RefinementsPanel {
 
                     ui.columns(2, |ui| {
                         ui[0].vertical_centered(|ui| {
-                            ui.heading("Current");
+                            icons::heading(ui, svg::FILE_TEXT, "Current");
                             ui.separator();
                         });
                         ui[1].vertical_centered(|ui| {
-                            ui.heading("Proposed");
+                            icons::heading(ui, svg::SPARKLE, "Proposed");
                             ui.separator();
                         });
                     });
 
-                    ui.vertical_centered(|ui| ui.heading("Category"));
+                    ui.vertical_centered(|ui| icons::heading(ui, svg::AME_CATEGORY, "Category"));
                     if p.new_category.is_some() {
                         ui.columns(2, |ui| {
                             ui[0].label(format!("{:?}", p.current_category));
@@ -462,7 +463,7 @@ impl RefinementsPanel {
                         });
                     }
 
-                    ui.vertical_centered(|ui| ui.heading("Caption"));
+                    ui.vertical_centered(|ui| icons::heading(ui, svg::CHAT_TEXT, "Caption"));
                     if p.current_caption.is_some() || p.new_caption.is_some() {
                         ui.separator();
                         ui.columns(2, |ui| {
@@ -471,7 +472,7 @@ impl RefinementsPanel {
                         });
                     }
 
-                    ui.vertical_centered(|ui| ui.heading("Description"));
+                    ui.vertical_centered(|ui| icons::heading(ui, svg::AME_AI_DESCRIBE, "Description"));
                     if p.current_description.is_some() || p.new_description.is_some() {
                         ui.separator();
                         ui.columns(2, |ui| {
@@ -482,7 +483,7 @@ impl RefinementsPanel {
 
                     ui.separator();
                     ui.horizontal(|ui| {
-                        if ui.button("Accept").clicked() {
+                        if icons::button(ui, svg::CHECK, "Accept").clicked() {
                             let path = p.path.clone();
                             let cat = p.new_category.clone();
                             let tags = p.new_tags.clone();
@@ -511,7 +512,7 @@ impl RefinementsPanel {
                                 }
                             });
                         }
-                        ui.add_enabled(false, Button::new("Reject"));
+                        ui.add_enabled(false, icons::button_widget(ui, svg::X, "Reject"));
                     });
                 });
                 ui.separator();

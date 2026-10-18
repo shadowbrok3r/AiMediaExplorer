@@ -6,7 +6,8 @@ build = "build.rs"
 
 [dependencies]
 eframe = { version="0.37.0", features=["persistence", "serde",  "default_fonts", "glow", "x11", "clipboard"], default-features=false }
-egui_extras = { version = "0.37.0", features = ["datepicker", "syntect", "serde", "image", "all_loaders" ]}
+egui_extras = { version = "0.37.0", features = ["datepicker", "syntect", "serde", "image", "svg", "all_loaders" ]}
+egui-phosphor = { git = "https://github.com/shadowbrok3r/egui-phosphor", branch = "egui-037", default-features = false, features = ["regular"] }
 egui-data-table = { git = "https://github.com/shadowbrok3r/egui-data-table", branch = "egui-037", features = ["persistency"]}
 egui_dock = { git = "https://github.com/shadowbrok3r/egui_dock", branch = "egui-037", features = ["serde"] }
 egui_logger = "0.13"
@@ -61,6 +62,9 @@ rmcp = { version = "3.5.1", features = ["server", "transport-io", "schemars"]}
 egui_json_tree = { git = "https://github.com/shadowbrok3r/egui_json_tree", branch = "egui-037", features = ["serde_json"] }
 
 ffmpeg-next = { version = "9", optional = true }
+
+[dev-dependencies]
+resvg = { version = "0.45", default-features = false }
 
 [features]
 cpu = []

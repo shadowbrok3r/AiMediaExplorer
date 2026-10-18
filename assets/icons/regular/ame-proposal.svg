@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none" stroke="#ffffff" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" data-glyph="CLIPBOARD_TEXT">
+<defs><mask id="cut" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256"><rect width="256" height="256" fill="#ffffff" stroke="none"/><rect x="88" y="32" width="80" height="40" rx="8" fill="#000000" stroke="#000000" stroke-width="40"/><path d="M168,160Q174.16,181.84 196,188Q174.16,194.16 168,216Q161.84,194.16 140,188Q161.84,181.84 168,160Z" fill="#000000" stroke="#000000" stroke-width="40"/></mask></defs>
+<g mask="url(#cut)">
+<rect x="48" y="48" width="160" height="176" rx="8"/>
+<path d="M88,116L168,116"/>
+<path d="M88,152L120,152"/>
+</g>
+<rect x="88" y="32" width="80" height="40" rx="8"/>
+<path d="M168,160Q174.16,181.84 196,188Q174.16,194.16 168,216Q161.84,194.16 140,188Q161.84,181.84 168,160Z"/>
+</svg>

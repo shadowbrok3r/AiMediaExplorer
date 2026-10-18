@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none" stroke="#ffffff" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" data-glyph="IMAGE">
+<defs><mask id="cut" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256"><rect width="256" height="256" fill="#ffffff" stroke="none"/><path d="M200,32Q205.28,50.72 224,56Q205.28,61.28 200,80Q194.72,61.28 176,56Q194.72,50.72 200,32Z" fill="#000000" stroke="#000000" stroke-width="40"/></mask></defs>
+<g mask="url(#cut)">
+<rect x="32" y="40" width="192" height="112" rx="8"/>
+<path d="M32,136L72,96L112,136L136,112L176,152"/>
+<path d="M32,188L184,188"/>
+<path d="M32,220L128,220"/>
+</g>
+<path d="M200,32Q205.28,50.72 224,56Q205.28,61.28 200,80Q194.72,61.28 176,56Q194.72,50.72 200,32Z"/>
+</svg>

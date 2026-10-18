@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none" stroke="#ffffff" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" data-glyph="SLIDERS_HORIZONTAL">
+<defs><mask id="cut" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256"><rect width="256" height="256" fill="#ffffff" stroke="none"/><path d="M136,54Q143.48,80.52 170,88Q143.48,95.48 136,122Q128.52,95.48 102,88Q128.52,80.52 136,54Z" fill="#000000" stroke="#000000" stroke-width="40"/><circle cx="116" cy="168" r="22" fill="#000000" stroke="#000000" stroke-width="40"/></mask></defs>
+<g mask="url(#cut)">
+<path d="M32,88L224,88"/>
+<path d="M32,168L224,168"/>
+</g>
+<path d="M136,54Q143.48,80.52 170,88Q143.48,95.48 136,122Q128.52,95.48 102,88Q128.52,80.52 136,54Z"/>
+<circle cx="116" cy="168" r="22"/>
+</svg>

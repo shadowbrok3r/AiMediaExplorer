@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none" stroke="#ffffff" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" data-glyph="BROWSERS">
+<defs><mask id="cut" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256"><rect width="256" height="256" fill="#ffffff" stroke="none"/><circle cx="172" cy="164" r="38" fill="#000000" stroke="#000000" stroke-width="40"/><path d="M172,146V182M154,164H190" fill="#000000" stroke="#000000" stroke-width="40"/></mask></defs>
+<g mask="url(#cut)">
+<rect x="32" y="48" width="192" height="160" rx="12"/>
+<path d="M32,96H224M112,48V96"/>
+</g>
+<circle cx="172" cy="164" r="38"/>
+<path d="M172,146V182M154,164H190"/>
+</svg>

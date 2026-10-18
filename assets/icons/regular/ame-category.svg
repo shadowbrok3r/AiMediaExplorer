@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none" stroke="#ffffff" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" data-glyph="FOLDER_SIMPLE">
+<defs><mask id="cut" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256"><rect width="256" height="256" fill="#ffffff" stroke="none"/><path d="M148,184L176,152H224V216H176Z" fill="#000000" stroke="#000000" stroke-width="40"/><circle cx="184" cy="184" r="9" fill="#000000" stroke="#000000" stroke-width="40"/></mask></defs>
+<g mask="url(#cut)">
+<path d="M192,176H40a8,8,0,0,1,-8,-8V48a8,8,0,0,1,8,-8H92L114,62H192a8,8,0,0,1,8,8V168a8,8,0,0,1,-8,8Z"/>
+</g>
+<path d="M148,184L176,152H224V216H176Z"/>
+<circle cx="184" cy="184" r="9" fill="#ffffff" stroke="none"/>
+</svg>

@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none" stroke="#ffffff" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" data-glyph="SCAN">
+<path d="M32,80V48a16,16,0,0,1,16-16H80M176,32H208a16,16,0,0,1,16,16V80M224,176V208a16,16,0,0,1-16,16H176M80,224H48a16,16,0,0,1-16-16V176"/>
+<path d="M176,168H80a8,8,0,0,1,-8,-8V96a8,8,0,0,1,8,-8H108L122,102H176a8,8,0,0,1,8,8V160a8,8,0,0,1,-8,8Z"/>
+</svg>
