@@ -1,8 +1,6 @@
 use crate::{save_settings_in_db, ui::status::{GlobalStatusIndicator, StatusState, CLIP_STATUS}, SETTINGS_CACHE};
 use eframe::egui::*;
 
-const STYLE: &str = r#"{"override_text_style":null,"override_font_id":null,"override_text_valign":"Center","text_styles":{"Small":{"size":9.0,"family":"Proportional"},"Body":{"size":13.0,"family":"Proportional"},"Monospace":{"size":13.0,"family":"Monospace"},"Button":{"size":13.0,"family":"Proportional"},"Heading":{"size":18.0,"family":"Proportional"}},"drag_value_text_style":"Button","wrap_mode":null,"spacing":{"item_spacing":{"x":3.0,"y":3.0},"window_margin":{"left":2,"right":2,"top":2,"bottom":2},"button_padding":{"x":4.0,"y":1.0},"menu_margin":{"left":5,"right":5,"top":5,"bottom":5},"indent":18.0,"interact_size":{"x":40.0,"y":18.0},"slider_width":100.0,"slider_rail_height":8.0,"combo_width":100.0,"text_edit_width":280.0,"extra_text_line_spacing":0.0,"icon_width":14.0,"icon_width_inner":8.0,"icon_spacing":4.0,"default_area_size":{"x":600.0,"y":400.0},"tooltip_width":500.0,"menu_width":400.0,"menu_spacing":2.0,"indent_ends_with_horizontal_line":false,"combo_height":200.0,"scroll":{"floating":true,"content_margin":{"left":0,"right":0,"top":0,"bottom":0},"bar_width":10.0,"handle_min_length":12.0,"bar_inner_margin":4.0,"bar_outer_margin":0.0,"floating_width":2.0,"floating_allocated_width":0.0,"foreground_color":true,"dormant_background_opacity":0.0,"active_background_opacity":0.4,"interact_background_opacity":0.7,"dormant_handle_opacity":0.0,"active_handle_opacity":0.6,"interact_handle_opacity":1.0,"fade":{"strength":0.0,"size":0.0}}},"interaction":{"interact_radius":5.0,"resize_grab_radius_side":3.0,"resize_grab_radius_corner":10.0,"show_tooltips_only_when_still":true,"tooltip_delay":0.5,"tooltip_grace_time":0.2,"selectable_labels":true,"multi_widget_text_select":true},"visuals":{"dark_mode":true,"text_options":{"max_texture_side":2048,"color_transfer_function":"TwoCoverageMinusCoverageSq","font_hinting":true,"subpixel_binning":true},"override_text_color":[232,232,232,255],"weak_text_alpha":0.6,"weak_text_color":null,"widgets":{"noninteractive":{"bg_fill":[3,3,3,255],"weak_bg_fill":[2,2,2,9],"bg_stroke":{"width":1.0,"color":[30,30,32,66]},"corner_radius":{"nw":2,"ne":2,"sw":2,"se":2},"fg_stroke":{"width":1.0,"color":[232,232,232,255]},"expansion":0.0},"inactive":{"bg_fill":[11,11,17,255],"weak_bg_fill":[7,7,11,18],"bg_stroke":{"width":1.0,"color":[63,64,78,107]},"corner_radius":{"nw":2,"ne":2,"sw":2,"se":2},"fg_stroke":{"width":1.0,"color":[232,232,232,255]},"expansion":0.0},"hovered":{"bg_fill":[26,24,42,255],"weak_bg_fill":[19,18,31,36],"bg_stroke":{"width":1.0,"color":[125,122,166,184]},"corner_radius":{"nw":3,"ne":3,"sw":3,"se":3},"fg_stroke":{"width":1.5,"color":[232,232,232,255]},"expansion":0.0},"active":{"bg_fill":[61,13,31,255],"weak_bg_fill":[43,10,22,43],"bg_stroke":{"width":1.0,"color":[230,108,153,230]},"corner_radius":{"nw":2,"ne":2,"sw":2,"se":2},"fg_stroke":{"width":2.0,"color":[232,232,232,255]},"expansion":0.0},"open":{"bg_fill":[8,8,11,255],"weak_bg_fill":[6,6,8,28],"bg_stroke":{"width":1.0,"color":[69,68,77,148]},"corner_radius":{"nw":2,"ne":2,"sw":2,"se":2},"fg_stroke":{"width":1.0,"color":[232,232,232,255]},"expansion":0.0}},"selection":{"bg_fill":[75,42,82,82],"stroke":{"width":1.0,"color":[204,145,217,217]}},"ime_composition":{"active_underline_stroke":{"width":2.0,"color":[192,222,255,255]},"inactive_underline_stroke":{"width":2.0,"color":[96,111,128,128]},"legacy_visuals":true},"hyperlink_color":[84,71,226,255],"faint_bg_color":[16,16,16,255],"extreme_bg_color":[13,13,18,255],"text_edit_bg_color":null,"code_bg_color":[6,6,6,255],"warn_fg_color":[76,219,255,255],"error_fg_color":[255,73,137,255],"window_corner_radius":{"nw":4,"ne":4,"sw":4,"se":4},"window_shadow":{"offset":[0,0],"blur":20,"spread":2,"color":[20,15,46,97]},"window_fill":[3,3,7,140],"window_stroke":{"width":1.0,"color":[75,70,120,140]},"window_highlight_topmost":true,"menu_corner_radius":{"nw":6,"ne":6,"sw":6,"se":6},"panel_fill":[0,0,0,255],"popup_shadow":{"offset":[0,0],"blur":14,"spread":1,"color":[16,12,36,77]},"resize_corner_size":12.0,"text_cursor":{"stroke":{"width":2.0,"color":[189,221,255,255]},"preview":false,"blink":true,"on_duration":0.5,"off_duration":0.5},"clip_rect_margin":3.0,"button_frame":true,"collapsing_header_frame":true,"indent_has_left_vline":true,"striped":true,"slider_trailing_fill":true,"handle_shape":{"Rect":{"aspect_ratio":0.75}},"interact_cursor":null,"image_loading_spinners":true,"numeric_color_space":"GammaByte","disabled_alpha":0.5},"animation_time":0.1,"explanation_tooltips":false,"url_in_tooltip":true,"always_scroll_the_only_direction":false,"scroll_animation":{"points_per_second":5000.0,"duration":{"min":0.1,"max":0.3}},"compact_menu_style":true}"#;
-
 impl crate::app::SmartMediaContext {
     pub fn receive(&mut self, ctx: &eframe::egui::Context) {
         Area::new(Id::unique("toasts_overlay"))
@@ -35,19 +33,16 @@ impl crate::app::SmartMediaContext {
                 log::info!("No database found at configured path, showing selection modal");
             }
             
-            match serde_json::from_str::<eframe::egui::Style>(STYLE) {
-                Ok(theme) => {
-                    ctx.set_global_style(std::sync::Arc::new(theme));
-                }
-                Err(e) => log::info!("Error setting theme: {e:?}")
-            };
-
             tokio::spawn(async move {
                 if let Err(e) = crate::ai::mcp::serve_stdio_background().await {
                     log::warn!("[MCP] stdio server not started: {e}");
                 }
             });
             self.first_run = false;
+        }
+
+        for request in crate::theme::debug_panel::take_toast_requests() {
+            let _ = self.toast_tx.try_send(request);
         }
 
         while let Ok((kind, msg)) = self.toast_rx.try_recv() {
@@ -65,13 +60,7 @@ impl crate::app::SmartMediaContext {
             self.file_explorer.viewer.ui_settings = self.ui_settings.clone();
             self.assistant.set_ui_settings(self.ui_settings.clone());
             self.assistant_window_open = true;
-            ctx.options_mut(|o| *o = opts);
-            match serde_json::from_str::<eframe::egui::Style>(STYLE) {
-                Ok(theme) => {
-                    ctx.set_global_style(std::sync::Arc::new(theme));
-                }
-                Err(e) => log::info!("Error setting theme: {e:?}")
-            };
+            crate::theme::apply_preferences(ctx, opts);
             // Sync atomics to current settings
             let enable_clip = self.ui_settings.auto_clip_embeddings.clone();
             crate::ai::GLOBAL_AI_ENGINE.auto_descriptions_enabled.store(self.ui_settings.auto_indexing, std::sync::atomic::Ordering::Relaxed);
@@ -798,23 +787,16 @@ impl crate::app::SmartMediaContext {
             .show(ui, |ui| {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui.button("Save").clicked() {
-                        let mut new_opts = ctx.options(|o| o.clone());
-                        match serde_json::from_str::<eframe::egui::Style>(STYLE) {
-                            Ok(theme) => {
-                                new_opts.dark_style = std::sync::Arc::new(theme);
-                                self.ui_settings.egui_preferences = new_opts;
-                                let s = self.ui_settings.clone();
-                                let tx = self.toast_tx.clone();
-                                tokio::spawn(async move {
-                                    match save_settings_in_db(s).await {
-                                        Ok(_) => { let _ = tx.try_send((egui_toast::ToastKind::Success, "Egui settings saved".into())); },
-                                        Err(e) => { let _ = tx.try_send((egui_toast::ToastKind::Error, format!("Failed to save Egui settings: {e}"))); },
-                                    }
-                                });
-                                ui.close();
+                        self.ui_settings.egui_preferences = ctx.options(|o| o.clone());
+                        let s = self.ui_settings.clone();
+                        let tx = self.toast_tx.clone();
+                        tokio::spawn(async move {
+                            match save_settings_in_db(s).await {
+                                Ok(_) => { let _ = tx.try_send((egui_toast::ToastKind::Success, "Egui settings saved".into())); },
+                                Err(e) => { let _ = tx.try_send((egui_toast::ToastKind::Error, format!("Failed to save Egui settings: {e}"))); },
                             }
-                            Err(e) => log::info!("Error setting theme: {e:?}")
-                        };
+                        });
+                        ui.close();
                     }
                 });
             });
@@ -876,7 +858,7 @@ impl crate::app::SmartMediaContext {
                     // Show any connection error
                     if let Some(ref err) = self.db_connection_error {
                         ui.add_space(8.0);
-                        ui.colored_label(Color32::RED, format!("❌ Connection failed: {}", err));
+                        ui.colored_label(crate::theme::error(ui), format!("❌ Connection failed: {}", err));
                     }
 
                     ui.add_space(16.0);

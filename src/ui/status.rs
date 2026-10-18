@@ -19,7 +19,7 @@ impl StatusState {
             StatusState::Idle => style.visuals.warn_fg_color,
             StatusState::Initializing => style.visuals.warn_fg_color,
             StatusState::Running => style.visuals.warn_fg_color,
-            StatusState::Waiting => Color32::from_rgb(120, 160, 230),
+            StatusState::Waiting => style.visuals.hyperlink_color,
             StatusState::Error => style.visuals.error_fg_color,
         }
     }

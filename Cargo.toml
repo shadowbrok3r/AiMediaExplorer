@@ -42,6 +42,7 @@ tokenizers = { version = "0.23.2", default-features = false, features = ["http",
 hf-hub = { version = "1.0.0", default-features = false, features = ["blocking", "rustls-tls"] }
 zip = "9.0.5"
 egui-toast = { git = "https://github.com/shadowbrok3r/egui-toast", branch = "egui-037" }
+backdrop-blur-egui = { path = "vendor/backdrop-blur/crates/backdrop-blur-egui", default-features = false, features = ["grab-pass"] }
 tar = "0.4.46"
 flate2 = { version = "1", features = ["zlib"] }
 bzip2 = "0.6"
@@ -95,7 +96,7 @@ winres = "0.1"
 [dependencies.egui]
 version = "0.37.0"
 default-features = false
-features = ["rayon", "bytemuck", "monochrome_emoji_fonts"]
+features = ["rayon", "bytemuck", "monochrome_emoji_fonts", "experimental"]
 
 [dependencies.ort]
 version = "2.0.0-rc.13"

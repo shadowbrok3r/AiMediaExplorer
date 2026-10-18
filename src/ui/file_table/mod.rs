@@ -747,6 +747,7 @@ impl FileExplorer {
                     s.single_click_edit_mode = true;
                     s.table_row_height = Some(75.0);
                     s.auto_shrink = [false, false].into();
+                    crate::theme::table_style::apply(ui.ctx(), s);
                 })
                 .ui(ui);
 
@@ -968,7 +969,7 @@ impl FileExplorer {
                 ui.separator();
                 ui.horizontal(|ui| {
                     if self.db_all_view {
-                        ui.colored_label(Color32::LIGHT_BLUE, "All DB");
+                        ui.colored_label(crate::theme::info(ui), "All DB");
                         ui.separator();
                     }
                     if self.db_loading {

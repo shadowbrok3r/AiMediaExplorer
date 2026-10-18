@@ -1,0 +1,32 @@
+[package]
+name = "backdrop-blur-egui"
+version = "0.3.0"
+description = "egui adapter for backdrop-blur: frosted glass for eframe-on-glow via a grab-pass paint callback (grab the live framebuffer, blur, composite)."
+readme = "README.md"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/abdu-benayad/backdrop-blur"
+authors = ["Abdu Benayad <abdu.benayad@gmail.com>"]
+keywords = ["blur", "backdrop", "frosted-glass", "vibrancy", "gpu"]
+categories = ["graphics", "gui", "rendering", "wasm"]
+publish = false
+
+[dependencies]
+# Neutral spine: the glass material vocabulary and the shared Surface type.
+backdrop-blur-core = { path = "../backdrop-blur-core", version = "0.3.0" }
+egui = { version = "0.37", default-features = false }
+# Grab-pass (eframe-on-glow) backend deps, activated by the `grab-pass` feature.
+backdrop-blur-glow = { path = "../backdrop-blur-glow", version = "0.3.0", optional = true }
+egui_glow = { version = "0.37", default-features = false, optional = true }
+# The adapter names glow::Context in its public API (GrabPassRenderer::new/destroy); pinned to the
+# same 0.17 backdrop-blur-glow + egui_glow use, so there is one glow in the graph.
+glow = { version = "0.17", optional = true }
+# Uncatchable best-effort warning when a grab-pass frost fails inside a paint callback (which cannot
+# propagate an error). Optional — only the grab-pass path uses it.
+log = { version = "0.4", optional = true }
+
+[features]
+default = ["grab-pass"]
+# The grab-pass path: the eframe-on-glow adapter (GrabPassRenderer).
+grab-pass = ["dep:backdrop-blur-glow", "dep:egui_glow", "dep:glow", "dep:log"]

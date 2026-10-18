@@ -6,14 +6,21 @@ pub mod app;
 pub mod ui;
 pub mod receive;
 pub mod icons;
+pub mod theme;
 
 pub use utilities::{explorer::*, scan::*, thumbs::*, types::*};
 pub use database::*;
 use eframe::egui::*;
 
 impl eframe::App for app::SmartMediaApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        theme::glass::poll_outcome(ctx);
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let started = std::time::Instant::now();
         let ctx = ui.ctx().clone();
+        theme::glass::frost_open_windows(&ctx);
         self.context.receive(&ctx);
         self.navbar(ui);
 
@@ -79,7 +86,7 @@ impl eframe::App for app::SmartMediaApp {
         .frame(Frame::central_panel(&ctx.global_style()).inner_margin(0.))
         .show(ui, |ui| {
             egui_dock::DockArea::new(&mut self.tree)
-                .style(egui_dock::Style::from_egui(ui.style()))
+                .style(theme::dock_style(&ctx))
                 .show_close_buttons(true)
                 .show_add_buttons(true)
                 .draggable_tabs(true)
@@ -92,12 +99,22 @@ impl eframe::App for app::SmartMediaApp {
                 .secondary_button_context_menu(true)
                 .show_inside(ui, &mut self.context);
         });
+
+        theme::debug_panel::show(&ctx);
+        theme::debug_panel::record_ui_time(&ctx, started.elapsed());
+        theme::debug_panel::record_frame_cpu(&ctx, frame.info().cpu_usage);
     }
 
     fn persist_egui_memory(&self) -> bool { true }
 
-    fn save(&mut self, _storage: &mut dyn eframe::Storage) { 
-        // storage.set_string("UiSettings", self.);
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        theme::save(&self.egui_ctx, storage);
+    }
+
+    fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
+        if let Some(gl) = gl {
+            theme::glass::shutdown(gl);
+        }
     }
 }
 
@@ -128,10 +145,30 @@ async fn main() -> eframe::Result<()> {
         }
     }
 
+    // Theme flags: `--theme-dump` prints the resolved tokens and metrics as JSON and exits without a window, `--theme <path.json>` (or SMART_MEDIA_THEME) forces a theme file for the run, `--no-frost` disables the glass blur, `--theme-panel` opens the Theme window.
+    let theme_options = match theme::cli::Options::from_env() {
+        Ok(options) => options,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(2);
+        }
+    };
+    if theme_options.theme_dump {
+        match theme::cli::dump(&theme_options) {
+            Ok(json) => println!("{json}"),
+            Err(e) => {
+                eprintln!("theme dump failed: {e:#}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
     egui_logger::builder()
         .max_level(log::LevelFilter::Info) // defaults to Debug
         .init()
         .unwrap();
+    theme::cli::install(theme_options);
 
     let _ = eframe::run_native(
         format!("Smart Media {}", env!("CARGO_PKG_VERSION")).as_str(),

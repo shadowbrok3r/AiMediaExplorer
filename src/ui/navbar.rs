@@ -202,6 +202,10 @@ impl crate::app::SmartMediaApp {
                         // Not strictly needed: when flag is false, we simply stop showing it.
                     }
                     ui.separator();
+                    if icons::button(ui, svg::SLIDERS, "Theme panel").clicked() {
+                        crate::theme::debug_panel::toggle(ui.ctx());
+                        ui.close();
+                    }
                     if icons::button(ui, svg::AME_LOGO, "Icon gallery").clicked() {
                         icons::gallery::toggle(ui.ctx());
                         ui.close();

@@ -459,6 +459,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "backdrop-blur-core"
+version = "0.3.0"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "backdrop-blur-egui"
+version = "0.3.0"
+dependencies = [
+ "backdrop-blur-core",
+ "backdrop-blur-glow",
+ "egui",
+ "egui_glow",
+ "glow",
+ "log",
+]
+
+[[package]]
+name = "backdrop-blur-glow"
+version = "0.3.0"
+dependencies = [
+ "backdrop-blur-core",
+ "glow",
+ "log",
+]
+
+[[package]]
 name = "base16ct"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8286,6 +8314,7 @@ dependencies = [
  "anyhow",
  "async-openai",
  "async-trait",
+ "backdrop-blur-egui",
  "base64 0.23.1",
  "blake3",
  "bzip2",

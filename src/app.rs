@@ -1,4 +1,4 @@
-use eframe::{egui::{Context, FontData, FontDefinitions, FontFamily}};
+use eframe::egui::Context;
 use crossbeam::channel::{Receiver, Sender};
 use egui_dock::{DockState, SurfaceIndex};
 use serde::{Deserialize, Serialize};
@@ -19,6 +19,7 @@ pub const TEMPERATURE: f32 = 0.5;
 pub struct SmartMediaApp {
     pub tree: DockState<String>,
     pub context: SmartMediaContext,
+    pub egui_ctx: Context,
 }
 
 pub struct SmartMediaContext {
@@ -87,7 +88,7 @@ pub enum DbSelectMode {
 
 impl SmartMediaApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        setup_custom_fonts(&cc.egui_ctx);
+        crate::theme::bootstrap(cc);
         let (ui_settings_tx, ui_settings_rx) = crossbeam::channel::bounded(1);
         let (db_ready_tx, db_ready_rx) = crossbeam::channel::bounded(1);
         let (toast_tx, toast_rx) = crossbeam::channel::unbounded();
@@ -137,7 +138,7 @@ impl SmartMediaApp {
             open_ui_settings: false,
             assistant_window_open: false,
             new_excluded_dir: String::new(),
-            toasts: Toasts::new().anchor(eframe::egui::Align2::RIGHT_TOP, (-10.0, 10.0)),
+            toasts: crate::theme::toast::style(Toasts::new().anchor(eframe::egui::Align2::RIGHT_TOP, (-10.0, 10.0))),
             toast_tx,
             toast_rx,
             refine_tx,
@@ -154,69 +155,11 @@ impl SmartMediaApp {
         Self {
             context,
             tree,
+            egui_ctx: cc.egui_ctx.clone(),
         }
     }
 }
 
-
-fn setup_custom_fonts(ctx: &Context) {
-    // Start with the default fonts (we will be adding to them rather than replacing them).
-    let mut fonts = FontDefinitions::default();
-    fonts.font_data.insert(
-        "Monaspace".to_owned(),
-        std::sync::Arc::new(
-            FontData::from_static(include_bytes!("../assets/fonts/MonaspaceNeon-Regular.otf"))
-        ),
-    );
-
-    fonts.font_data.insert(
-        "UbuntuSansMono".to_owned(),
-        std::sync::Arc::new(
-            FontData::from_static(include_bytes!("../assets/fonts/UbuntuSansMono-Regular.otf"))
-        ),
-    );
-
-    fonts.font_data.insert(
-        "UbuntuMonoNerdFont".to_owned(),
-        std::sync::Arc::new(
-            FontData::from_static(include_bytes!("../assets/fonts/UbuntuMonoNerdFont-Regular.ttf"))
-        ),
-    ); 
-
-    fonts
-        .families
-        .get_mut(&FontFamily::Monospace)
-        .unwrap()
-        .insert(0, "UbuntuSansMono".to_owned());
-
-    fonts
-        .families
-        .get_mut(&FontFamily::Monospace)
-        .unwrap()
-        .insert(1, "UbuntuMonoNerdFont".to_owned());
-
-    fonts.font_data.insert(
-        "Regular".to_owned(),
-        std::sync::Arc::new(
-            FontData::from_static(include_bytes!("../assets/fonts/MonaspaceNeon-Regular.otf"))
-        ),
-    );
-    fonts.families.insert(
-        FontFamily::Name("Regular".into()),
-        vec!["Regular".to_owned()],
-    );
-    fonts.font_data.insert(
-        "Bold".to_owned(),
-        std::sync::Arc::new(
-            FontData::from_static(include_bytes!("../assets/fonts/MonaspaceNeon-Bold.otf"))
-        ),
-    );
-    fonts
-        .families
-        .insert(FontFamily::Name("Bold".into()), vec!["Bold".to_owned()]);
-    // Tell egui to use these fonts:
-    ctx.set_fonts(fonts);
-}
 
 impl SmartMediaContext {
     /// Returns a mutable reference to the FileExplorer corresponding to the currently active tab.

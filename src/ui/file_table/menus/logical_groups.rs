@@ -6,9 +6,9 @@ impl crate::ui::file_table::FileExplorer {
         let style = StyleModifier::default();
         style.apply(ui.style_mut());
         let txt = if let Some(name) = &self.active_logical_group_name {
-            RichText::new(format!("Logical Groups ({name})")).color(Color32::LIGHT_GREEN)
+            RichText::new(format!("Logical Groups ({name})")).color(crate::theme::success(ui))
         } else {
-            RichText::new(format!("Logical Groups")).color(Color32::LIGHT_YELLOW)
+            RichText::new(format!("Logical Groups")).color(crate::theme::warn(ui))
         };
         
         MenuButton::new(txt)
@@ -18,9 +18,9 @@ impl crate::ui::file_table::FileExplorer {
                 ui.set_width(470.);
                 ui.horizontal(|ui| {
                     if self.active_logical_group_name.is_none() {
-                        ui.colored_label(Color32::YELLOW, "No active logical group. Auto save and indexing are gated.");
+                        ui.colored_label(crate::theme::warn(ui), "No active logical group. Auto save and indexing are gated.");
                     } else {
-                        ui.colored_label(Color32::LIGHT_GREEN, format!("Active Group: {}", self.active_logical_group_name.clone().unwrap_or_default()));
+                        ui.colored_label(crate::theme::success(ui), format!("Active Group: {}", self.active_logical_group_name.clone().unwrap_or_default()));
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {

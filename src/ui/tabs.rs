@@ -25,8 +25,8 @@ impl egui_dock::TabViewer for crate::app::SmartMediaContext {
             "AI Refinements" => self.refinements.ui(ui),
             "Image Edit" => self.image_edit.ui(ui),
             "Logs" => egui_logger::logger_ui()
-                .warn_color(Color32::from_rgb(94, 215, 221)) 
-                .error_color(Color32::from_rgb(255, 55, 102)) 
+                .warn_color(crate::theme::warn(ui))
+                .error_color(crate::theme::error(ui))
                 .log_levels([true, true, true, false, false])
                 .enable_category("eframe".to_string(), false)
                 .enable_category("eframe::native::glow_integration".to_string(), false)

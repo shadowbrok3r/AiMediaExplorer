@@ -28,7 +28,7 @@ impl crate::ui::file_table::FileExplorer {
         ui.add_space(4.0);
         if matches!(self.viewer.mode, crate::ui::file_table::table::ExplorerMode::Database) {
             ui.label(format!("Loaded Rows: {} (offset {})", self.table.len(), self.db_offset));
-            if self.db_loading { ui.colored_label(Color32::YELLOW, "Loading..."); }
+            if self.db_loading { ui.colored_label(crate::theme::warn(ui), "Loading..."); }
         }
     }
 }

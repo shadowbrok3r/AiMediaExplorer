@@ -280,7 +280,7 @@ impl super::FileExplorer {
                                  by_path || by_hash
                              };
                              let badge = if has_clip { 
-                                 RichText::new("CLIP").color(Color32::LIGHT_GREEN) 
+                                 RichText::new("CLIP").color(crate::theme::success(ui)) 
                              } else { 
                                  RichText::new("CLIP").color(ui.style().visuals.error_fg_color) 
                              };
@@ -300,7 +300,7 @@ impl super::FileExplorer {
 
                              // Streaming interim text (if any)
                              if let Some(interim) = self.streaming_interim.get(&path_key) {
-                                 ui.colored_label(Color32::LIGHT_BLUE, RichText::new("(Streaming…)"));
+                                 ui.colored_label(crate::theme::info(ui), RichText::new("(Streaming…)"));
                                  ScrollArea::vertical().max_height(160.).show(ui, |ui| {
                                      ui.label(interim);
                                  });
@@ -392,7 +392,7 @@ impl super::FileExplorer {
                                  && !self.current_thumb.tags.is_empty()
                                  && self.current_thumb.description.as_ref().map(|d| !d.trim().is_empty()).unwrap_or(false);
                              if !have_all && self.current_thumb.description.is_some() && self.streaming_interim.get(&path_key).is_none() {
-                                 ui.colored_label(Color32::YELLOW, "Parsed AI metadata incomplete (expected caption, category, tags, description)");
+                                 ui.colored_label(crate::theme::warn(ui), "Parsed AI metadata incomplete (expected caption, category, tags, description)");
                              }
 
                              ui.add_space(10.);

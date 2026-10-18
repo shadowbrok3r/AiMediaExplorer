@@ -7,6 +7,15 @@ pub mod filter_menu;
 pub mod table_menu;
 pub mod scan_menu;
 
+/// Width reserved for the right-hand navbar controls, search field aside, before their measured width is known.
+const RIGHT_FIXED_ESTIMATE: f32 = 270.;
+/// Width reserved for the database-mode controls beside the path field.
+const DB_CONTROLS_WIDTH: f32 = 150.;
+const PATH_MIN_WIDTH: f32 = 120.;
+const PATH_MAX_WIDTH: f32 = 400.;
+const SEARCH_MIN_WIDTH: f32 = 80.;
+const SEARCH_PREFERRED_WIDTH: f32 = 200.;
+
 impl super::FileExplorer {
     pub fn navbar(&mut self, ui: &mut Ui) {
         let style = StyleModifier::default();
@@ -47,9 +56,15 @@ impl super::FileExplorer {
                     if Button::new(RichText::new("🗙").font(font.clone()).color(err_color)).min_size(size).ui(ui).on_hover_text("Double click to Clear Database Table").double_clicked() { self.table.clear(); self.table_index.clear(); }
                 }
                 ui.separator();
+                let right_id = ui.id().with("navbar_right_width");
+                let right_fixed = ui.data(|d| d.get_temp::<f32>(right_id)).unwrap_or(RIGHT_FIXED_ESTIMATE);
+                let db_extra = if self.viewer.mode == super::table::ExplorerMode::Database { DB_CONTROLS_WIDTH } else { 0. };
+                let flex = ui.available_width() - right_fixed - db_extra - 3. * ui.spacing().item_spacing.x;
+                let path_w = (flex - SEARCH_PREFERRED_WIDTH).clamp(PATH_MIN_WIDTH, PATH_MAX_WIDTH);
+                let search_w = (flex - path_w).clamp(SEARCH_MIN_WIDTH, SEARCH_PREFERRED_WIDTH);
                 let path_edit = TextEdit::singleline(&mut self.current_path)
                     .hint_text("Current Directory")
-                    .desired_width(400.)
+                    .desired_width(path_w)
                     .ui(ui);
 
                 match self.viewer.mode {
@@ -166,7 +181,7 @@ impl super::FileExplorer {
                     ui.separator();
 
                     TextEdit::singleline(&mut self.viewer.filter)
-                    .desired_width(200.0)
+                    .desired_width(search_w)
                     .hint_text("Search for files")
                     .ui(ui);
 
@@ -183,6 +198,8 @@ impl super::FileExplorer {
                         }
                     }
                     self.table_menu(ui);
+                    let fixed = ui.min_rect().width() - search_w;
+                    ui.data_mut(|d| d.insert_temp(right_id, fixed));
                 });
             });
         });
