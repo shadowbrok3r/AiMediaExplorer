@@ -56,10 +56,10 @@ impl crate::ui::file_table::FileExplorer {
                                 
                                 tokio::spawn(async move {
                                     log::info!("Starting thumbnail generation for archive file: {}", vpath);
-                                    match crate::utilities::archive::extract_and_generate_thumbnail(
-                                        &scheme_clone, &archive_path_clone, &internal_clone, &filename_clone, 
-                                        password_clone.as_deref()
-                                    ) {
+                                    match crate::utilities::archive::extract_and_generate_thumbnail_blocking(
+                                        scheme_clone, archive_path_clone.clone(), internal_clone, filename_clone,
+                                        password_clone
+                                    ).await {
                                         Ok(Some(thumb_b64)) => {
                                             log::info!("Generated thumbnail for archive file: {}", vpath);
                                             let mut thumb = crate::Thumbnail::default();

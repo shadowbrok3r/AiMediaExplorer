@@ -237,13 +237,41 @@ pub fn entry_to_thumbnail(scheme: &str, archive_fs_path: &str, internal_path: &s
     }
 }
 
-// Extract a file from an archive temporarily and generate a thumbnail
+// Extract a file from an archive temporarily and generate a thumbnail; archive decoder panics become errors
 pub fn extract_and_generate_thumbnail(
-    scheme: &str, 
-    archive_fs_path: &str, 
-    internal_path: &str, 
+    scheme: &str,
+    archive_fs_path: &str,
+    internal_path: &str,
     filename: &str,
     password: Option<&str>
+) -> anyhow::Result<Option<String>> {
+    crate::utilities::guard::guarded(
+        || extract_and_generate_thumbnail_inner(scheme, archive_fs_path, internal_path, filename, password),
+        |msg| anyhow::anyhow!("archive thumbnail panicked: {msg}"),
+    )
+}
+
+// Blocking-pool variant for async callers.
+pub async fn extract_and_generate_thumbnail_blocking(
+    scheme: String,
+    archive_fs_path: String,
+    internal_path: String,
+    filename: String,
+    password: Option<String>,
+) -> anyhow::Result<Option<String>> {
+    tokio::task::spawn_blocking(move || {
+        extract_and_generate_thumbnail(&scheme, &archive_fs_path, &internal_path, &filename, password.as_deref())
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("archive thumbnail task failed: {e}"))?
+}
+
+fn extract_and_generate_thumbnail_inner(
+    scheme: &str,
+    archive_fs_path: &str,
+    internal_path: &str,
+    filename: &str,
+    password: Option<&str>,
 ) -> anyhow::Result<Option<String>> {
     let full_internal_path = if internal_path.trim_matches('/').is_empty() {
         filename.to_string()
@@ -463,5 +491,78 @@ impl ArchiveRegistry {
     }
     pub fn by_extension<'a>(&'a self, name_or_ext: &str) -> Option<&'a dyn ArchiveHandler> {
         self.handlers.iter().map(|b| &**b).find(|h| h.handles_extension(name_or_ext))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn sample_jpeg() -> Vec<u8> {
+        let img: image::RgbImage = image::ImageBuffer::from_pixel(320, 200, image::Rgb([30, 90, 160]));
+        let mut out = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Jpeg).unwrap();
+        out
+    }
+
+    fn decoded_dims(thumb: &str) -> (u32, u32) {
+        use base64::Engine as _;
+        let bytes = base64::engine::general_purpose::STANDARD.decode(crate::utilities::thumbs::thumb_payload(thumb)).unwrap();
+        image::GenericImageView::dimensions(&image::load_from_memory(&bytes).unwrap())
+    }
+
+    #[test]
+    fn zip_entry_thumbnail() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip_path = dir.path().join("a.zip");
+        let mut zw = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
+        zw.start_file("photos/one.jpg", zip::write::SimpleFileOptions::default()).unwrap();
+        zw.write_all(&sample_jpeg()).unwrap();
+        zw.finish().unwrap();
+        let thumb = extract_and_generate_thumbnail("zip", zip_path.to_str().unwrap(), "photos", "one.jpg", None).unwrap().unwrap();
+        assert_eq!(decoded_dims(&thumb), (256, 160));
+    }
+
+    #[test]
+    fn tar_entry_thumbnail() {
+        let dir = tempfile::tempdir().unwrap();
+        let tar_path = dir.path().join("a.tar");
+        let mut tb = tar::Builder::new(std::fs::File::create(&tar_path).unwrap());
+        let jpeg = sample_jpeg();
+        let mut header = tar::Header::new_gnu();
+        header.set_size(jpeg.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tb.append_data(&mut header, "pics/two.jpg", jpeg.as_slice()).unwrap();
+        tb.finish().unwrap();
+        let thumb = extract_and_generate_thumbnail("tar", tar_path.to_str().unwrap(), "pics", "two.jpg", None).unwrap().unwrap();
+        assert_eq!(decoded_dims(&thumb), (256, 160));
+    }
+
+    #[test]
+    fn corrupt_archives_report_errors_instead_of_panicking() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, scheme) in [("bad.zip", "zip"), ("bad.7z", "7z"), ("bad.tar", "tar")] {
+            let p = dir.path().join(name);
+            std::fs::write(&p, [0x50u8, 0x4B, 3, 4, 0xFF, 0xFF, 0xFF, 0xFF, 1, 2, 3]).unwrap();
+            let r = extract_and_generate_thumbnail(scheme, p.to_str().unwrap(), "", "x.jpg", None);
+            assert!(matches!(r, Err(_) | Ok(None)), "{scheme}: {r:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn blocking_variant_matches_sync_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip_path = dir.path().join("b.zip");
+        let mut zw = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
+        zw.start_file("c.jpg", zip::write::SimpleFileOptions::default()).unwrap();
+        zw.write_all(&sample_jpeg()).unwrap();
+        zw.finish().unwrap();
+        let thumb = extract_and_generate_thumbnail_blocking("zip".into(), zip_path.display().to_string(), String::new(), "c.jpg".into(), None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(decoded_dims(&thumb), (256, 160));
     }
 }

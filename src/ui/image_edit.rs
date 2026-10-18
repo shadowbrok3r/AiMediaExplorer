@@ -454,28 +454,31 @@ impl ImageEditPanel {
                         }
                     }
                     if !has_img {
-                        let cache = self.thumb_cache.clone();
-                        let path_buf = std::path::PathBuf::from(path);
-                        let cache_key_task = cache_key.clone();
-                        tokio::spawn(async move {
-                            let png = crate::utilities::thumbs::generate_image_preview_png(&path_buf, 1600)
-                                .or_else(|e| {
-                                    log::debug!("[ImageEdit] preview fallback: {}", e);
-                                    crate::utilities::thumbs::generate_image_thumb_data(&path_buf)
-                                        .and_then(|data_url| {
-                                            let (_, b64) = data_url.split_once("data:image/png;base64,").unwrap_or(("", &data_url));
+                        if crate::utilities::thumbs::begin_preview(&cache_key) {
+                            let cache = self.thumb_cache.clone();
+                            let path_buf = std::path::PathBuf::from(path);
+                            let cache_key_task = cache_key.clone();
+                            tokio::spawn(async move {
+                                let png = match crate::utilities::thumbs::generate_image_preview_png_blocking(path_buf.clone(), 1600).await {
+                                    Ok(png) => Ok(png),
+                                    Err(e) => {
+                                        log::debug!("[ImageEdit] preview fallback: {}", e);
+                                        crate::utilities::thumbs::generate_image_thumb_data_blocking(path_buf.clone()).await.and_then(|data_url| {
                                             base64::engine::general_purpose::STANDARD
-                                                .decode(b64.as_bytes())
+                                                .decode(crate::utilities::thumbs::thumb_payload(&data_url).as_bytes())
                                                 .map_err(|e| e.to_string())
                                         })
-                                })
-                                .unwrap_or_default();
-                            if !png.is_empty() {
-                                if let Ok(mut guard) = cache.lock() {
-                                    guard.insert(cache_key_task, Arc::from(png.into_boxed_slice()));
+                                    }
                                 }
-                            }
-                        });
+                                .unwrap_or_default();
+                                crate::utilities::thumbs::end_preview(&cache_key_task, !png.is_empty());
+                                if !png.is_empty() {
+                                    if let Ok(mut guard) = cache.lock() {
+                                        guard.insert(cache_key_task, Arc::from(png.into_boxed_slice()));
+                                    }
+                                }
+                            });
+                        }
                         ui.weak("Loading preview…");
                     }
 

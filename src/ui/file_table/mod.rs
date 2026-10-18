@@ -1323,8 +1323,6 @@ impl FileExplorer {
             self.thumb_scheduled.insert(path_str.clone());
             let permit_fut = sem.clone().acquire_owned();
             let tx_clone = scan_tx.clone();
-            // Track inflight completion by sending a Done decrement via closure
-            let inflight_counter = &mut self.recursive_prefetch_inflight as *mut usize;
             tokio::spawn(async move {
                 let _permit = permit_fut.await.ok();
                 let pbuf = std::path::PathBuf::from(&path_str);
@@ -1335,9 +1333,13 @@ impl FileExplorer {
                     .map(|s| s.to_ascii_lowercase())
                 {
                     if crate::is_image(ext.as_str()) {
-                        thumb_b64 = crate::utilities::thumbs::generate_image_thumb_data(&pbuf).ok();
+                        thumb_b64 = crate::utilities::thumbs::generate_image_thumb_data_blocking(pbuf.clone()).await.ok();
                     } else if crate::is_video(ext.as_str()) {
-                        thumb_b64 = crate::utilities::thumbs::generate_video_thumb_data(&pbuf).ok();
+                        let video = pbuf.clone();
+                        thumb_b64 = tokio::task::spawn_blocking(move || crate::utilities::thumbs::generate_video_thumb_data(&video))
+                            .await
+                            .ok()
+                            .and_then(|r| r.ok());
                     }
                 }
                 if let Some(b64) = thumb_b64 {
@@ -1357,9 +1359,6 @@ impl FileExplorer {
                         },
                     });
                 }
-                // SAFETY: UI thread only mutation; this async block executes on runtime thread. To avoid unsafe, we skip decrement here; rely on natural replacement (simplify).
-                // (If precise tracking needed, implement atomic counter.)
-                let _ = inflight_counter; // suppress unused warning for placeholder.
             });
         }
     }
@@ -1415,9 +1414,13 @@ impl FileExplorer {
                     .map(|s| s.to_ascii_lowercase())
                 {
                     if crate::is_image(ext.as_str()) {
-                        thumb_b64 = crate::utilities::thumbs::generate_image_thumb_data(&p).ok();
+                        thumb_b64 = crate::utilities::thumbs::generate_image_thumb_data_blocking(p.clone()).await.ok();
                     } else if crate::is_video(ext.as_str()) {
-                        thumb_b64 = crate::utilities::thumbs::generate_video_thumb_data(&p).ok();
+                        let video = p.clone();
+                        thumb_b64 = tokio::task::spawn_blocking(move || crate::utilities::thumbs::generate_video_thumb_data(&video))
+                            .await
+                            .ok()
+                            .and_then(|r| r.ok());
                     }
                 }
                 if let Some(b64) = thumb_b64 {

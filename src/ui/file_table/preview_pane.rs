@@ -170,25 +170,26 @@ impl super::FileExplorer {
                             }
                         }
                     }
-                    if !thumb_cache.contains_key(&cache_key) {
+                    if !thumb_cache.contains_key(&cache_key) && crate::utilities::thumbs::begin_preview(&cache_key) {
                         let path = std::path::Path::new(&self.current_thumb.path).to_path_buf();
                         let tx = self.thumbnail_tx.clone();
                         let cache_key_task = cache_key.clone();
                         // Generate high-res preview off the UI thread
                         tokio::spawn(async move {
-                            let png = crate::utilities::thumbs::generate_image_preview_png(&path, 1600)
-                                .or_else(|e| {
+                            let png = match crate::utilities::thumbs::generate_image_preview_png_blocking(path.clone(), 1600).await {
+                                Ok(png) => Ok(png),
+                                Err(e) => {
                                     log::debug!("high-res preview failed: {}", e);
                                     // Fall back to small thumb if needed
-                                    crate::utilities::thumbs::generate_image_thumb_data(&path)
-                                        .and_then(|data_url| {
-                                            let (_, b64) = data_url.split_once("data:image/png;base64,").unwrap_or(("", &data_url));
-                                            base64::engine::general_purpose::STANDARD
-                                                .decode(b64.as_bytes())
-                                                .map_err(|e| e.to_string())
-                                        })
-                                })
-                                .unwrap_or_default();
+                                    crate::utilities::thumbs::generate_image_thumb_data_blocking(path.clone()).await.and_then(|data_url| {
+                                        base64::engine::general_purpose::STANDARD
+                                            .decode(crate::utilities::thumbs::thumb_payload(&data_url).as_bytes())
+                                            .map_err(|e| e.to_string())
+                                    })
+                                }
+                            }
+                            .unwrap_or_default();
+                            crate::utilities::thumbs::end_preview(&cache_key_task, !png.is_empty());
                             if !png.is_empty() {
                                 let mut t = crate::database::Thumbnail::default();
                                 t.path = cache_key_task.clone();

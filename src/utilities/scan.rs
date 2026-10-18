@@ -1,21 +1,22 @@
 use crate::utilities::types::{Filters, FoundFile, MediaKind, DirItem, is_image, is_video, is_archive};
 use crate::utilities::filtering::FiltersExt;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use crate::utilities::guard::{guarded, panic_message};
+use std::sync::atomic::{AtomicU64, Ordering};
 use jwalk::{WalkDirGeneric, Parallelism};
-use crossbeam::channel::{Sender, Receiver, bounded, TrySendError};
-use chrono::{DateTime, Local}; 
+use crossbeam::channel::{Sender, Receiver, unbounded};
+use chrono::{DateTime, Local};
 use once_cell::sync::Lazy;
 use std::time::SystemTime;
 use std::path::Path;
 use std::time::{Duration, Instant};
-use rayon::ThreadPool;
-use std::sync::OnceLock;
+use rayon::{ThreadPool, ThreadPoolBuildError};
+use std::sync::{Arc, OnceLock};
 
 // Track cancelled scan ids
 static CANCELLED_SCANS: Lazy<std::sync::Mutex<std::collections::HashSet<u64>>> = Lazy::new(|| std::sync::Mutex::new(Default::default()));
 static SCAN_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 /// send a progress update every N scanned paths in recursive mode
-const PROGRESS_EVERY: usize = 5_000; 
+const PROGRESS_EVERY: usize = 5_000;
 
 pub fn next_scan_id() -> u64 { SCAN_ID_COUNTER.fetch_add(1, Ordering::Relaxed) }
 
@@ -32,7 +33,7 @@ fn clear_cancel(id: u64) {
     if let Ok(mut set) = CANCELLED_SCANS.lock() { let _ = set.remove(&id); }
 }
 
-// --- Dedicated thumbnail pipeline (bounded queue + small worker pool) ---
+// --- Thumbnail pipeline: unbounded job queue drained by a rayon worker pool ---
 #[derive(Clone, Debug)]
 pub struct ThumbJob {
     pub path: std::path::PathBuf,
@@ -40,128 +41,123 @@ pub struct ThumbJob {
     pub scan_id: u64,
 }
 
-static THUMB_POOL: Lazy<ThreadPool> = Lazy::new(|| {
-    let logical = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
-    let workers = logical.clamp(2, 4);
+// Number of panics swallowed by pool panic handlers.
+static POOL_PANICS: AtomicU64 = AtomicU64::new(0);
+
+fn try_build_pool(name: &'static str, workers: usize) -> Result<ThreadPool, ThreadPoolBuildError> {
     rayon::ThreadPoolBuilder::new()
         .num_threads(workers)
-        .thread_name(|i| format!("thumb-{}", i))
+        .thread_name(move |i| format!("{name}-{i}"))
+        .panic_handler(move |p| {
+            POOL_PANICS.fetch_add(1, Ordering::Relaxed);
+            log::error!("[{name}] pool task panicked: {}", panic_message(p.as_ref()));
+        })
         .build()
-        .expect("thumb pool")
-});
+}
+
+fn thumb_worker_count() -> usize {
+    let logical = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
+    logical.saturating_sub(2).clamp(2, 12)
+}
+
+static THUMB_POOL: Lazy<ThreadPool> = Lazy::new(|| try_build_pool("thumb", thumb_worker_count()).expect("thumb pool"));
 
 static THUMB_TX: OnceLock<Sender<ThumbJob>> = OnceLock::new();
-static IMG_INFLIGHT: AtomicUsize = AtomicUsize::new(0);
-static VID_INFLIGHT: AtomicUsize = AtomicUsize::new(0);
-// Instrumentation for thumbnail queue back-pressure
-static THUMB_DEFERRED: Lazy<std::sync::Mutex<Vec<ThumbJob>>> = Lazy::new(|| std::sync::Mutex::new(Vec::new()));
 
-fn flush_deferred_some(max_items: usize) {
-    if max_items == 0 { return; }
-    if let Some(tx) = THUMB_TX.get() {
-        if let Ok(mut deferred) = THUMB_DEFERRED.lock() {
-            let mut flushed = 0usize;
-            let i = 0usize;
-            while i < deferred.len() && flushed < max_items {
-                // Remove from vector and attempt send; we don't preserve order (swap_remove)
-                let job = deferred.swap_remove(i);
-                let kind = job.kind.clone();
-                match tx.try_send(job) {
-                    Ok(()) => {
-                        flushed += 1;
-                        match kind {
-                            MediaKind::Image => { IMG_INFLIGHT.fetch_add(1, Ordering::Relaxed); },
-                            MediaKind::Video => { VID_INFLIGHT.fetch_add(1, Ordering::Relaxed); },
-                            _ => {}
-                        }
-                        // Note: swap_remove moved an element at i; no i++ so we process the new element at i next
-                    }
-                    Err(TrySendError::Full(job)) => {
-                        // Put back (append) and stop; queue is full
-                        deferred.push(job);
-                        break;
-                    }
-                    Err(TrySendError::Disconnected(_)) => {
-                        // Workers gone; drop remaining
-                        break;
-                    }
-                }
-            }
-        }
+// Per-scan delivery route; removed once the walk finished and every queued thumbnail job completed.
+struct ScanRoute {
+    tx: Sender<ScanEnvelope>,
+    pending: usize,
+    walk_done: bool,
+}
+
+static SCAN_ROUTERS: Lazy<std::sync::Mutex<std::collections::HashMap<u64, ScanRoute>>> =
+    Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+// Registers the delivery route; earlier scans still active on the same channel are superseded and cancelled.
+fn register_route(scan_id: u64, tx: Sender<ScanEnvelope>) {
+    let superseded: Vec<u64> = SCAN_ROUTERS
+        .lock()
+        .map(|m| m.iter().filter(|(id, r)| **id != scan_id && r.tx.same_channel(&tx)).map(|(id, _)| *id).collect())
+        .unwrap_or_default();
+    for id in superseded { cancel_scan(id); }
+    if let Ok(mut map) = SCAN_ROUTERS.lock() { map.insert(scan_id, ScanRoute { tx, pending: 0, walk_done: false }); }
+}
+
+fn route_pending(scan_id: u64) -> usize {
+    SCAN_ROUTERS.lock().ok().and_then(|m| m.get(&scan_id).map(|r| r.pending)).unwrap_or(0)
+}
+
+fn route_pending_add(scan_id: u64) {
+    if let Ok(mut map) = SCAN_ROUTERS.lock() {
+        if let Some(r) = map.get_mut(&scan_id) { r.pending += 1; }
     }
 }
 
-// Route scan updates to the correct UI (per scan_id)
-static SCAN_ROUTERS: Lazy<std::sync::Mutex<std::collections::HashMap<u64, Sender<ScanEnvelope>>>> =
-    Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+fn route_send(scan_id: u64, msg: ScanMsg) {
+    let tx = SCAN_ROUTERS.lock().ok().and_then(|m| m.get(&scan_id).map(|r| r.tx.clone()));
+    if let Some(tx) = tx { let _ = tx.send(ScanEnvelope { scan_id, msg }); }
+}
+
+// Drops the route and the cancel flag once nothing is left to deliver for the scan.
+fn route_release_if_idle(scan_id: u64) {
+    let idle = SCAN_ROUTERS.lock().map(|mut m| {
+        let idle = m.get(&scan_id).map(|r| r.walk_done && r.pending == 0).unwrap_or(true);
+        if idle { m.remove(&scan_id); }
+        idle
+    }).unwrap_or(false);
+    if idle { clear_cancel(scan_id); }
+}
+
+fn route_job_done(scan_id: u64) {
+    if let Ok(mut map) = SCAN_ROUTERS.lock() {
+        if let Some(r) = map.get_mut(&scan_id) { r.pending = r.pending.saturating_sub(1); }
+    }
+    route_release_if_idle(scan_id);
+}
+
+fn route_walk_done(scan_id: u64) {
+    if let Ok(mut map) = SCAN_ROUTERS.lock() {
+        if let Some(r) = map.get_mut(&scan_id) { r.walk_done = true; }
+    }
+    route_release_if_idle(scan_id);
+}
 
 pub fn init_thumbnail_workers() {
     if THUMB_TX.get().is_some() { return; }
-    let (tx, rx): (Sender<ThumbJob>, Receiver<ThumbJob>) = bounded(256);
-    let _ = THUMB_TX.set(tx.clone());
+    let (tx, rx): (Sender<ThumbJob>, Receiver<ThumbJob>) = unbounded();
+    if THUMB_TX.set(tx).is_err() { return; }
     start_thumbnail_workers(rx);
 }
 
 fn start_thumbnail_workers(rx: Receiver<ThumbJob>) {
-    let workers = 3usize.min(THUMB_POOL.current_num_threads());
-    for _ in 0..workers {
+    for _ in 0..THUMB_POOL.current_num_threads() {
         let rx = rx.clone();
-        THUMB_POOL.spawn(move || {
-            while let Ok(job) = rx.recv() {
-                if is_cancelled(job.scan_id) { 
-                    // decrement the proper counter if we had incremented on enqueue but got cancelled before work
-                    match job.kind { 
-                        MediaKind::Image => { IMG_INFLIGHT.fetch_sub(1, Ordering::Relaxed); },
-                        MediaKind::Video => { VID_INFLIGHT.fetch_sub(1, Ordering::Relaxed); },
-                        _ => {}
-                    }
-                    continue; 
-                }
-                match generate_thumb(&job.path, &job.kind) {
-                    Ok(thumb_b64) => {
-                        if let Ok(map) = SCAN_ROUTERS.lock() {
-                            if let Some(tx) = map.get(&job.scan_id) {
-                                let _ = tx.send(ScanEnvelope { scan_id: job.scan_id, msg: ScanMsg::UpdateThumb { path: job.path.clone(), thumb: thumb_b64 } });
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        if let Ok(map) = SCAN_ROUTERS.lock() {
-                            if let Some(tx) = map.get(&job.scan_id) {
-                                let _ = tx.send(ScanEnvelope { scan_id: job.scan_id, msg: ScanMsg::ThumbFailed { path: job.path.clone(), error: e } });
-                            }
-                        }
-                    }
-                }
-                match job.kind {
-                    MediaKind::Image => { IMG_INFLIGHT.fetch_sub(1, Ordering::Relaxed); },
-                    MediaKind::Video => { VID_INFLIGHT.fetch_sub(1, Ordering::Relaxed); },
-                    _ => {}
-                }
-            }
-        });
+        THUMB_POOL.spawn(move || run_thumb_worker(rx, generate_thumb));
+    }
+}
+
+type ThumbGenerator = fn(&Path, &MediaKind) -> Result<String, String>;
+
+fn run_thumb_worker(rx: Receiver<ThumbJob>, generate: ThumbGenerator) {
+    while let Ok(job) = rx.recv() {
+        if !is_cancelled(job.scan_id) {
+            let result = guarded(|| generate(&job.path, &job.kind), |msg| format!("thumbnail worker panicked: {msg}"));
+            let msg = match result {
+                Ok(thumb) => ScanMsg::UpdateThumb { path: job.path.clone(), thumb },
+                Err(error) => ScanMsg::ThumbFailed { path: job.path.clone(), error },
+            };
+            route_send(job.scan_id, msg);
+        }
+        route_job_done(job.scan_id);
     }
 }
 
 fn enqueue_thumb_job(path: &Path, kind: MediaKind, scan_id: u64) {
-    if let Some(tx) = THUMB_TX.get() {
-        let job = ThumbJob { path: path.to_path_buf(), kind: kind.clone(), scan_id };
-        match tx.try_send(job) {
-            Ok(()) => {
-                match kind {
-                    MediaKind::Image => { IMG_INFLIGHT.fetch_add(1, Ordering::Relaxed); },
-                    MediaKind::Video => { VID_INFLIGHT.fetch_add(1, Ordering::Relaxed); },
-                    _ => {}
-                }
-            }
-            Err(TrySendError::Full(job)) => {
-                // Defer instead of blocking the scanner; we'll flush later.
-                if let Ok(mut v) = THUMB_DEFERRED.lock() { v.push(job); }
-            }
-            Err(TrySendError::Disconnected(_job)) => {
-                // Workers gone; silently drop.
-            }
-        }
+    let Some(tx) = THUMB_TX.get() else { return };
+    route_pending_add(scan_id);
+    if tx.send(ThumbJob { path: path.to_path_buf(), kind, scan_id }).is_err() {
+        route_job_done(scan_id);
     }
 }
 
@@ -228,10 +224,13 @@ pub async fn spawn_scan(filters: Filters, tx: Sender<ScanEnvelope>, recursive: b
     // Ensure thumbnail workers are initialized with this scan channel
     init_thumbnail_workers();
     // Register router for this scan id
-    if let Ok(mut map) = SCAN_ROUTERS.lock() { map.insert(scan_id, tx.clone()); }
+    register_route(scan_id, tx.clone());
+    let done_tx = tx.clone();
     // Perform the blocking filesystem traversal on a blocking thread.
     if let Err(e) = tokio::task::spawn_blocking(move || perform_scan_blocking(filters, tx, recursive, scan_id)).await {
         log::warn!("spawn_blocking scan join error: {e:?}");
+        let _ = done_tx.send(ScanEnvelope { scan_id, msg: ScanMsg::Done });
+        route_walk_done(scan_id);
     }
 }
 
@@ -242,7 +241,7 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
     let t_last_phase = &mut t_all;
     if is_cancelled(scan_id) {
         let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::Done });
-        clear_cancel(scan_id);
+        route_walk_done(scan_id);
         return;
     }
     
@@ -252,6 +251,7 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
             Err(e) => {
                 let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::Error(e.to_string()) });
                 let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::Done });
+                route_walk_done(scan_id);
                 return;
             }
         }
@@ -265,6 +265,7 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
     if !root.exists() {
         let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::Error(format!("Root does not exist: {}", root.display())) });
         let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::Done });
+        route_walk_done(scan_id);
         return;
     }
     if timing_enabled { 
@@ -301,7 +302,11 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
         .clamp(16, 4096);
     log::info!("Found batch size: {found_batch_max}");
     let mut scanned_paths: usize = 0;
-    let parallelism = Parallelism::RayonNewPool(std::cmp::max(8, std::cmp::min(logical, 16)));
+    let walk_threads = std::cmp::max(8, std::cmp::min(logical, 16));
+    let parallelism = match try_build_pool("walk", walk_threads) {
+        Ok(pool) => Parallelism::RayonExistingPool { pool: Arc::new(pool), busy_timeout: None },
+        Err(_) => Parallelism::RayonNewPool(walk_threads),
+    };
 
     let excluded_dirs = filters.recursive_excluded_dirs.clone();
     let excluded_terms = filters.excluded_terms.clone();
@@ -407,7 +412,7 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
     for dir_entry_result in walker {
         if is_cancelled(scan_id) {
             let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::Done });
-            clear_cancel(scan_id);
+            route_walk_done(scan_id);
             return;
         }
         match dir_entry_result {
@@ -436,10 +441,6 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
                             MediaKind::Video => videos_for_later.push(path.to_path_buf()),
                             _ => {}
                         }
-                        // Periodically try to flush deferred image jobs so thumbnails don't stall mid-scan
-                        if (scanned_paths & 0x7FF) == 0 { // every ~2048 files
-                            flush_deferred_some(32);
-                        }
                     }
                     if recursive {
                         scanned_paths += 1;
@@ -461,8 +462,6 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
                                 scan_id, 
                                 msg: ScanMsg::Progress { scanned: scanned_paths, total: 0 } 
                             });
-                            // Also try flushing a few deferred thumbnails at progress ticks
-                            flush_deferred_some(64);
                         }
                     } else {
                         scanned += 1;
@@ -478,7 +477,7 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
                 let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::Error(format!("walk error: {err}")) });
             }
         }
-        if idx % 1000 == 0 { std::thread::yield_now(); flush_deferred_some(16); }
+        if idx % 1000 == 0 { std::thread::yield_now(); }
         idx += 1;
     }
 
@@ -502,30 +501,18 @@ fn perform_scan_blocking(filters: Filters, tx: Sender<ScanEnvelope>, recursive: 
     }
 
     // Defer video thumbnails until image thumbnails are complete
-    // Wait briefly for image inflight to drain (respect cancellation)
+    // Wait briefly for this scan's queued thumbnails to drain (respect cancellation)
     let mut spins = 0usize;
-    while IMG_INFLIGHT.load(Ordering::Relaxed) > 0 {
+    while route_pending(scan_id) > 0 {
         if is_cancelled(scan_id) { break; }
         std::thread::sleep(Duration::from_millis(15));
         spins += 1;
         if spins > 2_000 { break; } // ~30s safety cap
     }
-    if timing_enabled { 
-        eprintln!("scan[{scan_id}]: wait for image thumbnails drained in {:?}", t_last_phase.elapsed()); 
-        *t_last_phase = Instant::now(); 
+    if timing_enabled {
+        eprintln!("scan[{scan_id}]: wait for image thumbnails drained in {:?}", t_last_phase.elapsed());
+        *t_last_phase = Instant::now();
     }
-    // Flush any deferred image thumbnail jobs now that the queue should have capacity
-    if let Ok(mut deferred) = THUMB_DEFERRED.lock() {
-        if timing_enabled && !deferred.is_empty() { eprintln!("scan[{scan_id}]: flushing {} deferred image thumbnails", deferred.len()); }
-        for job in deferred.drain(..) {
-            if let Some(tx) = THUMB_TX.get() {
-                if tx.try_send(job).is_ok() { IMG_INFLIGHT.fetch_add(1, Ordering::Relaxed); }
-                else { break; }
-            }
-        }
-    }
-    // Optionally wait a short moment for flushed deferred images to enqueue before videos
-    if IMG_INFLIGHT.load(Ordering::Relaxed) > 0 { std::thread::sleep(Duration::from_millis(50)); }
     for vpath in videos_for_later.into_iter() {
         enqueue_thumb_job(&vpath, MediaKind::Video, scan_id);
     }
@@ -551,12 +538,10 @@ fn estimate_total_shallow(root: &Path, filters: &Filters) -> usize {
     } else { 0 }
 }
 
-fn finish(tx: &Sender<ScanEnvelope>, scan_id: u64) { 
-    let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::Done }); 
-    // Unregister router mapping for this scan
-    if let Ok(mut map) = SCAN_ROUTERS.lock() { let _ = map.remove(&scan_id); }
-    // Drop any deferred thumbnail jobs for this scan to avoid leaking stale work
-    if let Ok(mut deferred) = THUMB_DEFERRED.lock() { deferred.retain(|j| j.scan_id != scan_id); }
+fn finish(tx: &Sender<ScanEnvelope>, scan_id: u64) {
+    let _ = tx.send(ScanEnvelope { scan_id, msg: ScanMsg::Done });
+    // The route stays registered until the last queued thumbnail of this scan has been delivered
+    route_walk_done(scan_id);
 }
 
 fn process_path_collect(
@@ -608,6 +593,241 @@ fn _is_image_ext(path: &Path) -> bool {
 mod tests {
     use super::*;
     use crossbeam::channel::unbounded;
+    use std::collections::{HashMap, HashSet};
+    use std::path::PathBuf;
+    use std::sync::atomic::AtomicUsize;
+
+    fn recv(rx: &Receiver<ScanEnvelope>) -> ScanEnvelope {
+        rx.recv_timeout(Duration::from_secs(60)).expect("scan message")
+    }
+
+    fn route_gone(scan_id: u64) -> bool {
+        for _ in 0..500 {
+            if !SCAN_ROUTERS.lock().unwrap().contains_key(&scan_id) { return true; }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+
+    fn scripted_generator(path: &Path, _kind: &MediaKind) -> Result<String, String> {
+        match path.file_name().and_then(|n| n.to_str()) {
+            Some("panic.jpg") => panic!("decoder exploded"),
+            Some("fail.jpg") => Err("plain failure".into()),
+            _ => Ok(format!("ok:{}", path.display())),
+        }
+    }
+
+    fn queue_jobs(scan_id: u64, names: &[&str]) -> Receiver<ThumbJob> {
+        let (jtx, jrx) = unbounded::<ThumbJob>();
+        for name in names {
+            route_pending_add(scan_id);
+            jtx.send(ThumbJob { path: PathBuf::from(name), kind: MediaKind::Image, scan_id }).unwrap();
+        }
+        jrx
+    }
+
+    fn tiny_jpeg() -> Vec<u8> {
+        let img: image::RgbImage = image::ImageBuffer::from_pixel(8, 8, image::Rgb([200, 40, 40]));
+        let mut out = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Jpeg).unwrap();
+        out
+    }
+
+    #[test]
+    fn worker_survives_panicking_generator() {
+        let scan_id = next_scan_id();
+        let (utx, urx) = unbounded::<ScanEnvelope>();
+        register_route(scan_id, utx);
+        let jrx = queue_jobs(scan_id, &["a.jpg", "panic.jpg", "fail.jpg", "b.jpg"]);
+        let pool = try_build_pool("test-worker", 1).unwrap();
+        pool.spawn(move || run_thumb_worker(jrx, scripted_generator));
+        let msgs: Vec<ScanMsg> = (0..4).map(|_| recv(&urx).msg).collect();
+        assert!(matches!(&msgs[0], ScanMsg::UpdateThumb { path, .. } if path.ends_with("a.jpg")));
+        assert!(matches!(&msgs[1], ScanMsg::ThumbFailed { error, .. } if error.contains("thumbnail worker panicked: decoder exploded")));
+        assert!(matches!(&msgs[2], ScanMsg::ThumbFailed { error, .. } if error == "plain failure"));
+        assert!(matches!(&msgs[3], ScanMsg::UpdateThumb { path, .. } if path.ends_with("b.jpg")));
+        route_walk_done(scan_id);
+        assert!(route_gone(scan_id));
+    }
+
+    #[test]
+    fn unguarded_pool_panic_does_not_abort_the_process() {
+        let before = POOL_PANICS.load(Ordering::Relaxed);
+        let pool = try_build_pool("test-panic", 2).unwrap();
+        pool.spawn(|| panic!("unguarded task panic"));
+        let (tx, rx) = unbounded::<u32>();
+        pool.spawn(move || tx.send(7).unwrap());
+        assert_eq!(rx.recv_timeout(Duration::from_secs(10)).unwrap(), 7);
+        for _ in 0..300 {
+            if POOL_PANICS.load(Ordering::Relaxed) > before { break; }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(POOL_PANICS.load(Ordering::Relaxed) > before);
+    }
+
+    #[test]
+    fn cancelled_scan_jobs_are_skipped_and_route_is_released() {
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        fn counting(_: &Path, _: &MediaKind) -> Result<String, String> {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            Ok(String::new())
+        }
+        let scan_id = next_scan_id();
+        let (utx, urx) = unbounded::<ScanEnvelope>();
+        register_route(scan_id, utx);
+        let jrx = queue_jobs(scan_id, &["1.jpg", "2.jpg", "3.jpg"]);
+        cancel_scan(scan_id);
+        try_build_pool("test-cancel", 1).unwrap().spawn(move || run_thumb_worker(jrx, counting));
+        route_walk_done(scan_id);
+        assert!(route_gone(scan_id));
+        assert_eq!(CALLS.load(Ordering::SeqCst), 0);
+        assert!(urx.try_recv().is_err());
+        assert!(!is_cancelled(scan_id));
+    }
+
+    #[test]
+    fn shallow_scan_lists_only_real_subdirectories() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("a.jpg"), tiny_jpeg()).unwrap();
+        let (tx, rx) = unbounded::<ScanEnvelope>();
+        let scan_id = next_scan_id();
+        let mut filters = Filters::default();
+        filters.root = dir.path().to_path_buf();
+        perform_scan_blocking(filters, tx, false, scan_id);
+        let mut dirs = Vec::new();
+        while let Ok(env) = rx.try_recv() {
+            if let ScanMsg::FoundDirBatch(d) = env.msg { dirs.extend(d.into_iter().map(|d| d.path)); }
+        }
+        assert_eq!(dirs, vec![dir.path().join("sub")]);
+    }
+
+    #[test]
+    fn new_scan_on_the_same_channel_cancels_the_previous_one() {
+        let (tx, _rx) = unbounded::<ScanEnvelope>();
+        let (other_tx, _other_rx) = unbounded::<ScanEnvelope>();
+        let (first, second, unrelated) = (next_scan_id(), next_scan_id(), next_scan_id());
+        register_route(first, tx.clone());
+        register_route(unrelated, other_tx);
+        assert!(!is_cancelled(first));
+        register_route(second, tx);
+        assert!(is_cancelled(first), "previous scan of the same explorer is superseded");
+        assert!(!is_cancelled(second));
+        assert!(!is_cancelled(unrelated), "scans of other explorers are untouched");
+        for id in [first, second, unrelated] {
+            route_walk_done(id);
+        }
+    }
+
+    #[test]
+    fn route_lives_until_walk_is_done_and_all_jobs_completed() {
+        let scan_id = next_scan_id();
+        let (utx, _urx) = unbounded::<ScanEnvelope>();
+        register_route(scan_id, utx);
+        route_pending_add(scan_id);
+        route_pending_add(scan_id);
+        assert_eq!(route_pending(scan_id), 2);
+        route_walk_done(scan_id);
+        assert!(SCAN_ROUTERS.lock().unwrap().contains_key(&scan_id));
+        route_job_done(scan_id);
+        assert!(SCAN_ROUTERS.lock().unwrap().contains_key(&scan_id));
+        route_job_done(scan_id);
+        assert!(!SCAN_ROUTERS.lock().unwrap().contains_key(&scan_id));
+    }
+
+    #[test]
+    fn scan_delivers_every_thumbnail_without_dropping_jobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let jpeg = tiny_jpeg();
+        let images = 700usize;
+        for i in 0..images {
+            std::fs::write(dir.path().join(format!("img_{i:04}.jpg")), &jpeg).unwrap();
+        }
+        let mut cr3 = vec![0u8; 2048];
+        cr3.extend_from_slice(&jpeg);
+        std::fs::write(dir.path().join("shot.cr3"), &cr3).unwrap();
+        std::fs::write(dir.path().join("broken.arw"), [0x49u8, 0x49, 0x2A, 0x00, 0x08, 0, 0, 0, 0, 0, 0, 0]).unwrap();
+        std::fs::write(dir.path().join("clip_a.mp4"), b"not a video").unwrap();
+        std::fs::write(dir.path().join("clip_b.mp4"), b"not a video").unwrap();
+
+        init_thumbnail_workers();
+        let (tx, rx) = unbounded::<ScanEnvelope>();
+        let scan_id = next_scan_id();
+        register_route(scan_id, tx.clone());
+        let mut filters = Filters::default();
+        filters.root = dir.path().to_path_buf();
+        filters.include_images = true;
+        filters.include_videos = true;
+        perform_scan_blocking(filters, tx, false, scan_id);
+
+        let (mut found, mut done) = (0usize, false);
+        let (mut updated, mut failed) = (HashSet::new(), HashMap::new());
+        let expected = images + 1 + 3;
+        let started = Instant::now();
+        while updated.len() + failed.len() < expected && started.elapsed() < Duration::from_secs(60) {
+            let Ok(env) = rx.recv_timeout(Duration::from_millis(200)) else { continue };
+            match env.msg {
+                ScanMsg::FoundBatch(b) => found += b.len(),
+                ScanMsg::UpdateThumb { path, .. } => { updated.insert(path); }
+                ScanMsg::ThumbFailed { path, error } => { failed.insert(path, error); }
+                ScanMsg::Done => done = true,
+                _ => {}
+            }
+        }
+        assert!(done);
+        assert_eq!(found, images + 4);
+        assert_eq!(updated.len(), images + 1, "every image and the RAW preview must get a thumbnail");
+        let broken = failed.iter().find(|(p, _)| p.ends_with("broken.arw")).map(|(_, e)| e.clone()).expect("broken.arw reported");
+        assert!(broken.starts_with("raw: "), "{broken}");
+        assert_eq!(failed.len(), 3);
+        assert!(route_gone(scan_id));
+    }
+
+    fn real_arw() -> Option<PathBuf> {
+        std::env::var_os("SMART_MEDIA_TEST_ARW").map(PathBuf::from).filter(|p| p.exists())
+    }
+
+    #[test]
+    fn arw_through_thumb_pool_survives() {
+        let Some(arw) = real_arw() else { return };
+        init_thumbnail_workers();
+        let (tx, rx) = unbounded::<ScanEnvelope>();
+        let scan_id = next_scan_id();
+        register_route(scan_id, tx);
+        enqueue_thumb_job(&arw, MediaKind::Image, scan_id);
+        match recv(&rx).msg {
+            ScanMsg::UpdateThumb { thumb, .. } => eprintln!("real ARW thumbnail: {} chars", thumb.len()),
+            other => panic!("expected a thumbnail, got {other:?}"),
+        }
+        route_walk_done(scan_id);
+        assert!(route_gone(scan_id));
+    }
+
+    #[test]
+    fn arw_without_preview_through_thumb_pool_fails_cleanly() {
+        let Some(arw) = real_arw() else { return };
+        let mut bytes = std::fs::read(&arw).unwrap();
+        for i in 0..bytes.len().saturating_sub(3) {
+            if bytes[i..i + 3] == [0xFF, 0xD8, 0xFF] { bytes[i] = 0; }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let broken = dir.path().join("no_preview.arw");
+        std::fs::write(&broken, bytes).unwrap();
+        init_thumbnail_workers();
+        let (tx, rx) = unbounded::<ScanEnvelope>();
+        let scan_id = next_scan_id();
+        register_route(scan_id, tx);
+        enqueue_thumb_job(&broken, MediaKind::Image, scan_id);
+        match recv(&rx).msg {
+            ScanMsg::ThumbFailed { error, .. } => {
+                eprintln!("rawkit failure surfaced as: {error}");
+                assert!(error.contains("rawkit panicked"), "{error}");
+            }
+            other => panic!("expected a failed thumbnail, got {other:?}"),
+        }
+        enqueue_thumb_job(&arw, MediaKind::Image, scan_id);
+        assert!(matches!(recv(&rx).msg, ScanMsg::UpdateThumb { .. }), "pool must keep working after the failure");
+    }
 
     #[cfg(windows)]
     #[test]

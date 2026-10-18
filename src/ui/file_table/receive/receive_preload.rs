@@ -2,6 +2,7 @@
 impl crate::ui::file_table::FileExplorer {
     pub fn receive_preload(&mut self, ctx: &eframe::egui::Context) {
         // First, integrate any preloaded DB rows for current path into a fast lookup by path
+        let started = std::time::Instant::now();
         while let Ok(rows) = self.db_preload_rx.try_recv() {
             // Page-aware apply: only apply to table if these rows belong to the active loading page
             let expecting_page = self.db_loading_page;
@@ -15,13 +16,12 @@ impl crate::ui::file_table::FileExplorer {
                         // Apply to table (fresh page swap)
                         self.table.clear();
                         self.table_index.clear();
-                        for r in rows.iter() {
+                        // Clamp to page size for safety
+                        for r in rows.iter().take(self.db_limit) {
                             let idx = self.table.len();
                             self.table_index.insert(r.path.clone(), idx);
                             self.table.push(r.clone());
                         }
-                        // Clamp to page size for safety
-                        if self.table.len() > self.db_limit { self.table.truncate(self.db_limit); }
                         self.db_last_batch_len = self.table.len();
                         self.db_offset = p * self.db_limit + self.db_last_batch_len;
                         // Cache page snapshot
@@ -85,6 +85,7 @@ impl crate::ui::file_table::FileExplorer {
                 }
             }
             ctx.request_repaint();
+            if started.elapsed() >= std::time::Duration::from_millis(8) { break; }
         }
     }
 }

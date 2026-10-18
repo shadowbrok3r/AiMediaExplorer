@@ -2,11 +2,15 @@ use chrono::{DateTime, Local};
 use once_cell::sync::Lazy;
 use std::path::PathBuf;
 
+// Camera RAW extensions (lowercase); the single source for scan listing and RAW decode routing.
+pub const RAW_EXTS: &[&str] = &["arw", "srf", "sr2", "cr2", "cr3", "nef", "nrw", "dng", "orf", "raf", "pef", "rw2", "raw"];
+
 // Supported media extensions
 pub static IMAGE_EXTS: Lazy<Vec<&'static str>> = Lazy::new(|| {
-    vec![
-        "jpg", "jpeg", "png", "gif", "bmp", "tiff", "webp", "heic", "heif", "avif", "arw"
-    ]
+    ["jpg", "jpeg", "png", "gif", "bmp", "tiff", "webp", "heic", "heif", "avif"]
+        .into_iter()
+        .chain(RAW_EXTS.iter().copied())
+        .collect()
 });
 
 pub static VIDEO_EXTS: Lazy<Vec<&'static str>> = Lazy::new(|| {
@@ -31,6 +35,10 @@ pub fn is_image(potential_img: &str) -> bool {
 
 pub fn is_video(potential_vid: &str) -> bool {
     VIDEO_EXTS.iter().any(|v| *v == potential_vid)
+}
+
+pub fn is_raw(potential_raw: &str) -> bool {
+    RAW_EXTS.contains(&potential_raw)
 }
 
 pub fn is_supported_media_ext(ext: &str) -> bool {
@@ -168,4 +176,26 @@ pub struct QuickAccess {
     pub label: String,
     pub path: PathBuf,
     pub icon: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_raw_ext_is_listed_as_image() {
+        for ext in RAW_EXTS {
+            assert!(is_raw(ext), "{ext}");
+            assert!(is_image(ext), "{ext}");
+            assert_eq!(*ext, ext.to_ascii_lowercase());
+        }
+        assert!(is_supported_media_ext("NEF") && is_supported_media_ext("cr3") && is_supported_media_ext("ARW"));
+    }
+
+    #[test]
+    fn raw_ext_list_has_no_duplicates_and_excludes_regular_images() {
+        let mut seen = std::collections::HashSet::new();
+        assert!(RAW_EXTS.iter().all(|e| seen.insert(*e)));
+        assert!(!is_raw("jpg") && !is_raw("png") && !is_raw("mp4"));
+    }
 }

@@ -6,3 +6,4 @@ pub mod windows;
 pub mod raw_decode;
 pub mod archive;
 pub mod filtering;
+pub mod guard;

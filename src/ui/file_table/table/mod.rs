@@ -498,7 +498,7 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                                             let filename = std::path::Path::new(internal_path).file_name().and_then(|n| n.to_str()).unwrap_or(internal_path);
                                             let internal_dir = std::path::Path::new(internal_path).parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
                                             let password = archive_passwords.get(archive_path).map(|s| s.as_str());
-                                            match crate::utilities::archive::extract_and_generate_thumbnail(scheme, archive_path, &internal_dir, filename, password) {
+                                            match crate::utilities::archive::extract_and_generate_thumbnail_blocking(scheme.to_string(), archive_path.to_string(), internal_dir, filename.to_string(), password.map(|s| s.to_string())).await {
                                                 Ok(Some(thumb_b64)) => {
                                                     let thumb = Thumbnail { thumbnail_b64: Some(thumb_b64), ..row_clone };
                                                     let _ = thumbnail_tx.try_send(thumb);
@@ -594,9 +594,9 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                                             // Look up the stored password for this archive
                                             let password = archive_passwords.get(archive_path).map(|s| s.as_str());
                                             
-                                            match crate::utilities::archive::extract_and_generate_thumbnail(
-                                                scheme, archive_path, &internal_dir, filename, password
-                                            ) {
+                                            match crate::utilities::archive::extract_and_generate_thumbnail_blocking(
+                                                scheme.to_string(), archive_path.to_string(), internal_dir, filename.to_string(), password.map(|s| s.to_string())
+                                            ).await {
                                                 Ok(Some(thumb_b64)) => {
                                                     let thumb = Thumbnail {
                                                         thumbnail_b64: Some(thumb_b64),
@@ -760,7 +760,9 @@ impl RowViewer<Thumbnail> for FileTableViewer {
         }
         for row in highlighted.iter().filter(|r| r.file_type != "<DIR>") {
             self.selected.insert(row.path.to_string());
-            // Send a selection event to open preview pane via receiver
+        }
+        // Send one selection event (last highlighted row) to open the preview pane via receiver
+        if let Some(row) = highlighted.iter().rev().find(|r| r.file_type != "<DIR>") {
             let _ = self.thumbnail_tx.try_send((*row).clone());
         }
     }

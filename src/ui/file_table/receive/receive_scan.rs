@@ -1,13 +1,26 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use crate::utilities::filtering::FiltersExt;
+use crate::utilities::thumbs::thumb_payload;
+use crate::utilities::types::MediaKind;
+
+const SCAN_MSG_BUDGET: usize = 512;
+const SCAN_TIME_BUDGET: Duration = Duration::from_millis(6);
 
 impl crate::ui::file_table::FileExplorer {
     pub fn receive_scan(&mut self, ctx: &eframe::egui::Context) {
-        // Drain all pending scan messages this frame to preserve ordering (so Found/FoundBatch
-        // are processed before their subsequent UpdateThumb events). This reduces the chance
-        // of UpdateThumb arriving first and logging Not found repeatedly.
-        while let Ok(env) = self.scan_rx.try_recv() {
+        // Drains scan messages in order until the per-frame message or time budget is spent.
+        let started = Instant::now();
+        let mut handled = 0usize;
+        loop {
+            if handled >= SCAN_MSG_BUDGET || started.elapsed() >= SCAN_TIME_BUDGET {
+                if !self.scan_rx.is_empty() { ctx.request_repaint(); }
+                break;
+            }
+            let Ok(env) = self.scan_rx.try_recv() else { break };
+            handled += 1;
+            let scan_id = env.scan_id;
             // Only process messages for scans owned by this explorer. If we don't yet
             // have an owning_scan_id, we accept only when this scan is the actively
             // initiated one (current_scan_id). This prevents cross-tab leakage.
@@ -43,7 +56,7 @@ impl crate::ui::file_table::FileExplorer {
             }
             match env.msg {
                 crate::utilities::scan::ScanMsg::FoundDir(dir) => {
-                    if !self.viewer.types_show_dirs { ctx.request_repaint(); return; }
+                    if !self.viewer.types_show_dirs { ctx.request_repaint(); continue; }
                     if let Some(row) = crate::ui::file_table::FileExplorer::directory_to_thumbnail(&dir.path) {
                         let dp = row.path.clone();
                         if !self.last_scan_paths.contains(&dp) {
@@ -143,8 +156,7 @@ impl crate::ui::file_table::FileExplorer {
                         // If the scan provided a thumbnail upfront, keep it cached so UI doesn't lose it on rebuild
                         if let Some(ref b64) = row.thumbnail_b64 {
                             let key = row.path.clone();
-                            let s = b64.strip_prefix("data:image/png;base64,").unwrap_or(b64);
-                            if let Ok(bytes) = B64.decode(s.as_bytes()) {
+                            if let Ok(bytes) = B64.decode(thumb_payload(b64).as_bytes()) {
                                 self.viewer.thumb_cache.entry(key).or_insert_with(|| Arc::from(bytes.into_boxed_slice()));
                             }
                         }
@@ -283,7 +295,6 @@ impl crate::ui::file_table::FileExplorer {
                     self.perf_last_batch_at = Some(now);
 
                     let ui_start = std::time::Instant::now();
-                    let mut newly_enqueued: Vec<String> = Vec::new();
                     let mut to_index: Vec<crate::database::Thumbnail> = Vec::new();
                     let mut need_repaint = false;
                     let excluded = if self.excluded_terms.is_empty() {
@@ -373,17 +384,13 @@ impl crate::ui::file_table::FileExplorer {
                             // If batch item came with a thumb, update cache immediately
                             if let Some(ref b64) = row_snapshot.thumbnail_b64 {
                                 let key = row_snapshot.path.clone();
-                                let s = b64.strip_prefix("data:image/png;base64,").unwrap_or(b64);
-                                if let Ok(bytes) = B64.decode(s.as_bytes()) {
+                                if let Ok(bytes) = B64.decode(thumb_payload(b64).as_bytes()) {
                                     self.viewer.thumb_cache.entry(key).or_insert_with(|| Arc::from(bytes.into_boxed_slice()));
                                 }
                             }
-                            // Schedule thumbnail generation if none yet
-                            if item.thumb_data.is_none() {
-                                let p_str = item.path.to_string_lossy().to_string();
-                                if self.thumb_scheduled.insert(p_str.clone()) {
-                                    newly_enqueued.push(p_str);
-                                }
+                            // Marks scanned images and videos as scheduled; the scan thumbnail pool produces them.
+                            if item.thumb_data.is_none() && matches!(item.kind, MediaKind::Image | MediaKind::Video) {
+                                self.thumb_scheduled.insert(item.path.to_string_lossy().to_string());
                             }
                             // Prepare indexing metadata
                             // Use actual extension (lowercase) for file_type
@@ -522,56 +529,11 @@ impl crate::ui::file_table::FileExplorer {
                             }
                         });
                     }
-                    if !newly_enqueued.is_empty() {
-                        let scan_tx = self.scan_tx.clone();
-                        let sem = self.thumb_semaphore.clone();
-                        // Route these updates to this explorer's owning scan id
-                        let scan_id_for_updates = self.owning_scan_id.or(self.current_scan_id).unwrap_or(0);
-                        for path_str in newly_enqueued.into_iter() {
-                            let permit_fut = sem.clone().acquire_owned();
-                            let tx_clone = scan_tx.clone();
-                            tokio::spawn(async move {
-                                let _permit = permit_fut.await.expect("semaphore closed");
-                                let path_buf = std::path::PathBuf::from(&path_str);
-                                let ext = path_buf
-                                    .extension()
-                                    .and_then(|e| e.to_str())
-                                    .map(|s| s.to_ascii_lowercase());
-
-                                let mut thumb: Option<String> = None;
-                                if let Some(ext) = ext {
-                                    let is_img = crate::is_image(ext.as_str());
-                                    let is_vid = crate::is_video(ext.as_str());
-                                    if is_img {
-                                        thumb =crate::utilities::thumbs::generate_image_thumb_data(&path_buf).ok();
-                                    } else if is_vid {
-                                        thumb = crate::utilities::thumbs::generate_video_thumb_data(&path_buf).ok();
-                                    }
-                                }
-                                if let Some(t) = thumb {
-                                    let _ = tx_clone.try_send(crate::ScanEnvelope {
-                                        scan_id: scan_id_for_updates,
-                                        msg: crate::utilities::scan::ScanMsg::UpdateThumb {
-                                            path: path_buf.clone(),
-                                            thumb: t,
-                                        },
-                                    });
-                                } else {
-                                    let _ = tx_clone.try_send(crate::ScanEnvelope {
-                                        scan_id: scan_id_for_updates,
-                                        msg: crate::utilities::scan::ScanMsg::ThumbFailed {
-                                            path: path_buf.clone(),
-                                            error: "thumbnail generation failed".to_string(),
-                                        },
-                                    });
-                                }
-                            });
-                        }
-                    }
                 }
                 crate::utilities::scan::ScanMsg::UpdateThumb { path, thumb } => {
                     let key = path.to_string_lossy().to_string();
-                    if let Some(&idx) = self.table_index.get(&key) {
+                    self.recursive_prefetch_inflight = self.recursive_prefetch_inflight.saturating_sub(1);
+                    if let Some(idx) = self.table_pos(&key) {
                         if let Some(found) = self.table.get_mut(idx) {
                             found.thumbnail_b64 = Some(thumb.clone());
                             self.pending_thumb_rows.push(found.clone());
@@ -627,29 +589,9 @@ impl crate::ui::file_table::FileExplorer {
                         }
                     }
                     // Also persist thumbnail into our snapshot rows so it survives page rebuilds
-                    if let Some(r) = self
-                        .last_scan_rows
-                        .iter_mut()
-                        .find(|r| r.path == key)
-                    {
-                        r.thumbnail_b64 = Some(thumb.clone());
-                    }
-                    if !self.recursive_filtered_rows.is_empty() {
-                        if let Some(r) = self
-                            .recursive_filtered_rows
-                            .iter_mut()
-                            .find(|r| r.path == key)
-                        {
-                            r.thumbnail_b64 = Some(thumb.clone());
-                        }
-                    }
+                    self.set_snapshot_thumb(scan_id, &key, &thumb);
                     // Decode into cache (strip data URL prefix if present)
-                    let thumb_str = if let Some(stripped) = thumb.strip_prefix("data:image/png;base64,") {
-                        stripped
-                    } else {
-                        thumb.as_str()
-                    };
-                    if let Ok(decoded) = B64.decode(thumb_str.as_bytes()) {
+                    if let Ok(decoded) = B64.decode(thumb_payload(&thumb).as_bytes()) {
                         self
                             .viewer
                             .thumb_cache
@@ -680,6 +622,7 @@ impl crate::ui::file_table::FileExplorer {
                 }
                 crate::utilities::scan::ScanMsg::ThumbFailed { path, error } => {
                     let key = path.to_string_lossy().to_string();
+                    self.recursive_prefetch_inflight = self.recursive_prefetch_inflight.saturating_sub(1);
                     self.failed_thumbs.push((key.clone(), error.clone()));
                     log::warn!("Thumbnail failed: {} => {}", key, error);
                     // If scan already done (or user switched tabs and came back), open a failed tab now
