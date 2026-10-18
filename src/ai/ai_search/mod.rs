@@ -430,7 +430,7 @@ impl AISearchEngine {
             return Vec::new();
         }
         match DB
-            .query("SELECT * FROM thumbnails LIMIT $limit")
+            .query(format!("SELECT {} FROM thumbnails LIMIT $limit", crate::database::thumbnails::row_cols()))
             .bind(("limit", limit as i64))
             .await
         {
@@ -455,15 +455,15 @@ impl AISearchEngine {
         }
         match DB
             .query(
-                r#"
-                SELECT * FROM thumbnails
+                format!(r#"
+                SELECT {} FROM thumbnails
                     WHERE 
                         description != NONE 
                         AND caption != NONE 
                         AND category != NONE 
                         AND tags != NONE
                 LIMIT $limit
-                "#,
+                "#, crate::database::thumbnails::row_cols()),
             )
             .bind(("limit", limit as i64))
             .await

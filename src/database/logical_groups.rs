@@ -154,7 +154,7 @@ impl crate::Thumbnail {
         let _ga = db_activity("Select thumbnails by logical_group");
         db_set_detail("Loading thumbnails in group".to_string());
         let rows: Vec<Self> = DB
-            .query("SELECT * FROM thumbnails WHERE logical_group == $gid")
+            .query(format!("SELECT {} FROM thumbnails WHERE logical_group == $gid", super::thumbnails::row_cols()))
             .bind(("gid", id.clone()))
             .await?
             .take(0)?;

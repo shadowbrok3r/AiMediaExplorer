@@ -12,7 +12,9 @@ use super::snapshot::{
     self, EngineChange, MaintenanceSettings, PendingRestore, ProgressFn, SnapshotInfo, SnapshotKind, StampState, human, log_event,
     snapshots_dir, store_has_data, store_in_use, store_name,
 };
-use super::surql::{self, VerifyOptions, VerifyTarget};
+use super::surql::{self, ExportOptions, VerifyOptions, VerifyTarget};
+use super::thumb_blobs::{self, QuickStats};
+use super::thumb_migration::MigrationState;
 
 pub use super::snapshot::override_snapshot_once;
 
@@ -46,6 +48,7 @@ pub fn info_json(store: &Path) -> Value {
         "stamp": stamp_json,
         "engine_change": { "state": change.label(), "detail": change },
         "snapshots": snapshot::list_snapshots_for(store),
+        "thumb_migration": MigrationState::load(store),
         "settings": MaintenanceSettings::load(store),
         "pending_restore": snapshot::pending_restore(store),
     })
@@ -60,6 +63,7 @@ struct StoreInfo {
     stamp: StampState,
     change: EngineChange,
     pending: Option<PendingRestore>,
+    migration: MigrationState,
 }
 
 fn read_store_info(store: &Path) -> StoreInfo {
@@ -73,6 +77,7 @@ fn read_store_info(store: &Path) -> StoreInfo {
         change: snapshot::classify(store, has_data, &stamp, snapshot::engine_versions()),
         stamp,
         pending: snapshot::pending_restore(store),
+        migration: MigrationState::load(store),
     }
 }
 
@@ -105,6 +110,7 @@ struct Panel {
     next_op: u64,
     confirm: Option<Confirm>,
     row_results: HashMap<PathBuf, (bool, String)>,
+    blobs: Option<QuickStats>,
     ctx: Option<egui::Context>,
     hooked: bool,
 }
@@ -214,12 +220,13 @@ pub async fn op_export(verify: bool) {
     }
     let path = fresh_export_path(&store, "export");
     let progress = op_progress(id, "Export");
+    let include_thumb_blobs = MaintenanceSettings::load(&store).export_include_thumb_blobs;
     let _ga = super::db_activity("Export DB");
-    match surql::export_atomic(&super::DB, &path, &progress).await {
+    match surql::export_atomic_with(&super::DB, &path, &progress, ExportOptions { include_thumb_blobs }).await {
         Ok(rep) => {
             log_event(log::Level::Info, format!("Exported {} in {:.1}s: {}", human(rep.bytes), rep.millis as f32 / 1000.0, path.display()));
             if verify {
-                run_verify_file(&path, &progress).await;
+                run_verify_file(&path, &progress, include_thumb_blobs).await;
             }
             let settings = snapshot::MaintenanceSettings::load(&store);
             snapshot::prune_snapshots(&store, &settings, Local::now());
@@ -229,9 +236,9 @@ pub async fn op_export(verify: bool) {
     end_op(id);
 }
 
-async fn run_verify_file(path: &Path, progress: &ProgressFn) {
+async fn run_verify_file(path: &Path, progress: &ProgressFn, include_thumb_blobs: bool) {
     let target = if super::is_connected() { VerifyTarget::Live(&super::DB) } else { VerifyTarget::FileOnly };
-    match surql::verify_export(path, target, &VerifyOptions::default(), progress).await {
+    match surql::verify_export(path, target, &VerifyOptions { include_thumb_blobs, ..Default::default() }, progress).await {
         Ok(r) if r.ok => set_result(path, true, format!("OK: {} records, {} tables ({})", r.imported.total_records(), r.imported.tables.len(), r.backend)),
         Ok(r) => set_result(path, false, format!("FAILED: {}", r.problems.first().cloned().unwrap_or_else(|| "see log".into()))),
         Err(e) => set_result(path, false, format!("FAILED: {e}")),
@@ -243,7 +250,7 @@ pub async fn op_verify(info: SnapshotInfo) {
     let id = begin_op(&format!("Verify {}", info.name));
     let progress = op_progress(id, "Verify");
     match info.kind {
-        SnapshotKind::Surql => run_verify_file(&info.path, &progress).await,
+        SnapshotKind::Surql => run_verify_file(&info.path, &progress, false).await,
         SnapshotKind::Dir => {
             let dir = info.path.clone();
             let p = progress.clone();
@@ -363,7 +370,9 @@ fn refresh_now() {
     spawn(async move {
         let s2 = store.clone();
         let result = tokio::task::spawn_blocking(move || (snapshot::list_snapshots_for(&s2), read_store_info(&s2), MaintenanceSettings::load(&s2))).await;
+        let blobs = if super::is_connected() { thumb_blobs::quick_stats().await.ok() } else { None };
         with(|p| {
+            p.blobs = blobs;
             if let Ok((list, info, settings)) = result {
                 p.snapshots = list;
                 p.store = Some(info);
@@ -466,6 +475,7 @@ struct View {
     ops: Vec<Op>,
     confirm: Option<Confirm>,
     results: HashMap<PathBuf, (bool, String)>,
+    blobs: Option<QuickStats>,
     refreshing: bool,
 }
 
@@ -487,6 +497,7 @@ fn view(ctx: &egui::Context) -> View {
                 ops: p.ops.clone(),
                 confirm: p.confirm.clone(),
                 results: p.row_results.clone(),
+                blobs: p.blobs,
                 refreshing: p.refreshing,
             },
         )
@@ -511,6 +522,29 @@ fn kv(ui: &mut egui::Ui, key: &str, value: impl Into<egui::WidgetText>) {
     ui.label(egui::RichText::new(key).strong());
     ui.label(value);
     ui.end_row();
+}
+
+fn blob_summary(blobs: Option<QuickStats>, store_size: Option<u64>) -> String {
+    let Some(q) = blobs else { return "unknown (database not connected)".into() };
+    if q.stats.count == 0 {
+        return "none stored".into();
+    }
+    let approx = if q.estimated { "about " } else { "" };
+    let share = store_size.filter(|s| *s > 0).map(|s| format!(", {approx}{:.0}% of the store folder", q.stats.total_bytes as f64 * 100.0 / s as f64)).unwrap_or_default();
+    format!("{} blobs, {approx}{}{share}", q.stats.count, human(q.stats.total_bytes))
+}
+
+fn migration_summary(m: &MigrationState) -> String {
+    if let Some(done) = &m.finished {
+        return format!("migrated to blobs and cleared ({} rows, finished {})", m.cleared, done.get(..10).unwrap_or(done));
+    }
+    if m.copy_done {
+        return format!("copied to blobs ({} migrated, {} failed); finish step pending", m.migrated, m.failed);
+    }
+    if m.started.is_some() {
+        return format!("copy in progress or interrupted ({} migrated, {} failed)", m.migrated, m.failed);
+    }
+    "not migrated (open Devtools > Thumbnail storage)".into()
 }
 
 fn status_text(ui: &egui::Ui, ok: bool, text: &str) -> egui::RichText {
@@ -592,6 +626,10 @@ pub fn show(ui: &mut egui::Ui) {
                 if let Some(p) = o.restored {
                     kv(ui, "Last open: restored from", p.display().to_string());
                 }
+            }
+            kv(ui, "Thumbnail blobs", blob_summary(v.blobs, v.store.as_ref().map(|s| s.size)));
+            if let Some(s) = &v.store {
+                kv(ui, "Inline thumbnails", migration_summary(&s.migration));
             }
             kv(ui, "Snapshots folder", v.store.as_ref().map(|s| snapshots_dir(&s.path).display().to_string()).unwrap_or_default());
         });
@@ -675,6 +713,7 @@ pub fn show(ui: &mut egui::Ui) {
         ui.checkbox(&mut s.snapshot_on_engine_change, "Snapshot the store folder before opening it with a different engine version");
         ui.checkbox(&mut s.auto_export_on_engine_change, "Write a .surql export after the first successful open on a new engine");
         ui.checkbox(&mut s.deep_verify_snapshots, "Deep verify: also open a temporary copy when verifying a snapshot folder");
+        ui.checkbox(&mut s.export_include_thumb_blobs, "Include thumbnail blobs in .surql exports (large; thumbnails can be regenerated)");
         ui.horizontal(|ui| {
             ui.label("Skip auto export when the store is larger than");
             ui.add(egui::DragValue::new(&mut gib).range(0.1..=4096.0).speed(0.1).suffix(" GiB"));

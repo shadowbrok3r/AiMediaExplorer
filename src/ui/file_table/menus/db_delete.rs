@@ -7,6 +7,7 @@ pub async fn delete_rows(ids: Vec<RecordId>, paths: Vec<String>) -> anyhow::Resu
     if ids.is_empty() && paths.is_empty() {
         return Ok((0, 0));
     }
+    let forgotten = paths.clone();
     let mut response = crate::DB
         .query(
             r#"
@@ -19,6 +20,12 @@ pub async fn delete_rows(ids: Vec<RecordId>, paths: Vec<String>) -> anyhow::Resu
         .await?;
     let embeddings: Vec<Value> = response.take(0)?;
     let thumbnails: Vec<Value> = response.take(1)?;
+    if let Err(e) = crate::database::thumb_blobs::delete_by_paths(&forgotten).await {
+        log::warn!("deleting thumbnail blobs failed: {e}");
+    }
+    for path in &forgotten {
+        crate::ui::file_table::thumbs::service().forget_path(path);
+    }
     Ok((embeddings.len(), thumbnails.len()))
 }
 

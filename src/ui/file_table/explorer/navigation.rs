@@ -33,8 +33,7 @@ impl crate::ui::file_table::FileExplorer {
             self.last_scan_rows.clear();
             self.last_scan_paths.clear();
             self.last_scan_root = Some(self.current_path.clone());
-                // Clear scheduled thumbnails from previous context
-                self.thumb_scheduled.clear();
+                self.viewer.thumbs.new_scope(self.viewer.scope);
             // Reset failure collection state
             self.failed_thumbs.clear();
             self.failed_tab_opened = false;
@@ -76,18 +75,18 @@ impl crate::ui::file_table::FileExplorer {
     }
     
     pub fn set_rows(&mut self, rows: Vec<crate::database::Thumbnail>) {
-    self.viewer.mode = crate::ui::file_table::table::ExplorerMode::Database;
-    self.table.clear();
-    self.table_index.clear();
-    for r in rows.into_iter() { let idx = self.table.len(); self.table.push(r.clone()); self.table_index.insert(r.path.clone(), idx); }
+    self.set_rows_from_db(rows);
     }
     
     // Set the table rows from DB results and switch to Database viewing mode
-    pub fn set_rows_from_db(&mut self, rows: Vec<crate::database::Thumbnail>) {
+    pub fn set_rows_from_db(&mut self, mut rows: Vec<crate::database::Thumbnail>) {
     self.viewer.mode = crate::ui::file_table::table::ExplorerMode::Database;
+    self.viewer.thumbs.new_scope(self.viewer.scope);
+    crate::ui::file_table::thumbs::adopt_legacy(&self.viewer.thumbs, &mut rows);
+    self.viewer.thumbs.note_rows(rows.iter().filter(|r| r.file_type != "<DIR>").map(|r| r.path.clone()).collect());
     self.table.clear();
     self.table_index.clear();
-    for r in rows.into_iter() { let idx = self.table.len(); self.table.push(r.clone()); self.table_index.insert(r.path.clone(), idx); }
+    for r in rows.into_iter() { let idx = self.table.len(); self.table_index.insert(r.path.clone(), idx); self.table.push(r); }
     }
 
     pub fn push_history(&mut self, new_path: String) {

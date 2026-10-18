@@ -16,15 +16,15 @@ use super::{DB_NAME, NS, SCHEMA_DDL, define_schema};
 
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-fn now_fixed() -> DateTime<Local> {
+pub(super) fn now_fixed() -> DateTime<Local> {
     Local.with_ymd_and_hms(2026, 10, 18, 12, 0, 0).unwrap()
 }
 
-fn plenty(_: &Path) -> io::Result<u64> {
+pub(super) fn plenty(_: &Path) -> io::Result<u64> {
     Ok(u64::MAX / 2)
 }
 
-fn make_store(root: &Path, name: &str) -> PathBuf {
+pub(super) fn make_store(root: &Path, name: &str) -> PathBuf {
     let store = root.join("db").join(name);
     for (rel, size) in [("manifest/MANIFEST-1", 120usize), ("sstables/000001.sst", 5000), ("vlog/000001.vlog", 9000), ("wal/00000001.wal", 3000), ("delete_list/deep/nested/file", 10)] {
         let p = store.join(rel);
@@ -517,7 +517,7 @@ fn fake_b64(seed: usize, len: usize) -> String {
     (0..len).map(|i| ALPHA[(i * 7 + seed * 13 + i / 5) % 64] as char).collect()
 }
 
-async fn mem_db() -> Surreal<Db> {
+pub(super) async fn mem_db() -> Surreal<Db> {
     let db = Surreal::new::<Mem>(()).await.unwrap();
     db.use_ns(NS).use_db(DB_NAME).await.unwrap();
     define_schema(&db).await.unwrap();
@@ -667,7 +667,7 @@ async fn verify_export_accepts_good_and_rejects_damaged_files() {
     let missing = surql::verify_export(&tmp.path().join("nope.surql"), VerifyTarget::FileOnly, &opts, &no_progress()).await;
     assert!(missing.is_err());
 
-    let tiny_limit = VerifyOptions { mem_limit_bytes: 1, scratch_dir: Some(tmp.path().join("scratch")) };
+    let tiny_limit = VerifyOptions { mem_limit_bytes: 1, scratch_dir: Some(tmp.path().join("scratch")), ..Default::default() };
     let disk = surql::verify_export(&path, VerifyTarget::Live(&src), &tiny_limit, &no_progress()).await.unwrap();
     assert!(disk.ok, "{:?}", disk.problems);
     assert_eq!(disk.backend, "surrealkv-temp");
@@ -881,7 +881,7 @@ async fn bench_stage() {
         }
         "verify_mem" | "verify_disk" => {
             let opened = surql::open_store(&store).await.unwrap();
-            let opts = VerifyOptions { mem_limit_bytes: if stage == "verify_mem" { u64::MAX } else { 0 }, scratch_dir: Some(root.join("scratch")) };
+            let opts = VerifyOptions { mem_limit_bytes: if stage == "verify_mem" { u64::MAX } else { 0 }, scratch_dir: Some(root.join("scratch")), ..Default::default() };
             let t = std::time::Instant::now();
             let rep = surql::verify_export(&root.join("export.surql"), VerifyTarget::Live(&opened.db), &opts, &progress).await.unwrap();
             println!("BENCH {stage} ok={} backend={} import_secs={:.1} total_secs={:.1} problems={:?}", rep.ok, rep.backend, rep.import_millis as f32 / 1000.0, t.elapsed().as_secs_f32(), rep.problems);

@@ -1,6 +1,5 @@
 use eframe::egui::*;
 use humansize::DECIMAL;
-use base64::Engine as _;
 #[cfg(feature = "ffmpeg")]
 use {
     std::sync::atomic::Ordering,
@@ -102,6 +101,37 @@ impl super::FileExplorer {
         })
     }
 
+    /// Draws the selected row's picture: the cached thumbnail at once, replaced by the larger preview when it is ready.
+    fn preview_image(&self, ui: &mut Ui) {
+        let (thumbs, scope, path) = (&self.viewer.thumbs, self.viewer.scope, self.current_thumb.path.as_str());
+        let view = if path.is_empty() || self.current_thumb.file_type == "<DIR>" || self.current_thumb.file_type == "<ARCHIVE>" {
+            super::thumbs::ThumbView::Missing
+        } else {
+            let thumb = thumbs.request(scope, path, super::thumbs::Tier::Thumb, 0.0);
+            let preview = if super::thumbs::can_preview(path) { thumbs.request(scope, path, super::thumbs::Tier::Preview, 0.0) } else { super::thumbs::ThumbView::Missing };
+            if preview.is_ready() {
+                preview
+            } else if thumb.is_ready() {
+                thumb
+            } else if thumb == super::thumbs::ThumbView::Pending || preview == super::thumbs::ThumbView::Pending {
+                super::thumbs::ThumbView::Pending
+            } else {
+                super::thumbs::ThumbView::Missing
+            }
+        };
+        match view {
+            super::thumbs::ThumbView::Ready { id, size } => {
+                Image::from_texture(load::SizedTexture::new(id, size)).max_size(ui.available_size() / 1.3).ui(ui);
+            }
+            super::thumbs::ThumbView::Pending => {
+                ui.weak("Loading...");
+            }
+            super::thumbs::ThumbView::Missing => {
+                ui.label("No Image");
+            }
+        }
+    }
+
     pub fn preview_pane(&mut self, ui: &mut Ui) {
         let mut open = self.open_preview_pane;
         let mut close = false;
@@ -111,7 +141,6 @@ impl super::FileExplorer {
             .show_collapsible(ui, &mut open, |ui| {
                 ui.vertical_centered(|ui| {
                     let name = &self.current_thumb.filename;
-                    let thumb_cache = &mut self.viewer.thumb_cache;
                     ui.horizontal(|ui| {
                         let btn = Button::new(
                             RichText::new(name).heading().color(ui.style().visuals.error_fg_color)
@@ -148,56 +177,14 @@ impl super::FileExplorer {
                         });
                     });
                     ui.separator();
-                    // For preview pane, render a higher-quality preview instead of the small table thumb
-                    let cache_key = format!("preview::{},{}", self.current_thumb.path, 1600);
                     // Compute video flag only when ffmpeg is enabled; otherwise always render image
                     #[cfg(feature = "ffmpeg")]
                     let is_video = {
-                        if self.current_thumb.file_type == "<DIR>" || self.current_thumb.file_type == "<ARCHIVE>" { false } else { 
+                        if self.current_thumb.file_type == "<DIR>" || self.current_thumb.file_type == "<ARCHIVE>" { false } else {
                             if let Some(ext) = std::path::Path::new(&self.current_thumb.path).extension().and_then(|e| e.to_str()) { crate::is_video(&ext.to_ascii_lowercase()) } else { false }
                         }
                     };
 
-                    // In Database mode, if we already have a base64 thumbnail on the row, seed the preview cache immediately
-                    if matches!(self.viewer.mode, super::table::ExplorerMode::Database) && !thumb_cache.contains_key(&cache_key) {
-                        if let Some(mut b64) = self.current_thumb.thumbnail_b64.clone() {
-                            if b64.starts_with("data:image/png;base64,") {
-                                if let Some((_, end)) = b64.split_once("data:image/png;base64,") { b64 = end.to_string(); }
-                            }
-                            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64.as_bytes()) {
-                                let t = crate::database::Thumbnail { path: cache_key.clone(), thumbnail_b64: Some(base64::engine::general_purpose::STANDARD.encode(&bytes)), ..Default::default() };
-                                crate::ui::file_table::insert_thumbnail(thumb_cache, t);
-                            }
-                        }
-                    }
-                    if !thumb_cache.contains_key(&cache_key) && crate::utilities::thumbs::begin_preview(&cache_key) {
-                        let path = std::path::Path::new(&self.current_thumb.path).to_path_buf();
-                        let tx = self.thumbnail_tx.clone();
-                        let cache_key_task = cache_key.clone();
-                        // Generate high-res preview off the UI thread
-                        tokio::spawn(async move {
-                            let png = match crate::utilities::thumbs::generate_image_preview_png_blocking(path.clone(), 1600).await {
-                                Ok(png) => Ok(png),
-                                Err(e) => {
-                                    log::debug!("high-res preview failed: {}", e);
-                                    // Fall back to small thumb if needed
-                                    crate::utilities::thumbs::generate_image_thumb_data_blocking(path.clone()).await.and_then(|data_url| {
-                                        base64::engine::general_purpose::STANDARD
-                                            .decode(crate::utilities::thumbs::thumb_payload(&data_url).as_bytes())
-                                            .map_err(|e| e.to_string())
-                                    })
-                                }
-                            }
-                            .unwrap_or_default();
-                            crate::utilities::thumbs::end_preview(&cache_key_task, !png.is_empty());
-                            if !png.is_empty() {
-                                let mut t = crate::database::Thumbnail::default();
-                                t.path = cache_key_task.clone();
-                                t.thumbnail_b64 = Some(base64::engine::general_purpose::STANDARD.encode(&png));
-                                let _ = tx.try_send(t);
-                            }
-                        });
-                    }
                     #[cfg(feature = "ffmpeg")]
                     if is_video {
                         // Video player area: check for new frames from decoder channel
@@ -227,7 +214,7 @@ impl super::FileExplorer {
                         if let Some(tex) = &self.video_texture {
                             ui.image((tex.id(), ui.available_size()/1.3));
                         } else {
-                            super::get_img_ui(&thumb_cache, &cache_key, ui);
+                            self.preview_image(ui);
                         }
 
                         // Controls below the image
@@ -254,12 +241,12 @@ impl super::FileExplorer {
                             if updated { ui.ctx().request_repaint(); }
                         });
                     } else {
-                        super::get_img_ui(&thumb_cache, &cache_key, ui);
+                        self.preview_image(ui);
                     }
                     #[cfg(not(feature = "ffmpeg"))]
                     {
                         // Without ffmpeg feature, always render image preview
-                        super::get_img_ui(&thumb_cache, &cache_key, ui);
+                        self.preview_image(ui);
                     }
 
                      ui.separator();

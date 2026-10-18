@@ -9,7 +9,7 @@ impl super::FileExplorer {
         self.db_loading = true;
         self.table.clear();
         self.table_index.clear();
-        self.thumb_scheduled.clear();
+        self.viewer.thumbs.new_scope(self.viewer.scope);
         self.pending_thumb_rows.clear();
         self.viewer.clip_presence.clear();
         self.viewer.clip_presence_hashes.clear();
@@ -41,7 +41,7 @@ impl super::FileExplorer {
         self.db_loading = true;
         self.table.clear();
         self.table_index.clear();
-        self.thumb_scheduled.clear();
+        self.viewer.thumbs.new_scope(self.viewer.scope);
         self.pending_thumb_rows.clear();
         self.viewer.clip_presence.clear();
         self.viewer.clip_presence_hashes.clear();
@@ -98,7 +98,7 @@ impl super::FileExplorer {
         if self.db_offset == 0 {
             self.table.clear();
             self.table_index.clear();
-            self.thumb_scheduled.clear();
+            self.viewer.thumbs.new_scope(self.viewer.scope);
             self.pending_thumb_rows.clear();
             // Reset CLIP presence caches for a fresh page
             self.viewer.clip_presence.clear();
@@ -138,7 +138,7 @@ impl super::FileExplorer {
         if self.db_offset == 0 {
             self.table.clear();
             self.table_index.clear();
-            self.thumb_scheduled.clear();
+            self.viewer.thumbs.new_scope(self.viewer.scope);
             self.pending_thumb_rows.clear();
             self.viewer.clip_presence.clear();
             self.viewer.clip_presence_hashes.clear();

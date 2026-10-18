@@ -3,6 +3,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use image::{DynamicImage, GenericImageView, ImageFormat};
 use std::io::Cursor;
 use std::path::Path;
+use std::sync::{Arc, OnceLock};
 
 use crate::LogicalGroup;
 use crate::utilities::guard::guarded;
@@ -11,6 +12,74 @@ use crate::utilities::types::is_raw;
 pub const THUMB_MAX_DIM: u32 = 256;
 pub const THUMB_JPEG_QUALITY: u8 = 85;
 const PNG_DATA_URL_PREFIX: &str = "data:image/png;base64,";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThumbFormat {
+    Jpeg,
+    Png,
+}
+
+/// Encoded thumbnail as produced by the generators.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EncodedThumb {
+    pub bytes: Vec<u8>,
+    pub format: ThumbFormat,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl EncodedThumb {
+    // Text form for callers that still store thumbnails as strings: raw base64 for JPEG, a data URL for PNG.
+    pub fn to_legacy_string(&self) -> String {
+        let b64 = BASE64.encode(&self.bytes);
+        match self.format {
+            ThumbFormat::Jpeg => b64,
+            ThumbFormat::Png => format!("{PNG_DATA_URL_PREFIX}{b64}"),
+        }
+    }
+
+    // Parses the text form back into encoded bytes.
+    pub fn from_legacy_string(thumb: &str) -> Result<Self, String> {
+        let bytes = BASE64.decode(thumb_payload(thumb).as_bytes()).map_err(|e| format!("base64: {e}"))?;
+        Self::from_bytes(bytes)
+    }
+
+    // Reads the format and size from the image header.
+    pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, String> {
+        let format = if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+            ThumbFormat::Jpeg
+        } else if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+            ThumbFormat::Png
+        } else {
+            return Err("unsupported thumbnail format".into());
+        };
+        let (width, height) = image::ImageReader::new(Cursor::new(&bytes))
+            .with_guessed_format()
+            .map_err(|e| e.to_string())?
+            .into_dimensions()
+            .map_err(|e| e.to_string())?;
+        Ok(Self { bytes, format, width, height })
+    }
+}
+
+/// Receiver for finished thumbnails, implemented by the thumbnail service.
+pub trait ThumbSink: Send + Sync {
+    // Blob key when a stored thumbnail matches the file's current size and modification time.
+    fn fresh_key(&self, path: &Path) -> Option<String>;
+    // Stores the thumbnail and returns its blob key.
+    fn accept(&self, path: &Path, thumb: EncodedThumb) -> String;
+    fn failed(&self, path: &Path, error: &str);
+}
+
+static THUMB_SINK: OnceLock<Arc<dyn ThumbSink>> = OnceLock::new();
+
+pub fn set_thumb_sink(sink: Arc<dyn ThumbSink>) -> bool {
+    THUMB_SINK.set(sink).is_ok()
+}
+
+pub fn thumb_sink() -> Arc<dyn ThumbSink> {
+    THUMB_SINK.get_or_init(crate::ui::file_table::thumbs::default_sink).clone()
+}
 
 // Base64 payload of a thumbnail string, with any `data:<mime>;base64,` prefix removed.
 pub fn thumb_payload(thumb: &str) -> &str {
@@ -25,12 +94,13 @@ fn has_transparency(img: &DynamicImage) -> bool {
     img.color().has_alpha() && img.to_rgba8().pixels().any(|p| p.0[3] < 255)
 }
 
-// Opaque images become raw-base64 JPEG; images with real transparency stay PNG data URLs.
-fn encode_thumb(img: &DynamicImage) -> Result<String, String> {
+// Opaque images become JPEG; images with real transparency stay PNG.
+fn encode_thumb_bytes(img: &DynamicImage) -> Result<EncodedThumb, String> {
+    let (width, height) = img.dimensions();
     let mut buf = Vec::new();
     if has_transparency(img) {
         img.write_to(&mut Cursor::new(&mut buf), ImageFormat::Png).map_err(|e| format!("encode png failed: {e}"))?;
-        return Ok(format!("{PNG_DATA_URL_PREFIX}{}", BASE64.encode(&buf)));
+        return Ok(EncodedThumb { bytes: buf, format: ThumbFormat::Png, width, height });
     }
     let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, THUMB_JPEG_QUALITY);
     let encoded = match img.color() {
@@ -38,11 +108,15 @@ fn encode_thumb(img: &DynamicImage) -> Result<String, String> {
         _ => encoder.encode_image(&img.to_rgb8()),
     };
     encoded.map_err(|e| format!("encode jpeg failed: {e}"))?;
-    Ok(BASE64.encode(&buf))
+    Ok(EncodedThumb { bytes: buf, format: ThumbFormat::Jpeg, width, height })
+}
+
+pub fn generate_image_thumb(path: &Path) -> Result<EncodedThumb, String> {
+    guarded(|| generate_image_thumb_inner(path), |msg| format!("thumbnail decode panicked: {msg}"))
 }
 
 pub fn generate_image_thumb_data(path: &Path) -> Result<String, String> {
-    guarded(|| generate_image_thumb_data_inner(path), |msg| format!("thumbnail decode panicked: {msg}"))
+    generate_image_thumb(path).map(|t| t.to_legacy_string())
 }
 
 // Blocking-pool variant for async callers.
@@ -52,7 +126,7 @@ pub async fn generate_image_thumb_data_blocking(path: std::path::PathBuf) -> Res
         .unwrap_or_else(|e| Err(format!("thumbnail task failed: {e}")))
 }
 
-fn generate_image_thumb_data_inner(path: &Path) -> Result<String, String> {
+fn generate_image_thumb_inner(path: &Path) -> Result<EncodedThumb, String> {
     log::debug!("[thumb] generating image thumb: {}", path.display());
     let ext = path
         .extension()
@@ -62,12 +136,12 @@ fn generate_image_thumb_data_inner(path: &Path) -> Result<String, String> {
 
     if is_raw(&ext) {
         return match crate::utilities::raw_decode::decode_raw_image(path, THUMB_MAX_DIM) {
-            Ok(img) => encode_thumb(&img),
+            Ok(img) => encode_thumb_bytes(&img),
             Err(e) => {
                 log::warn!("[thumb] raw decode failed {}: {e:#}", path.display());
                 #[cfg(windows)]
                 {
-                    if let Ok(data) = generate_shell_thumb_data(path) {
+                    if let Ok(data) = generate_shell_thumb_data(path).and_then(|s| EncodedThumb::from_legacy_string(&s)) {
                         return Ok(data);
                     }
                 }
@@ -82,7 +156,7 @@ fn generate_image_thumb_data_inner(path: &Path) -> Result<String, String> {
             log::warn!("[thumb] open image failed {}: {}", path.display(), e);
             #[cfg(windows)]
             {
-                match generate_shell_thumb_data(path) {
+                match generate_shell_thumb_data(path).and_then(|s| EncodedThumb::from_legacy_string(&s)) {
                     Ok(data) => {
                         log::debug!("[thumb] windows shell fallback success for image: {}", path.display());
                         return Ok(data);
@@ -96,9 +170,13 @@ fn generate_image_thumb_data_inner(path: &Path) -> Result<String, String> {
         }
     };
     let thumb = img.thumbnail(THUMB_MAX_DIM, THUMB_MAX_DIM);
-    let data = encode_thumb(&thumb).inspect_err(|e| log::warn!("[thumb] {}: {e}", path.display()))?;
-    log::debug!("[thumb] image thumb success: {} ({} chars)", path.display(), data.len());
+    let data = encode_thumb_bytes(&thumb).inspect_err(|e| log::warn!("[thumb] {}: {e}", path.display()))?;
+    log::debug!("[thumb] image thumb success: {} ({} bytes)", path.display(), data.bytes.len());
     Ok(data)
+}
+
+pub fn generate_video_thumb(path: &Path) -> Result<EncodedThumb, String> {
+    generate_video_thumb_data(path).and_then(|s| EncodedThumb::from_legacy_string(&s))
 }
 
 #[cfg(windows)]
@@ -451,7 +529,19 @@ pub fn end_preview(key: &str, succeeded: bool) {
     end_preview_at(key, succeeded, std::time::Instant::now())
 }
 
+/// Decoded preview scaled to fit `max_dim`, for callers that upload pixels directly instead of going through PNG.
+pub fn generate_image_preview_image(path: &Path, max_dim: u32) -> Result<DynamicImage, String> {
+    guarded(|| generate_image_preview_image_inner(path, max_dim), |msg| format!("preview decode panicked: {msg}"))
+}
+
 fn generate_image_preview_png_inner(path: &Path, max_dim: u32) -> Result<Vec<u8>, String> {
+    let img = generate_image_preview_image_inner(path, max_dim)?;
+    let mut out = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).map_err(|e| e.to_string())?;
+    Ok(out)
+}
+
+fn generate_image_preview_image_inner(path: &Path, max_dim: u32) -> Result<DynamicImage, String> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -459,13 +549,13 @@ fn generate_image_preview_png_inner(path: &Path, max_dim: u32) -> Result<Vec<u8>
         .unwrap_or_default();
 
     if is_raw(&ext) {
-        return match crate::utilities::raw_decode::decode_raw_to_png_bytes(path, max_dim) {
-            Ok(png) => Ok(png),
+        return match crate::utilities::raw_decode::decode_raw_image(path, max_dim) {
+            Ok(img) => Ok(img),
             Err(e) => {
                 #[cfg(windows)]
                 {
-                    if let Ok(png) = generate_shell_png_bytes(path, max_dim as i32) {
-                        return Ok(png);
+                    if let Ok(img) = generate_shell_png_bytes(path, max_dim as i32).and_then(|png| image::load_from_memory(&png).map_err(|e| e.to_string())) {
+                        return Ok(img);
                     }
                 }
                 Err(format!("raw: {e:#}"))
@@ -480,18 +570,13 @@ fn generate_image_preview_png_inner(path: &Path, max_dim: u32) -> Result<Vec<u8>
                 if w >= h { (max_dim, ((h as f32) * (max_dim as f32) / (w as f32)).round() as u32) }
                 else { (((w as f32) * (max_dim as f32) / (h as f32)).round() as u32, max_dim) }
             } else { (w, h) };
-            let img2 = if nw != w || nh != h { img.resize_exact(nw, nh, image::imageops::FilterType::Lanczos3) } else { img };
-            let mut out = Vec::new();
-            img2.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
-                .map_err(|e| e.to_string())?;
-            Ok(out)
+            Ok(if nw != w || nh != h { img.resize_exact(nw, nh, image::imageops::FilterType::Lanczos3) } else { img })
         }
         Err(e) => {
             #[cfg(windows)]
             {
-                // Fallback: larger shell bitmap for preview
                 let _ = &e;
-                return generate_shell_png_bytes(path, max_dim as i32);
+                return generate_shell_png_bytes(path, max_dim as i32).and_then(|png| image::load_from_memory(&png).map_err(|e| e.to_string()));
             }
             #[cfg(not(windows))]
             {
@@ -616,6 +701,56 @@ mod tests {
     }
 
     #[test]
+    fn generated_thumbnail_carries_encoded_bytes_format_and_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("a.jpg");
+        let img: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(800, 400, |x, y| Rgb([(x / 4) as u8, (y / 2) as u8, 30]));
+        img.save(&p).unwrap();
+        let t = generate_image_thumb(&p).unwrap();
+        assert_eq!(t.format, ThumbFormat::Jpeg);
+        assert_eq!((t.width, t.height), (256, 128));
+        assert_eq!(&t.bytes[..3], &[0xFF, 0xD8, 0xFF]);
+        assert_eq!(image::load_from_memory(&t.bytes).unwrap().dimensions(), (256, 128));
+    }
+
+    #[test]
+    fn encoded_thumb_round_trips_through_the_text_form() {
+        let dir = tempfile::tempdir().unwrap();
+        let jpg = dir.path().join("a.jpg");
+        ImageBuffer::<Rgb<u8>, Vec<u8>>::from_pixel(300, 300, Rgb([10, 20, 30])).save(&jpg).unwrap();
+        let t = generate_image_thumb(&jpg).unwrap();
+        let text = t.to_legacy_string();
+        assert!(!text.starts_with("data:"));
+        assert_eq!(EncodedThumb::from_legacy_string(&text).unwrap(), t);
+
+        let png = dir.path().join("t.png");
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_fn(300, 300, |x, _| Rgba([200, 10, 10, if x < 150 { 0 } else { 255 }]));
+        img.save(&png).unwrap();
+        let t = generate_image_thumb(&png).unwrap();
+        assert_eq!(t.format, ThumbFormat::Png);
+        let text = t.to_legacy_string();
+        assert!(text.starts_with(PNG_DATA_URL_PREFIX));
+        assert_eq!(EncodedThumb::from_legacy_string(&text).unwrap(), t);
+    }
+
+    #[test]
+    fn encoded_thumb_rejects_unknown_or_truncated_payloads() {
+        assert!(EncodedThumb::from_bytes(b"GIF89a".to_vec()).is_err());
+        assert!(EncodedThumb::from_bytes(vec![0xFF, 0xD8, 0xFF, 0x00]).is_err());
+        assert!(EncodedThumb::from_legacy_string("%%%").is_err());
+    }
+
+    #[test]
+    fn preview_image_fits_the_requested_size_without_a_png_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("wide.png");
+        ImageBuffer::<Rgb<u8>, Vec<u8>>::from_pixel(400, 200, Rgb([5, 6, 7])).save(&p).unwrap();
+        assert_eq!(generate_image_preview_image(&p, 100).unwrap().dimensions(), (100, 50));
+        assert_eq!(generate_image_preview_image(&p, 1600).unwrap().dimensions(), (400, 200));
+        assert!(generate_image_preview_image(&dir.path().join("none.png"), 100).is_err());
+    }
+
+    #[test]
     fn real_arw_thumbnail_and_preview() {
         let Some(arw) = std::env::var_os("SMART_MEDIA_TEST_ARW").map(std::path::PathBuf::from).filter(|p| p.exists()) else { return };
         let t = generate_image_thumb_data(&arw).unwrap();
@@ -648,7 +783,7 @@ mod tests {
             let t = std::time::Instant::now();
             let mut jpeg_len = 0;
             for _ in 0..reps {
-                jpeg_len = encode_thumb(&thumb).unwrap().len();
+                jpeg_len = encode_thumb_bytes(&thumb).unwrap().to_legacy_string().len();
             }
             let current_ms = t_ms(t);
             let t = std::time::Instant::now();

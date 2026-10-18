@@ -1,10 +1,21 @@
 use std::time::Instant;
 
+use std::collections::HashMap;
+
 use crate::{LogicalGroup, DB};
 use crate::database::{db_activity, db_set_progress, db_set_detail, db_set_error};
+use crate::database::thumb_blobs::{self, ThumbBlobIn};
 use surrealdb::types::{RecordId, SurrealValue};
 use chrono::Utc;
 use crossbeam::channel::Sender as CrossbeamSender;
+
+pub(super) const COLS_META: &str = "id, db_created, path, filename, file_type, size, description, caption, tags, category, modified, hash, parent_dir, logical_group";
+pub(super) const COLS_WITH_INLINE: &str = "id, db_created, path, filename, file_type, size, description, caption, tags, category, thumbnail_b64, modified, hash, parent_dir, logical_group";
+
+/// Row columns for list queries; the inline base64 column is selected only while legacy rows may still hold it.
+pub(crate) fn row_cols() -> &'static str {
+    if super::thumb_migration::inline_may_exist() { COLS_WITH_INLINE } else { COLS_META }
+}
 
 impl Default for crate::Thumbnail {
     fn default() -> Self {
@@ -69,7 +80,7 @@ impl crate::Thumbnail {
         loop {
             db_set_detail(format!("Loading thumbnails ({}..{}]", start, start + CHUNK));
             let batch: Vec<Self> = DB
-                .query("SELECT * FROM thumbnails LIMIT $limit START $start")
+                .query(format!("SELECT {} FROM thumbnails LIMIT $limit START $start", row_cols()))
                 .bind(("limit", CHUNK))
                 .bind(("start", start))
                 .await?
@@ -102,7 +113,7 @@ impl crate::Thumbnail {
         let mut start: i64 = 0;
         loop {
             let batch: Vec<Self> = DB
-                .query("SELECT * FROM thumbnails LIMIT $limit START $start")
+                .query(format!("SELECT {} FROM thumbnails LIMIT $limit START $start", row_cols()))
                 .bind(("limit", CHUNK))
                 .bind(("start", start))
                 .await?
@@ -140,26 +151,90 @@ impl crate::Thumbnail {
         let _ga = db_activity("Load all thumbnails (paged)");
         db_set_detail(format!("Loading all thumbnails ({}..{})", start, start + limit));
         let rows: Vec<Self> = DB
-            .query("SELECT * FROM thumbnails LIMIT $limit START $start")
+            .query(format!("SELECT {} FROM thumbnails LIMIT $limit START $start", row_cols()))
             .bind(("limit", limit))
             .bind(("start", start))
             .await?
             .take(0)?;
         Ok(rows)
     }
-    // Fetch a single thumbnail row by exact path (leverages UNIQUE index on path)
+    /// Fetch a single thumbnail row by exact path (UNIQUE index); `thumbnail_b64` is filled from the blob table when the row has no inline copy.
     pub async fn get_thumbnail_by_path(
+        path: &str,
+    ) -> anyhow::Result<Option<Self>, anyhow::Error> {
+        let mut row = Self::get_thumbnail_row_by_path(path).await?;
+        if let Some(r) = row.as_mut() {
+            r.hydrate_inline().await;
+        }
+        Ok(row)
+    }
+
+    /// Row lookup by path without blob hydration.
+    pub async fn get_thumbnail_row_by_path(
         path: &str,
     ) -> anyhow::Result<Option<Self>, anyhow::Error> {
         let _ga = db_activity(format!("Load thumbnail by path"));
         db_set_detail(format!("Loading thumbnail by path"));
         let resp: Option<Self> = DB
-            .query("SELECT * FROM thumbnails WHERE path = $path")
+            .query(format!("SELECT {} FROM thumbnails WHERE path = $path", row_cols()))
             .bind(("path", path.to_string()))
             .await?
             .take(0)?;
-        log::warn!("SELECT * FROM thumbnails WHERE path = $path: {:?}", resp.is_some());
         Ok(resp)
+    }
+
+    /// Fill `thumbnail_b64` from the blob table when the row carries no inline copy.
+    async fn hydrate_inline(&mut self) {
+        self.hydrate_inline_with(&DB).await;
+    }
+
+    pub(super) async fn hydrate_inline_with<C: surrealdb::Connection>(&mut self, db: &surrealdb::Surreal<C>) {
+        if self.thumbnail_b64.as_deref().is_some_and(|s| !s.is_empty()) {
+            return;
+        }
+        let key = thumb_blobs::key_for_path(&self.path);
+        match thumb_blobs::get_many_with(db, std::slice::from_ref(&key)).await {
+            Ok(mut m) => {
+                if let Some(blob) = m.remove(&key) {
+                    self.thumbnail_b64 = Some(thumb_blobs::blob_to_thumb_string(&blob));
+                }
+            }
+            Err(e) => log::warn!("[thumb] blob lookup failed for {}: {e}", self.path),
+        }
+    }
+
+    /// Inline base64 thumbnail still stored on the row of `path` (legacy rows only).
+    pub async fn legacy_thumbnail_b64(path: &str) -> anyhow::Result<Option<String>, anyhow::Error> {
+        Self::legacy_thumbnail_b64_with(&DB, path).await
+    }
+
+    pub(super) async fn legacy_thumbnail_b64_with<C: surrealdb::Connection>(db: &surrealdb::Surreal<C>, path: &str) -> anyhow::Result<Option<String>, anyhow::Error> {
+        let found: Option<String> = db
+            .query("SELECT VALUE thumbnail_b64 FROM thumbnails WHERE path = $path AND thumbnail_b64 != NONE")
+            .bind(("path", path.to_string()))
+            .await?
+            .take(0)?;
+        Ok(found.filter(|s| !s.is_empty()))
+    }
+
+    /// Inline base64 thumbnails still stored on the rows of `paths`, keyed by path.
+    pub async fn legacy_thumbnail_b64_many(paths: &[String]) -> anyhow::Result<HashMap<String, String>, anyhow::Error> {
+        Self::legacy_thumbnail_b64_many_with(&DB, paths).await
+    }
+
+    pub(super) async fn legacy_thumbnail_b64_many_with<C: surrealdb::Connection>(db: &surrealdb::Surreal<C>, paths: &[String]) -> anyhow::Result<HashMap<String, String>, anyhow::Error> {
+        #[derive(serde::Deserialize, SurrealValue)]
+        struct Row { path: String, thumbnail_b64: Option<String> }
+        let mut out = HashMap::new();
+        for chunk in paths.chunks(64) {
+            let rows: Vec<Row> = db
+                .query("SELECT path, thumbnail_b64 FROM thumbnails WHERE path IN $paths AND thumbnail_b64 != NONE")
+                .bind(("paths", chunk.to_vec()))
+                .await?
+                .take(0)?;
+            out.extend(rows.into_iter().filter_map(|r| r.thumbnail_b64.filter(|s| !s.is_empty()).map(|b| (r.path, b))));
+        }
+        Ok(out)
     }
 
     // Fetch a single thumbnail row by exact path (leverages UNIQUE index on path)
@@ -170,7 +245,7 @@ impl crate::Thumbnail {
     let _ga = db_activity("Load thumbnails by parent directory");
     db_set_detail("Loading thumbnails (by directory)".to_string());
         let resp: Vec<Self> = DB
-            .query("SELECT * FROM thumbnails WITH INDEX idx_parent_dir WHERE parent_dir = $parent_directory")
+            .query(format!("SELECT {} FROM thumbnails WITH INDEX idx_parent_dir WHERE parent_dir = $parent_directory", row_cols()))
             .bind(("parent_directory", path.to_string()))
             .await?
             .take(0)?;
@@ -199,7 +274,7 @@ impl crate::Thumbnail {
         let _ga = db_activity("Load thumbnails by directory (paged)");
         db_set_detail(format!("Loading thumbnails ({}..{})", start, start + limit));
         let resp: Vec<Self> = DB
-            .query("SELECT * FROM thumbnails WITH INDEX idx_parent_dir WHERE parent_dir = $parent_directory LIMIT $limit START $start")
+            .query(format!("SELECT {} FROM thumbnails WITH INDEX idx_parent_dir WHERE parent_dir = $parent_directory LIMIT $limit START $start", row_cols()))
             .bind(("parent_directory", path.to_string()))
             .bind(("limit", limit))
             .bind(("start", start))
@@ -211,7 +286,10 @@ impl crate::Thumbnail {
     pub async fn get_by_id(id: &RecordId) -> anyhow::Result<Option<Self>, anyhow::Error> {
         let _ga = db_activity("Load thumbnail by id");
         db_set_detail("Loading thumbnail by id".to_string());
-        let resp: Option<Self> = DB.select(id.clone()).await?;
+        let mut resp: Option<Self> = DB.select(id.clone()).await?;
+        if let Some(r) = resp.as_mut() {
+            r.hydrate_inline().await;
+        }
         Ok(resp)
     }
 
@@ -250,7 +328,7 @@ impl crate::Thumbnail {
         let _ga = db_activity("Load thumbnails by path set");
         db_set_detail("Loading thumbnails by set".to_string());
         let thumbs: Vec<Self> = DB
-        .query("SELECT id, db_created, path, filename, file_type, size, modified, hash, description, caption, tags, category FROM thumbnails WHERE array::find($paths, path) != NONE")
+        .query(format!("SELECT {} FROM thumbnails WHERE array::find($paths, path) != NONE", row_cols()))
         .bind(("paths", chunk_vec))
         .await?
         .take(0)?;
@@ -291,7 +369,7 @@ impl crate::Thumbnail {
         let _ga = db_activity("Select thumbnails by category");
         db_set_detail(format!("Loading category '{category}'"));
         let rows: Vec<Self> = DB
-            .query("SELECT * FROM thumbnails WHERE category = $cat")
+            .query(format!("SELECT {} FROM thumbnails WHERE category = $cat", row_cols()))
             .bind(("cat", category.to_string()))
             .await?
             .take(0)?;
@@ -303,7 +381,7 @@ impl crate::Thumbnail {
         let _ga = db_activity("Select thumbnails by tag");
         db_set_detail(format!("Loading tag '{tag}'"));
         let rows: Vec<Self> = DB
-            .query("SELECT * FROM thumbnails WHERE array::contains(tags, $tag)")
+            .query(format!("SELECT {} FROM thumbnails WHERE array::contains(tags, $tag)", row_cols()))
             .bind(("tag", tag.to_string()))
             .await?
             .take(0)?;
@@ -413,10 +491,13 @@ impl crate::Thumbnail {
     }
 
     // Save (insert) a single thumbnail row (best-effort). Does not deduplicate existing rows.
-    pub async fn save_thumbnail_row(self) -> anyhow::Result<(), anyhow::Error> {
+    pub async fn save_thumbnail_row(mut self) -> anyhow::Result<(), anyhow::Error> {
         log::info!("SAVING: {:?}", self.path);
         let _ga = db_activity("Insert thumbnail row");
         db_set_detail("Inserting thumbnail".to_string());
+        if let Some(blob) = self.take_inline_blob() {
+            thumb_blobs::put(vec![blob]).await?;
+        }
         let _: Option<Self> = DB
             .create(super::THUMBNAILS)
             .content::<Self>(self)
@@ -429,14 +510,35 @@ impl crate::Thumbnail {
         Ok(())
     }
 
+    /// Move the inline thumbnail string into a blob entry, leaving the row metadata-only.
+    fn take_inline_blob(&mut self) -> Option<ThumbBlobIn> {
+        let inline = self.thumbnail_b64.take().filter(|s| !s.trim().is_empty())?;
+        match ThumbBlobIn::from_thumb_string(self.path.clone(), &inline) {
+            Ok(b) => Some(b.with_source(self.modified.clone().map(Into::into), Some(self.size))),
+            Err(e) => {
+                log::warn!("[thumb] dropping unusable thumbnail for {}: {e}", self.path);
+                None
+            }
+        }
+    }
+
     pub async fn update_or_create_thumbnail(
-        mut self,
+        self,
         metadata: &super::Thumbnail,
         thumb_b64: Option<String>,
     ) -> anyhow::Result<(), anyhow::Error> {
-        // Only update fields if new content present
         let _ga = db_activity("Upsert thumbnail by path");
         db_set_detail("Saving thumbnail".to_string());
+        self.upsert_with(&DB, metadata, thumb_b64).await
+    }
+
+    /// Upsert by path on `db`: metadata goes to the row, a supplied thumbnail goes to the blob table.
+    pub(super) async fn upsert_with<C: surrealdb::Connection>(
+        mut self,
+        db: &surrealdb::Surreal<C>,
+        metadata: &super::Thumbnail,
+        thumb_b64: Option<String>,
+    ) -> anyhow::Result<(), anyhow::Error> {
         if let Some(desc) = &metadata.description {
             if desc.trim().len() > 0 {
                 self.description = Some(desc.clone());
@@ -456,9 +558,6 @@ impl crate::Thumbnail {
             }
         }
         // embedding field on thumbnails removed; embeddings live in clip_embeddings table
-        if thumb_b64.is_some() {
-            self.thumbnail_b64 = thumb_b64;
-        }
         if metadata.modified.is_some() {
             self.modified = metadata.modified.clone();
         }
@@ -467,10 +566,22 @@ impl crate::Thumbnail {
                 self.hash = Some(h.clone());
             }
         }
+        self.thumbnail_b64 = thumb_b64;
+        let blob_stored = match self.take_inline_blob() {
+            Some(blob) => {
+                thumb_blobs::put_with(db, vec![blob]).await.map_err(|e| {
+                    db_set_error(format!("Thumbnail blob save failed: {e}"));
+                    e
+                })?;
+                true
+            }
+            None => false,
+        };
 
         // Upsert strategy: use an UPDATE with WHERE path match; if none updated, INSERT new.
-        let updated: Option<super::Thumbnail> = DB
-            .query(
+        let clear_inline = if blob_stored { ", thumbnail_b64 = NONE" } else { "" };
+        let updated: Option<RecordId> = db
+            .query(format!(
                 r#"
                     UPDATE thumbnails 
                         SET filename = $filename, 
@@ -480,13 +591,12 @@ impl crate::Thumbnail {
                         caption = $caption, 
                         tags = $tags, 
                         category = $category, 
-                        thumbnail_b64 = $thumbnail_b64, 
                         modified = $modified, 
-                        hash = $hash 
+                        hash = $hash{clear_inline} 
                     WHERE path = $path
-                    "#,
-            )
-            .bind(("table", crate::database::THUMBNAILS))
+                    RETURN VALUE id
+                    "#
+            ))
             .bind(("filename", self.filename.clone()))
             .bind(("file_type", self.file_type.clone()))
             .bind(("size", self.size))
@@ -494,7 +604,6 @@ impl crate::Thumbnail {
             .bind(("caption", self.caption.clone()))
             .bind(("tags", self.tags.clone()))
             .bind(("category", self.category.clone()))
-            .bind(("thumbnail_b64", self.thumbnail_b64.clone()))
             .bind(("modified", self.modified.clone()))
             .bind(("hash", self.hash.clone()))
             .bind(("path", self.path.clone()))
@@ -509,7 +618,7 @@ impl crate::Thumbnail {
         if updated.is_none() {
             // Insert new row. If another concurrent task already inserted a row with the same
             // (now UUID) id between our SELECT/UPDATE and this INSERT, we treat that as benign.
-            match DB
+            match db
                 .create(super::THUMBNAILS)
                 .content::<Self>(self.clone())
                 .await
@@ -537,12 +646,14 @@ impl crate::Thumbnail {
 }
 
 pub async fn save_thumbnail_batch(
-    thumbs: Vec<super::Thumbnail>,
+    mut thumbs: Vec<super::Thumbnail>,
 ) -> anyhow::Result<(), anyhow::Error> {
     log::info!("save_thumbnail_batch");
     let _ga = db_activity("Insert thumbnail batch");
     db_set_detail(format!("Saving {} thumbnails", thumbs.len()));
     db_set_progress(0, thumbs.len() as u64);
+    let blobs: Vec<ThumbBlobIn> = thumbs.iter_mut().filter_map(|t| t.take_inline_blob()).collect();
+    thumb_blobs::put(blobs).await?;
     let _: Vec<super::Thumbnail> = DB
         .insert(super::THUMBNAILS)
         .content::<Vec<super::Thumbnail>>(thumbs)
@@ -566,7 +677,7 @@ pub async fn upsert_row_and_get_id(meta: super::Thumbnail) -> anyhow::Result<Opt
     let _ga = db_activity("Upsert 1 thumbnail");
     db_set_detail("Saving thumbnail (1/1)".to_string());
     db_set_progress(0, 1);
-    let base = crate::Thumbnail::get_thumbnail_by_path(&meta.path)
+    let base = crate::Thumbnail::get_thumbnail_row_by_path(&meta.path)
         .await
         .map_err(|e| {
             db_set_error(format!("Load existing thumb failed: {e}"));
@@ -606,7 +717,7 @@ pub async fn upsert_rows_and_get_ids(rows: Vec<super::Thumbnail>) -> anyhow::Res
     let mut ids: Vec<RecordId> = Vec::new();
     for (i, meta) in rows.into_iter().enumerate() {
         db_set_detail(format!("Saving thumbnails ({} / {total})", i+1));
-        let base = crate::Thumbnail::get_thumbnail_by_path(&meta.path)
+        let base = crate::Thumbnail::get_thumbnail_row_by_path(&meta.path)
             .await
             .map_err(|e| {
                 db_set_error(format!("Load existing thumb failed: {e}"));
@@ -674,6 +785,10 @@ pub async fn delete_thumbnails_and_embeddings_by_paths(
     let deleted_thumbs: Vec<super::Thumbnail> = resp
         .take(2)
         .map_err(|e| { db_set_error(format!("Read deleted thumbnails failed: {e}")); e })?;
+    let deleted_paths: Vec<String> = deleted_thumbs.iter().map(|t| t.path.clone()).collect();
+    if let Err(e) = thumb_blobs::delete_by_paths(&deleted_paths).await {
+        log::warn!("[thumb] blob delete failed for {} rows: {e}", deleted_paths.len());
+    }
     Ok((deleted_embeddings.len(), deleted_thumbs.len()))
 }
 

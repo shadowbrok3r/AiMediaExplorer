@@ -1,9 +1,5 @@
-use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 use crate::utilities::filtering::FiltersExt;
-use crate::utilities::thumbs::thumb_payload;
-use crate::utilities::types::MediaKind;
 
 const SCAN_MSG_BUDGET: usize = 512;
 const SCAN_TIME_BUDGET: Duration = Duration::from_millis(6);
@@ -137,6 +133,7 @@ impl crate::ui::file_table::FileExplorer {
                     } {
                         // Merge with DB if exists
                         let mut row = if let Some(db_row) = self.db_lookup.get(&row0.path).cloned() { db_row } else { row0 };
+                        crate::ui::file_table::thumbs::adopt_legacy_one(&self.viewer.thumbs, &mut row);
                         // If archive, tag type for UI (file_to_thumbnail currently classifies only image/video/other)
                         if let Some(ext) = std::path::Path::new(&row.path)
                             .extension()
@@ -152,13 +149,6 @@ impl crate::ui::file_table::FileExplorer {
                         if is_new {
                             self.last_scan_rows.push(row.clone());
                             self.last_scan_paths.insert(row.path.clone());
-                        }
-                        // If the scan provided a thumbnail upfront, keep it cached so UI doesn't lose it on rebuild
-                        if let Some(ref b64) = row.thumbnail_b64 {
-                            let key = row.path.clone();
-                            if let Ok(bytes) = B64.decode(thumb_payload(b64).as_bytes()) {
-                                self.viewer.thumb_cache.entry(key).or_insert_with(|| Arc::from(bytes.into_boxed_slice()));
-                            }
                         }
                         if self.recursive_scan && self.last_scan_rows.len() > self.recursive_page_size {
                             self.update_recursive_total_pages();
@@ -202,6 +192,7 @@ impl crate::ui::file_table::FileExplorer {
                             .and_then(|e| e.to_str())
                             .map(|s| s.to_ascii_lowercase())
                             .unwrap_or_else(|| String::new());
+                            let db_known = self.db_lookup.contains_key(&path_clone);
                             // Build metadata from DB row if present to preserve id and prior fields
                             let meta = if let Some(db_row) = self.db_lookup.get(&path_clone) {
                             let mut m = db_row.clone();
@@ -242,8 +233,8 @@ impl crate::ui::file_table::FileExplorer {
                         };
 
                         let auto_save = self.viewer.ui_settings.auto_save_to_database;
-                        // Only auto-save immediately if we already have a thumbnail (so failed thumbs don't get stored).
-                        if auto_save && meta.thumbnail_b64.is_some() {
+                        // Only auto-save immediately when the row is already stored or arrived with a thumbnail (so failed thumbs don't get stored).
+                        if auto_save && (db_known || meta.thumbnail_b64.is_some()) {
                             let group_name = self.active_logical_group_name.clone();
                             let meta_clone = meta.clone();
                             let do_index = self.viewer.ui_settings.auto_indexing;
@@ -342,6 +333,7 @@ impl crate::ui::file_table::FileExplorer {
                         } {
                             // Merge with DB if exists
                             let mut row = if let Some(db_row) = self.db_lookup.get(&row0.path).cloned() { db_row } else { row0 };
+                            crate::ui::file_table::thumbs::adopt_legacy_one(&self.viewer.thumbs, &mut row);
                             if let Some(ext) = std::path::Path::new(&row.path)
                                 .extension()
                                 .and_then(|e| e.to_str())
@@ -369,9 +361,7 @@ impl crate::ui::file_table::FileExplorer {
                             if show_in_page {
                                 if let Some(&idx) = self.table_index.get(&row_snapshot.path) {
                                     if let Some(existing) = self.table.get_mut(idx) {
-                                        let keep_thumb = existing.thumbnail_b64.clone();
                                         *existing = row_snapshot.clone();
-                                        if existing.thumbnail_b64.is_none() { existing.thumbnail_b64 = keep_thumb; }
                                     }
                                 } else {
                                     let idx = self.table.len();
@@ -380,17 +370,6 @@ impl crate::ui::file_table::FileExplorer {
                                     if self.recursive_scan { cached_paths.push(row_snapshot.path.clone()); }
                                 }
                                 need_repaint = true;
-                            }
-                            // If batch item came with a thumb, update cache immediately
-                            if let Some(ref b64) = row_snapshot.thumbnail_b64 {
-                                let key = row_snapshot.path.clone();
-                                if let Ok(bytes) = B64.decode(thumb_payload(b64).as_bytes()) {
-                                    self.viewer.thumb_cache.entry(key).or_insert_with(|| Arc::from(bytes.into_boxed_slice()));
-                                }
-                            }
-                            // Marks scanned images and videos as scheduled; the scan thumbnail pool produces them.
-                            if item.thumb_data.is_none() && matches!(item.kind, MediaKind::Image | MediaKind::Video) {
-                                self.thumb_scheduled.insert(item.path.to_string_lossy().to_string());
                             }
                             // Prepare indexing metadata
                             // Use actual extension (lowercase) for file_type
@@ -407,8 +386,8 @@ impl crate::ui::file_table::FileExplorer {
                                 let mut m = db_row.clone();
                                 if let Some(sz) = item.size { m.size = sz; }
                                 if item.thumb_data.is_some() { m.thumbnail_b64 = item.thumb_data.clone(); }
-                                // Only include for immediate DB upsert if we have a thumbnail already
-                                if m.thumbnail_b64.is_some() { to_index.push(m); }
+                                // Rows already in the database were stored with a thumbnail
+                                to_index.push(m);
                             } else {
                                 let row_for_db = crate::database::Thumbnail {
                                     id: crate::Thumbnail::new(
@@ -530,19 +509,17 @@ impl crate::ui::file_table::FileExplorer {
                         });
                     }
                 }
-                crate::utilities::scan::ScanMsg::UpdateThumb { path, thumb } => {
+                crate::utilities::scan::ScanMsg::ThumbReady { path, .. } => {
                     let key = path.to_string_lossy().to_string();
-                    self.recursive_prefetch_inflight = self.recursive_prefetch_inflight.saturating_sub(1);
                     if let Some(idx) = self.table_pos(&key) {
-                        if let Some(found) = self.table.get_mut(idx) {
-                            found.thumbnail_b64 = Some(thumb.clone());
+                        if let Some(found) = self.table.get(idx) {
                             self.pending_thumb_rows.push(found.clone());
                         }
                     } else {
                         // Path not yet present (likely due to message reordering).
                         // Do NOT inject into table during recursive scans to avoid page bleed; let Found/Batch add rows.
                         if self.recursive_scan {
-                            log::debug!("UpdateThumb for unknown path during recursive scan; deferring: {}", key);
+                            log::debug!("ThumbReady for unknown path during recursive scan; deferring: {}", key);
                         } else {
                             // For non-recursive views, create a placeholder row for immediate display.
                             let ext_lc = std::path::Path::new(&key)
@@ -574,7 +551,7 @@ impl crate::ui::file_table::FileExplorer {
                                     caption: None,
                                     tags: Vec::new(),
                                     category: None,
-                                    thumbnail_b64: Some(thumb.clone()),
+                                    thumbnail_b64: None,
                                     modified: Some(Utc::now().into()),
                                     hash: None,
                                     parent_dir,
@@ -584,19 +561,9 @@ impl crate::ui::file_table::FileExplorer {
                                 self.table.push(row.clone());
                                 self.table_index.insert(row.path.clone(), idx);
                                 self.pending_thumb_rows.push(row);
-                                log::debug!("Inserted placeholder row for missing UpdateThumb: {}", key);
+                                log::debug!("Inserted placeholder row for missing ThumbReady: {}", key);
                             }
                         }
-                    }
-                    // Also persist thumbnail into our snapshot rows so it survives page rebuilds
-                    self.set_snapshot_thumb(scan_id, &key, &thumb);
-                    // Decode into cache (strip data URL prefix if present)
-                    if let Ok(decoded) = B64.decode(thumb_payload(&thumb).as_bytes()) {
-                        self
-                            .viewer
-                            .thumb_cache
-                            .entry(key)
-                            .or_insert_with(|| Arc::from(decoded.into_boxed_slice()));
                     }
                     if self.pending_thumb_rows.len() >= 32 {
                         let batch = std::mem::take(&mut self.pending_thumb_rows);
@@ -622,7 +589,6 @@ impl crate::ui::file_table::FileExplorer {
                 }
                 crate::utilities::scan::ScanMsg::ThumbFailed { path, error } => {
                     let key = path.to_string_lossy().to_string();
-                    self.recursive_prefetch_inflight = self.recursive_prefetch_inflight.saturating_sub(1);
                     self.failed_thumbs.push((key.clone(), error.clone()));
                     log::warn!("Thumbnail failed: {} => {}", key, error);
                     // If scan already done (or user switched tabs and came back), open a failed tab now

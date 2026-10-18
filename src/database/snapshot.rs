@@ -251,6 +251,7 @@ pub struct MaintenanceSettings {
     pub retention_keep: usize,
     pub retention_min_age_days: u32,
     pub deep_verify_snapshots: bool,
+    pub export_include_thumb_blobs: bool,
 }
 
 impl Default for MaintenanceSettings {
@@ -262,6 +263,7 @@ impl Default for MaintenanceSettings {
             retention_keep: 5,
             retention_min_age_days: 7,
             deep_verify_snapshots: false,
+            export_include_thumb_blobs: false,
         }
     }
 }
@@ -287,7 +289,7 @@ impl MaintenanceSettings {
     }
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Some(parent) = path.parent() { fs::create_dir_all(parent)?; }
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
@@ -425,14 +427,14 @@ pub struct ParsedName {
 }
 
 static NAME_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"^(?P<store>.+)-(?P<label>pre|post|manual|export)-(?P<engine>[0-9][0-9A-Za-z.+_-]*?)-(?P<date>\d{8})(?:-(?P<time>\d{6}))?(?:-(?P<n>\d+))?$").unwrap()
+    regex::Regex::new(r"^(?P<store>.+)-(?P<label>pre|post|manual|export|thumbs)-(?P<engine>[0-9][0-9A-Za-z.+_-]*?)-(?P<date>\d{8})(?:-(?P<time>\d{6}))?(?:-(?P<n>\d+))?$").unwrap()
 });
 
 pub fn snapshot_file_name(store_name: &str, label: &str, engine: &str, now: DateTime<Local>) -> String {
     format!("{store_name}-{label}-{engine}-{}", now.format(NAME_TS_FORMAT))
 }
 
-/// Parse `<store>-<pre|post|manual|export>-<engine>-<yyyymmdd[-hhmmss]>` snapshot names.
+/// Parse `<store>-<pre|post|manual|export|thumbs>-<engine>-<yyyymmdd[-hhmmss]>` snapshot names.
 pub fn parse_snapshot_name(name: &str) -> Option<ParsedName> {
     let stem = name.strip_suffix(".surql").unwrap_or(name);
     let c = NAME_RE.captures(stem)?;
@@ -629,6 +631,11 @@ pub struct SnapshotManifest {
     pub consistent: bool,
     pub total_bytes: u64,
     pub files: Vec<FileEntry>,
+}
+
+/// Manifest of a directory snapshot, if present and readable.
+pub fn read_manifest(dir: &Path) -> Option<SnapshotManifest> {
+    fs::read_to_string(dir.join(MANIFEST_FILE)).ok().and_then(|t| serde_json::from_str(&t).ok())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -1021,6 +1028,7 @@ pub fn restore_snapshot_blocking(
     sync_dir(&parent);
 
     restamp_after_restore(store, snapshot_dir, now);
+    super::thumb_migration::reset_state(store);
     log_event(log::Level::Info, format!("Restore complete: {} restored from {}", store.display(), snapshot_dir.display()));
     Ok(RestoreReport { store: store.to_path_buf(), restored_from: snapshot_dir.to_path_buf(), replaced_to, bytes: outcome.bytes })
 }
@@ -1244,7 +1252,10 @@ pub async fn auto_export_if_changed(db: &surrealdb::Surreal<surrealdb::engine::l
         return AutoExport::Skipped("auto export disabled in settings".into());
     }
     let size_store = store.to_path_buf();
-    let size = tokio::task::spawn_blocking(move || dir_size(&size_store)).await.unwrap_or(0);
+    let store_size = tokio::task::spawn_blocking(move || dir_size(&size_store)).await.unwrap_or(0);
+    let include_blobs = pre.settings.export_include_thumb_blobs;
+    let blob_bytes = if include_blobs { 0 } else { super::thumb_blobs::quick_stats_with(db, 256).await.map(|q| q.stats.total_bytes).unwrap_or(0) };
+    let size = store_size.saturating_sub(blob_bytes);
     if size > pre.settings.export_size_threshold_bytes {
         let msg = format!("store is {} which exceeds the auto-export threshold of {}", human(size), human(pre.settings.export_size_threshold_bytes));
         log_event(log::Level::Info, format!("Auto export skipped: {msg}"));
@@ -1263,7 +1274,8 @@ pub async fn auto_export_if_changed(db: &surrealdb::Surreal<surrealdb::engine::l
     let path = unique_path(&dir, &base, ".surql");
     log_event(log::Level::Info, format!("Auto export started: {}", path.display()));
     let _ga = super::db_activity("Auto export DB");
-    match super::surql::export_atomic(db, &path, &status_progress("Export")).await {
+    let opts = super::surql::ExportOptions { include_thumb_blobs: include_blobs };
+    match super::surql::export_atomic_with(db, &path, &status_progress("Export"), opts).await {
         Ok(rep) => {
             log_event(log::Level::Info, format!("Auto export done: {} ({} in {:.1}s)", path.display(), human(rep.bytes), rep.millis as f32 / 1000.0));
             if let Ok(mut g) = LAST_OPEN.lock() {

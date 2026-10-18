@@ -9,6 +9,7 @@ use surrealdb::engine::local::{Db, Mem, SurrealKv};
 use surrealdb::types::{RecordId, SurrealValue, ToSql};
 
 use super::snapshot::{self, PreOpen, ProgressFn, human, log_event, store_has_data};
+use super::thumb_blobs;
 use super::{DB_NAME, NS, define_schema};
 
 const ID_PAGE: usize = 50_000;
@@ -22,8 +23,87 @@ pub struct ExportReport {
     pub millis: u128,
 }
 
-/// Export the whole NS/DB to `path` via a `.partial` file that is renamed on success.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ExportOptions {
+    pub include_thumb_blobs: bool,
+}
+
+/// Await an export future while reporting the growth of `watch`.
+async fn drive_export<F>(fut: F, watch: &Path, progress: &ProgressFn) -> anyhow::Result<()>
+where
+    F: IntoFuture<Output = surrealdb::Result<()>>,
+{
+    let fut = fut.into_future();
+    tokio::pin!(fut);
+    let result = loop {
+        tokio::select! {
+            r = &mut fut => break r,
+            _ = tokio::time::sleep(Duration::from_millis(250)) => {
+                if let Ok(md) = tokio::fs::metadata(watch).await {
+                    progress(md.len(), 0, "Exporting records");
+                }
+            }
+        }
+    };
+    Ok(result?)
+}
+
+async fn table_names(db: &Surreal<Db>) -> anyhow::Result<Vec<String>> {
+    let info = info_json(db, "INFO FOR DB").await?;
+    Ok(sorted_keys(info.get("tables")))
+}
+
+/// Export every table except `thumb_blobs`, then append that table's definition without records.
+async fn export_without_blobs(db: &Surreal<Db>, partial: &Path, progress: &ProgressFn) -> anyhow::Result<()> {
+    let all = table_names(db).await?;
+    let has_blobs = all.iter().any(|t| t == thumb_blobs::TABLE);
+    let others: Vec<String> = all.into_iter().filter(|t| t != thumb_blobs::TABLE).collect();
+    drive_export(db.export(partial).with_config().tables(others), partial, progress).await?;
+    if !has_blobs {
+        return Ok(());
+    }
+    let mut schema_path = partial.as_os_str().to_owned();
+    schema_path.push(".schema");
+    let schema_path = PathBuf::from(schema_path);
+    let result = async {
+        db.export(&schema_path)
+            .with_config()
+            .database_definition(false)
+            .users(false)
+            .accesses(false)
+            .params(false)
+            .functions(false)
+            .analyzers(false)
+            .apis(false)
+            .buckets(false)
+            .modules(false)
+            .configs(false)
+            .sequences(false)
+            .records(false)
+            .tables(vec![thumb_blobs::TABLE])
+            .await?;
+        let schema = String::from_utf8_lossy(&tokio::fs::read(&schema_path).await?).into_owned();
+        let section = schema.find("-- TABLE: ").map(|i| schema[..i].rfind("-- ------------------------------").unwrap_or(i)).map(|start| &schema[start..]);
+        if let Some(section) = section {
+            let mut main = tokio::fs::OpenOptions::new().append(true).open(partial).await?;
+            tokio::io::AsyncWriteExt::write_all(&mut main, b"\n").await?;
+            tokio::io::AsyncWriteExt::write_all(&mut main, section.as_bytes()).await?;
+            main.sync_all().await?;
+        }
+        anyhow::Ok(())
+    }
+    .await;
+    let _ = tokio::fs::remove_file(&schema_path).await;
+    result
+}
+
+/// Export the NS/DB to `path` without thumbnail blob records.
 pub async fn export_atomic(db: &Surreal<Db>, path: &Path, progress: &ProgressFn) -> anyhow::Result<ExportReport> {
+    export_atomic_with(db, path, progress, ExportOptions::default()).await
+}
+
+/// Export the NS/DB to `path` via a `.partial` file that is renamed on success.
+pub async fn export_atomic_with(db: &Surreal<Db>, path: &Path, progress: &ProgressFn, opts: ExportOptions) -> anyhow::Result<ExportReport> {
     let started = Instant::now();
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         tokio::fs::create_dir_all(parent).await?;
@@ -31,21 +111,14 @@ pub async fn export_atomic(db: &Surreal<Db>, path: &Path, progress: &ProgressFn)
     let mut partial = path.as_os_str().to_owned();
     partial.push(".partial");
     let partial = PathBuf::from(partial);
-    let fut = db.export(&partial).into_future();
-    tokio::pin!(fut);
-    let result = loop {
-        tokio::select! {
-            r = &mut fut => break r,
-            _ = tokio::time::sleep(Duration::from_millis(250)) => {
-                if let Ok(md) = tokio::fs::metadata(&partial).await {
-                    progress(md.len(), 0, "Exporting records");
-                }
-            }
-        }
+    let result = if opts.include_thumb_blobs {
+        drive_export(db.export(&partial), &partial, progress).await
+    } else {
+        export_without_blobs(db, &partial, progress).await
     };
     if let Err(e) = result {
         let _ = tokio::fs::remove_file(&partial).await;
-        return Err(e.into());
+        return Err(e);
     }
     let bytes = tokio::fs::metadata(&partial).await.map(|m| m.len()).unwrap_or(0);
     if bytes == 0 {
@@ -197,8 +270,13 @@ pub async fn table_digest(db: &Surreal<Db>, table: &str) -> anyhow::Result<Table
 
 /// Digest every table of the selected NS/DB.
 pub async fn build_manifest(db: &Surreal<Db>, progress: &ProgressFn) -> anyhow::Result<Manifest> {
+    build_manifest_with(db, progress, true).await
+}
+
+/// Digest the tables of the selected NS/DB, leaving out `thumb_blobs` unless `include_thumb_blobs`.
+pub async fn build_manifest_with(db: &Surreal<Db>, progress: &ProgressFn, include_thumb_blobs: bool) -> anyhow::Result<Manifest> {
     let info = info_json(db, "INFO FOR DB").await?;
-    let tables = sorted_keys(info.get("tables"));
+    let tables: Vec<String> = sorted_keys(info.get("tables")).into_iter().filter(|t| include_thumb_blobs || t != thumb_blobs::TABLE).collect();
     let mut manifest = Manifest::default();
     let total = tables.len() as u64;
     for (i, t) in tables.iter().enumerate() {
@@ -219,11 +297,12 @@ pub enum VerifyTarget<'a> {
 pub struct VerifyOptions {
     pub mem_limit_bytes: u64,
     pub scratch_dir: Option<PathBuf>,
+    pub include_thumb_blobs: bool,
 }
 
 impl Default for VerifyOptions {
     fn default() -> Self {
-        Self { mem_limit_bytes: DEFAULT_MEM_LIMIT, scratch_dir: None }
+        Self { mem_limit_bytes: DEFAULT_MEM_LIMIT, scratch_dir: None, include_thumb_blobs: false }
     }
 }
 
@@ -312,16 +391,23 @@ pub async fn verify_export(path: &Path, target: VerifyTarget<'_>, opts: &VerifyO
         log_event(log::Level::Error, format!("Verify: {} failed to import: {e}", path.display()));
         return Ok(report);
     }
-    report.imported = build_manifest(scratch.db(), progress).await?;
+    let with_blobs = opts.include_thumb_blobs;
+    report.imported = build_manifest_with(scratch.db(), progress, with_blobs).await?;
     report.hnsw_defined = report.imported.tables.values().any(|t| t.indexes.iter().any(|d| d.contains("HNSW")));
 
     let expected = match target {
         VerifyTarget::FileOnly => None,
-        VerifyTarget::Manifest(m) => Some(m.clone()),
+        VerifyTarget::Manifest(m) => {
+            let mut m = m.clone();
+            if !with_blobs {
+                m.tables.remove(thumb_blobs::TABLE);
+            }
+            Some(m)
+        }
         VerifyTarget::Live(live) => {
             progress(0, 0, "Reading live database");
-            let first = build_manifest(live, progress).await?;
-            let second = build_manifest(live, progress).await?;
+            let first = build_manifest_with(live, progress, with_blobs).await?;
+            let second = build_manifest_with(live, progress, with_blobs).await?;
             report.live_changed_during_check = first != second;
             if report.live_changed_during_check {
                 report.problems.push("the live database changed while it was being read; differences may be expected".into());

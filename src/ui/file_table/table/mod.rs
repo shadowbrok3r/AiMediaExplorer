@@ -1,5 +1,4 @@
-use egui::{Button, Color32, CornerRadius, FontId, Image, ImageSource, KeyboardShortcut, RichText, ScrollArea, TextureOptions, Vec2, Widget};
-use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+use egui::{Button, Color32, CornerRadius, FontId, Image, KeyboardShortcut, RichText, ScrollArea, TextureOptions, Widget};
 use std::{borrow::Cow, collections::HashMap, path::Path, sync::Arc};
 use egui_data_table::{
     viewer::{default_hotkeys, CustomActionContext, CustomActionEditor, RowCodec, UiActionContext}, CustomMenuItem, RowViewer, SelectionSnapshot, UiAction
@@ -9,10 +8,13 @@ use crossbeam::channel::Sender;
 use humansize::DECIMAL;
 use serde::Serialize;
 
-use crate::{generate_image_thumb_data, generate_video_thumb_data, ui::file_table::AIUpdate, Thumbnail, UiSettings};
+use crate::{ui::file_table::AIUpdate, Thumbnail, UiSettings};
+use crate::ui::file_table::thumbs::{ScopeId, ThumbPresence, ThumbService, ThumbView, Tier, alloc_scope};
 use codec::ThumbCodec;
 
 pub mod codec;
+#[cfg(test)]
+mod cell_tests;
 
 #[derive(Default, Copy, Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ExplorerMode {
@@ -40,8 +42,12 @@ pub struct FileTableViewer {
     #[serde(skip)]
     thumbnail_tx: Sender<Thumbnail>,
     #[serde(skip)]
-    // Cache raw decoded bytes so we only base64 decode once per unique file/hash.
-    pub thumb_cache: HashMap<String, Arc<[u8]>>, // key: filename or hash
+    pub thumbs: Arc<ThumbService>,
+    #[serde(skip)]
+    pub scope: ScopeId,
+    // Which paths have a stored thumbnail, for status counts.
+    #[serde(skip)]
+    pub thumb_cache: ThumbPresence,
     pub mode: ExplorerMode,
     // Flag to stop scheduling bulk description tasks
     #[serde(skip)]
@@ -85,12 +91,15 @@ pub enum TabAction { OpenCategory(String), OpenTag(String), OpenSimilar(String),
 impl FileTableViewer {
     pub fn new(thumbnail_tx: Sender<Thumbnail>, ai_update_tx: Sender<AIUpdate>, clip_embedding_tx: Sender<crate::ClipEmbeddingRow>) -> Self {
         let (ui_settings, settings_gen) = crate::settings::new_mirror();
+        let thumbs = crate::ui::file_table::thumbs::service();
         Self {
             filter: Default::default(),
             row_protection: false,
             hotkeys: vec![],
             show_hotkeys: false,
-            thumb_cache: HashMap::new(),
+            thumb_cache: ThumbPresence::new(thumbs.clone()),
+            thumbs,
+            scope: alloc_scope(),
             thumbnail_tx,
             mode: ExplorerMode::default(),
             ui_settings,
@@ -109,6 +118,33 @@ impl FileTableViewer {
             archive_passwords: std::collections::HashMap::new(),
             selected: std::collections::HashSet::new(),
         }
+    }
+
+    /// Thumbnail column: folder and archive icons, or the texture from the thumbnail service.
+    fn thumb_cell(&mut self, ui: &mut egui::Ui, row: &Thumbnail) {
+        ui.vertical_centered_justified(|ui| {
+            let size = ui.available_size();
+            let mips = TextureOptions::default().with_mipmap_mode(Some(egui::TextureFilter::Linear));
+            if row.file_type == "<DIR>" {
+                egui::Image::new(eframe::egui::include_image!("../../../../assets/Icons/folder.png")).fit_to_exact_size(size).texture_options(mips).ui(ui);
+            } else if row.file_type == "<ARCHIVE>" {
+                egui::Image::new(eframe::egui::include_image!("../../../../assets/Icons/zip.png")).fit_to_exact_size(size).texture_options(mips).ui(ui);
+            } else {
+                let distance = (ui.max_rect().center().y - ui.clip_rect().center().y).abs();
+                let view = if row.path.is_empty() { ThumbView::Missing } else { self.thumbs.request(self.scope, &row.path, Tier::Thumb, distance) };
+                match view {
+                    ThumbView::Ready { id, size: tex_size } => {
+                        Image::from_texture(egui::load::SizedTexture::new(id, tex_size)).fit_to_exact_size(size).ui(ui);
+                    }
+                    ThumbView::Pending => {
+                        ui.weak("...");
+                    }
+                    ThumbView::Missing => {
+                        egui::Image::new(eframe::egui::include_image!("../../../../assets/Icons/broken_link.png")).fit_to_exact_size(size).texture_options(mips).ui(ui);
+                    }
+                }
+            }
+        });
     }
 
     /// Refreshes the read-only settings mirror when the store changed.
@@ -237,66 +273,7 @@ impl RowViewer<Thumbnail> for FileTableViewer {
             }
         }
         match column {
-            0 => {
-                ui.vertical_centered_justified(|ui| {
-                    // Thumbnail (mode-agnostic currently)
-                    if row.file_type == "<DIR>" {
-                        egui::Image::new(eframe::egui::include_image!(
-                            "../../../../assets/Icons/folder.png"
-                        ))
-                        .fit_to_exact_size(ui.available_size())
-                        .texture_options(
-                            TextureOptions::default().with_mipmap_mode(Some(egui::TextureFilter::Linear))
-                        ).ui(ui);
-                    } else if row.file_type == "<ARCHIVE>" {
-                        egui::Image::new(eframe::egui::include_image!(
-                            "../../../../assets/Icons/zip.png"
-                        ))
-                        .fit_to_exact_size(ui.available_size())
-                        .texture_options(
-                            TextureOptions::default().with_mipmap_mode(Some(egui::TextureFilter::Linear))
-                        ).ui(ui);
-                    } else {
-                        let cache_key = row.path.clone();
-                        if row.thumbnail_b64.is_none() {
-                            egui::Image::new(eframe::egui::include_image!(
-                                "../../../../assets/Icons/broken_link.png"
-                            ))
-                            .fit_to_exact_size(ui.available_size())
-                            .texture_options(
-                                TextureOptions::default().with_mipmap_mode(Some(egui::TextureFilter::Linear))
-                            ).ui(ui);
-                        } else {
-                            if !self.thumb_cache.contains_key(&cache_key) {
-                                if let Some(mut b64) = row.thumbnail_b64.clone() {
-                                    if b64.starts_with("data:image/png;base64,") {
-                                        let (_, end) =
-                                            b64.split_once("data:image/png;base64,").unwrap_or_default();
-                                        b64 = end.to_string();
-                                    }
-                                    if let Ok(decoded) = B64.decode(b64.as_bytes()) {
-                                        self.thumb_cache.insert(
-                                            cache_key.clone(),
-                                            Arc::from(decoded.into_boxed_slice()),
-                                        );
-                                    }
-                                }
-                            }
-                            if let Some(bytes_arc) = self.thumb_cache.get(&cache_key) {
-                                let img_src = ImageSource::Bytes {
-                                    uri: Cow::from(format!("bytes://{}", cache_key)),
-                                    bytes: egui::load::Bytes::Shared(bytes_arc.clone()),
-                                };
-                                Image::new(img_src)
-                                .show_loading_spinner(true)
-                                .fit_to_exact_size(ui.available_size())
-                                .texture_options(TextureOptions::default().with_mipmap_mode(Some(egui::TextureFilter::Linear)))
-                                .ui(ui); 
-                            }
-                        }
-                    }
-                });
-            }
+            0 => self.thumb_cell(ui, row),
             1 => {
                 // Name (make the label clickable so row click registers)
                 let _ = ui.add(
@@ -403,45 +380,8 @@ impl RowViewer<Thumbnail> for FileTableViewer {
 
         match column {
             0 => {
-                let cache_key = row.path.clone();
-                if row.thumbnail_b64.is_none() {
-                    Some(ui.add_sized(
-                        ui.available_size(),
-                        egui::Image::new(eframe::egui::include_image!(
-                            "../../../../assets/Icons/broken_link.png"
-                        )).texture_options(TextureOptions::default().with_mipmap_mode(Some(egui::TextureFilter::Linear))),
-                    ))
-                } else {
-                    if !self.thumb_cache.contains_key(&cache_key) {
-                        if let Some(mut b64) = row.thumbnail_b64.clone() {
-                            if b64.starts_with("data:image/png;base64,") {
-                                let (_, end) =
-                                    b64.split_once("data:image/png;base64,").unwrap_or_default();
-                                b64 = end.to_string();
-                            }
-                            if let Ok(decoded) = B64.decode(b64.as_bytes()) {
-                                self.thumb_cache.insert(
-                                    cache_key.clone(),
-                                    Arc::from(decoded.into_boxed_slice()),
-                                );
-                            }
-                        }
-                    }
-                    if let Some(bytes_arc) = self.thumb_cache.get(&cache_key) {
-                        let img_src = ImageSource::Bytes {
-                            uri: Cow::from(format!("bytes://{}", cache_key)),
-                            bytes: egui::load::Bytes::Shared(bytes_arc.clone()),
-                        };
-                        Some(
-                            Image::new(img_src)
-                                .bg_fill(Color32::WHITE)
-                                .fit_to_exact_size(Vec2::splat(50.))
-                                .ui(ui),
-                        ) // .paint_at(ui, rect);
-                    } else {
-                        Some(ui.label("❌"))
-                    }
-                }
+                self.thumb_cell(ui, row);
+                None
             }
             9 => {
                 let mut response = None;
@@ -492,7 +432,7 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                 if resp.clicked() {
                     // Mirror main click behavior: preview + thumb generation
                     if self.mode != ExplorerMode::Database {
-                        if row.thumbnail_b64.is_none() {
+                        if !self.thumbs.has_thumb(&row.path) {
                             if row.path.starts_with("zip://") || row.path.starts_with("7z://") || row.path.starts_with("tar://") {
                                 let path = row.path.clone();
                                 let thumbnail_tx = self.thumbnail_tx.clone();
@@ -566,7 +506,7 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                     if self.mode == ExplorerMode::Database {
                         // In DB mode, disable on-demand generation attempts (no filesystem walk triggers)
                     } else {
-                        if row.thumbnail_b64.is_none() {
+                        if !self.thumbs.has_thumb(&row.path) {
                             // Check if this is a virtual archive path
                             if row.path.starts_with("zip://") 
                                 || row.path.starts_with("7z://") 
@@ -632,45 +572,6 @@ impl RowViewer<Thumbnail> for FileTableViewer {
                                         }
                                     }
                                 });
-                            } else {
-                                log::info!("Not a archive: {:?}", row.path);
-                                // Regular filesystem path - use direct thumbnail generation
-                                // Determine media kind from file extension
-                                let ext_opt = std::path::Path::new(&row.path)
-                                .extension()
-                                .and_then(|e| e.to_str())
-                                .map(|s| s.to_ascii_lowercase());
-                            
-                                if let Some(ext) = ext_opt {
-                                    if crate::is_video(ext.as_str()) || crate::is_image(ext.as_str()) {
-                                        let path_for_task = row.path.clone();
-                                        let file_name_for_task = std::path::Path::new(&path_for_task).file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
-                                        let tx_thumb = self.thumbnail_tx.clone();
-                                        let is_image_kind = crate::is_image(ext.as_str());
-                                        let clip_tx_opt = if is_image_kind { Some(self.clip_embedding_tx.clone()) } else { None };
-                                        // Heavy IO/decoding moved off UI thread
-                                        tokio::spawn(async move {
-                                            let path_clone_for_block = path_for_task.clone();
-                                            let thumb_res = tokio::task::spawn_blocking(move || {
-                                                if is_image_kind {
-                                                    generate_image_thumb_data(Path::new(&path_clone_for_block))
-                                                } else {
-                                                    generate_video_thumb_data(Path::new(&path_clone_for_block))
-                                                }
-                                            }).await.ok().and_then(|r| r.ok());
-                                            if let Some(b64) = thumb_res {
-                                                let mut t = Thumbnail { thumbnail_b64: Some(b64), ..Thumbnail::new(&file_name_for_task) };
-                                                t.path = path_for_task.clone();
-                                                let _ = tx_thumb.try_send(t.clone());
-                                                if let Some(clip_tx) = clip_tx_opt {
-                                                    tokio::spawn(async move {
-                                                        let _ = clip_tx.try_send(t.get_embedding().await.unwrap_or_default());
-                                                    });
-                                                }
-                                            }
-                                        });
-                                    }
-                                }
                             }
                         }
                     }

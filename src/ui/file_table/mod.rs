@@ -8,7 +8,6 @@ use serde::Serialize;
 use std::sync::Arc as StdArc;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Mutex, OnceLock};
-use std::{borrow::Cow, collections::HashMap, sync::Arc};
 use table::FileTableViewer;
 
 pub mod explorer;
@@ -18,6 +17,11 @@ pub mod preview_pane;
 pub mod quick_access_pane;
 pub mod receive;
 pub mod table;
+#[path = "../../thumbs/mod.rs"]
+pub mod thumbs;
+
+/// Database pages kept in memory per explorer.
+const DB_PAGE_CACHE_MAX: usize = 3;
 
 // Global accessor for the current active logical group name to be used by viewer context menu actions.
 static ACTIVE_GROUP_NAME: OnceLock<Mutex<Option<String>>> = OnceLock::new();
@@ -131,10 +135,6 @@ pub struct FileExplorer {
     ai_update_rx: Receiver<AIUpdate>,
     #[serde(skip)]
     pub streaming_interim: std::collections::HashMap<String, String>,
-    #[serde(skip)]
-    thumb_scheduled: std::collections::HashSet<String>,
-    #[serde(skip)]
-    thumb_semaphore: std::sync::Arc<tokio::sync::Semaphore>,
     // Auto-follow active vision generation updates
     #[serde(skip)]
     pub follow_active_vision: bool,
@@ -272,10 +272,6 @@ pub struct FileExplorer {
     pub recursive_sort_key: Option<&'static str>, // simplistic sort key id
     #[serde(skip)]
     pub recursive_filter_sig: Option<String>, // hash/signature of last applied filter+type toggles
-    #[serde(skip)]
-    pub recursive_prefetch_enabled: bool,
-    #[serde(skip)]
-    pub recursive_prefetch_inflight: usize,
     // Collect failed thumbnail generations for a dedicated tab after scan completes
     #[serde(skip)]
     pub failed_thumbs: Vec<(String, String)>, // (path, error)
@@ -314,6 +310,16 @@ pub struct FileExplorer {
 impl FileExplorer {
     pub fn is_recursive_scan(&self) -> bool {
         self.recursive_scan
+    }
+
+    /// Stores a loaded database page, keeping only the pages nearest the current one.
+    pub(crate) fn cache_db_page(&mut self, page: usize, rows: Vec<Thumbnail>) {
+        self.db_page_cache.insert(page, rows);
+        while self.db_page_cache.len() > DB_PAGE_CACHE_MAX {
+            let current = self.db_current_page;
+            let Some(&farthest) = self.db_page_cache.keys().max_by_key(|p| p.abs_diff(current)) else { break };
+            self.db_page_cache.remove(&farthest);
+        }
     }
     // New constructor that optionally skips initial directory scan/population
     pub fn new(skip_initial_scan: bool) -> Self {
@@ -361,8 +367,6 @@ impl FileExplorer {
             video_texture: None,
             video_duration_secs: None,
             video_position_secs: 0.0,
-            thumb_scheduled: std::collections::HashSet::new(),
-            thumb_semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(6)),
             follow_active_vision: false,
             clip_presence: std::collections::HashSet::new(),
             clip_embedding_rx,
@@ -429,8 +433,6 @@ impl FileExplorer {
             recursive_filtered_rows: Vec::new(),
             recursive_sort_key: None,
             recursive_filter_sig: None,
-            recursive_prefetch_enabled: true,
-            recursive_prefetch_inflight: 0,
             failed_thumbs: Vec::new(),
             failed_tab_opened: false,
             repaint_next: false,
@@ -466,8 +468,10 @@ impl FileExplorer {
     }
 
     pub fn ui(&mut self, ui: &mut Ui) {
+        let started = std::time::Instant::now();
         self.viewer.sync_settings();
         self.receive(ui.ctx());
+        self.viewer.thumbs.poll(ui.ctx());
         if self.repaint_next {
             ui.ctx().request_repaint();
             self.repaint_next = false;
@@ -600,6 +604,7 @@ impl FileExplorer {
                         self.db_offset = new_off;
                         self.db_current_page = target_page;
                         self.db_last_batch_len = 0;
+                        self.viewer.thumbs.new_scope(self.viewer.scope);
                         // If we have this page cached, swap it in; else trigger a load
                         if let Some(rows) = self.db_page_cache.get(&target_page).cloned() {
                             self.table.clear();
@@ -630,6 +635,7 @@ impl FileExplorer {
                         let target_page = current_page + 1;
                         self.db_offset = target_page * self.db_limit;
                         self.db_current_page = target_page;
+                        self.viewer.thumbs.new_scope(self.viewer.scope);
                         if let Some(rows) = self.db_page_cache.get(&target_page).cloned() {
                             self.table.clear();
                             self.table_index.clear();
@@ -977,6 +983,7 @@ impl FileExplorer {
 
             // Similarity button relocated to navbar
         });
+        self.viewer.thumbs.record_ui_time(started.elapsed());
     }
 
     /// Number of selected file rows in the current table.
@@ -1172,24 +1179,12 @@ impl FileExplorer {
             start,
             end
         );
-        // Prune cache to rows in slice
-        if !self.viewer.thumb_cache.is_empty() {
-            let mut keep: std::collections::HashSet<String> = std::collections::HashSet::new();
-            for r in self.recursive_filtered_rows[start..end].iter() {
-                keep.insert(r.path.clone());
-            }
-            self.viewer
-                .thumb_cache
-                .retain(|k, _| keep.contains(k) || k.starts_with("preview::"));
-        }
+        self.viewer.thumbs.new_scope(self.viewer.scope);
         for row in self.recursive_filtered_rows[start..end].iter().cloned() {
             let idx = self.table.len();
             self.table_index.insert(row.path.clone(), idx);
             self.table.push(row);
         }
-        self.schedule_missing_thumbs_for_current_page();
-        // Opportunistically prefetch next page thumbnails (lightweight) after current page scheduling
-        self.prefetch_next_page_thumbs();
         // Ask for a repaint on next frame (we don't hold a ctx here)
         self.repaint_next = true;
     }
@@ -1232,8 +1227,8 @@ impl FileExplorer {
         let mut out: Vec<Thumbnail> = self
             .last_scan_rows
             .iter()
-            .cloned()
             .filter(|r| self.viewer.row_passes_filter(r))
+            .cloned()
             .collect();
         // Optional sort (basic keys; can expand)
         if let Some(key) = self.recursive_sort_key {
@@ -1257,223 +1252,6 @@ impl FileExplorer {
             self.last_scan_rows.len()
         } else {
             self.recursive_filtered_rows.len()
-        }
-    }
-
-    fn prefetch_next_page_thumbs(&mut self) {
-        if !self.recursive_prefetch_enabled {
-            return;
-        }
-        if self.recursive_page_size == 0 {
-            return;
-        }
-        // Limit concurrent prefetch waves
-        if self.recursive_prefetch_inflight > 0 {
-            return;
-        }
-        let total = self.recursive_filtered_rows.len();
-        let next_page = self.recursive_current_page + 1;
-        if next_page * self.recursive_page_size >= total {
-            return;
-        }
-        let start = next_page * self.recursive_page_size;
-        let end = (start + self.recursive_page_size).min(total);
-        // Collect a small subset (e.g., first 128 of next page) to avoid wasting work
-        let mut candidates: Vec<String> = Vec::new();
-        for row in self.recursive_filtered_rows[start..end].iter() {
-            if candidates.len() >= 128 {
-                break;
-            }
-            if row.thumbnail_b64.is_some() {
-                continue;
-            }
-            if row.file_type == "<DIR>" || row.file_type == "<ARCHIVE>" {
-                continue;
-            }
-            // Skip if already scheduled or cached
-            if self.viewer.thumb_cache.contains_key(&row.path) {
-                continue;
-            }
-            if self.thumb_scheduled.contains(&row.path) {
-                continue;
-            }
-            let ext_opt = std::path::Path::new(&row.path)
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|s| s.to_ascii_lowercase());
-            if let Some(ext) = ext_opt {
-                if crate::is_image(ext.as_str()) || crate::is_video(ext.as_str()) {
-                    candidates.push(row.path.clone());
-                }
-            }
-        }
-        if candidates.is_empty() {
-            return;
-        }
-        self.recursive_prefetch_inflight = candidates.len();
-        let sem = self.thumb_semaphore.clone();
-        let scan_tx = self.scan_tx.clone();
-        let owning_scan_id = self.owning_scan_id.or(self.current_scan_id).unwrap_or(0);
-        for path_str in candidates.into_iter() {
-            // Mark scheduled to avoid duplicate
-            self.thumb_scheduled.insert(path_str.clone());
-            let permit_fut = sem.clone().acquire_owned();
-            let tx_clone = scan_tx.clone();
-            tokio::spawn(async move {
-                let _permit = permit_fut.await.ok();
-                let pbuf = std::path::PathBuf::from(&path_str);
-                let mut thumb_b64: Option<String> = None;
-                if let Some(ext) = pbuf
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .map(|s| s.to_ascii_lowercase())
-                {
-                    if crate::is_image(ext.as_str()) {
-                        thumb_b64 = crate::utilities::thumbs::generate_image_thumb_data_blocking(pbuf.clone()).await.ok();
-                    } else if crate::is_video(ext.as_str()) {
-                        let video = pbuf.clone();
-                        thumb_b64 = tokio::task::spawn_blocking(move || crate::utilities::thumbs::generate_video_thumb_data(&video))
-                            .await
-                            .ok()
-                            .and_then(|r| r.ok());
-                    }
-                }
-                if let Some(b64) = thumb_b64 {
-                    let _ = tx_clone.try_send(crate::ScanEnvelope {
-                        scan_id: owning_scan_id,
-                        msg: crate::utilities::scan::ScanMsg::UpdateThumb {
-                            path: pbuf.clone(),
-                            thumb: b64,
-                        },
-                    });
-                } else {
-                    let _ = tx_clone.try_send(crate::ScanEnvelope {
-                        scan_id: owning_scan_id,
-                        msg: crate::utilities::scan::ScanMsg::ThumbFailed {
-                            path: pbuf.clone(),
-                            error: "prefetch thumbnail generation failed".to_string(),
-                        },
-                    });
-                }
-            });
-        }
-    }
-
-    // Schedule thumbnail generation for visible page rows that lack thumbnail_b64 and are images/videos.
-    fn schedule_missing_thumbs_for_current_page(&mut self) {
-        if self.table.is_empty() {
-            return;
-        }
-        // Collect paths needing generation
-        let mut to_gen: Vec<String> = Vec::new();
-        for row in self.table.iter() {
-            if row.thumbnail_b64.is_some() {
-                continue;
-            }
-            // Skip dirs / archives
-            if row.file_type == "<DIR>" || row.file_type == "<ARCHIVE>" {
-                continue;
-            }
-            let ext_opt = std::path::Path::new(&row.path)
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|s| s.to_ascii_lowercase());
-            if let Some(ext) = ext_opt {
-                if !(crate::is_image(ext.as_str()) || crate::is_video(ext.as_str())) {
-                    continue;
-                }
-            } else {
-                continue;
-            }
-            // Avoid rescheduling same path
-            if !self.thumb_scheduled.insert(row.path.clone()) {
-                continue;
-            }
-            to_gen.push(row.path.clone());
-        }
-        if to_gen.is_empty() {
-            return;
-        }
-        let sem = self.thumb_semaphore.clone();
-        let scan_tx = self.scan_tx.clone();
-        let owning_scan_id = self.owning_scan_id.or(self.current_scan_id).unwrap_or(0);
-        for path_str in to_gen.into_iter() {
-            let permit_fut = sem.clone().acquire_owned();
-            let tx_clone = scan_tx.clone();
-            tokio::spawn(async move {
-                let _permit = permit_fut.await.expect("thumb semaphore closed");
-                let p = std::path::PathBuf::from(&path_str);
-                let mut thumb_b64: Option<String> = None;
-                if let Some(ext) = p
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .map(|s| s.to_ascii_lowercase())
-                {
-                    if crate::is_image(ext.as_str()) {
-                        thumb_b64 = crate::utilities::thumbs::generate_image_thumb_data_blocking(p.clone()).await.ok();
-                    } else if crate::is_video(ext.as_str()) {
-                        let video = p.clone();
-                        thumb_b64 = tokio::task::spawn_blocking(move || crate::utilities::thumbs::generate_video_thumb_data(&video))
-                            .await
-                            .ok()
-                            .and_then(|r| r.ok());
-                    }
-                }
-                if let Some(b64) = thumb_b64 {
-                    let _ = tx_clone.try_send(crate::ScanEnvelope {
-                        scan_id: owning_scan_id,
-                        msg: crate::utilities::scan::ScanMsg::UpdateThumb {
-                            path: p.clone(),
-                            thumb: b64,
-                        },
-                    });
-                } else {
-                    let _ = tx_clone.try_send(crate::ScanEnvelope {
-                        scan_id: owning_scan_id,
-                        msg: crate::utilities::scan::ScanMsg::ThumbFailed {
-                            path: p.clone(),
-                            error: "thumbnail generation failed".to_string(),
-                        },
-                    });
-                }
-            });
-        }
-    }
-}
-
-pub fn get_img_ui(
-    thumb_cache: &HashMap<String, Arc<[u8]>>,
-    cache_key: &String,
-    ui: &mut Ui,
-) -> Response {
-    if let Some(bytes_arc) = thumb_cache.get(cache_key) {
-        let img_src = ImageSource::Bytes {
-            uri: Cow::from(format!("bytes://{}", cache_key)),
-            bytes: eframe::egui::load::Bytes::Shared(bytes_arc.clone()),
-        };
-        Image::new(img_src)
-            .max_size(ui.available_size() / 1.3)
-            .ui(ui)
-    } else {
-        ui.label("No Image")
-    }
-}
-
-pub fn insert_thumbnail(thumb_cache: &mut HashMap<String, Arc<[u8]>>, thumbnail: Thumbnail) {
-    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
-    let cache_key = &thumbnail.path;
-    let thumb_b64 = thumbnail.thumbnail_b64;
-    if let Some(mut b64) = thumb_b64 {
-        if !thumb_cache.contains_key(cache_key) {
-            if b64.starts_with("data:image/png;base64,") {
-                let (_, end) = b64.split_once("data:image/png;base64,").unwrap_or_default();
-                b64 = end.to_string();
-            }
-            let decoded_bytes = B64.decode(b64.as_bytes()).unwrap_or_default();
-            thumb_cache.insert(
-                cache_key.clone(),
-                Arc::from(decoded_bytes.into_boxed_slice()),
-            );
         }
     }
 }

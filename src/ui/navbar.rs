@@ -196,6 +196,14 @@ impl crate::app::SmartMediaApp {
                             crate::ui::devtools::toggle_db_maintenance(ui.ctx());
                             ui.close();
                         }
+                        if icons::button(ui, svg::AME_THUMBNAIL_GRID, "Thumbnail storage").clicked() {
+                            crate::ui::devtools::toggle_thumb_storage(ui.ctx());
+                            ui.close();
+                        }
+                        if icons::button(ui, svg::IMAGE, "Thumbnail cache").clicked() {
+                            crate::ui::devtools::thumb_cache::toggle(ui.ctx());
+                            ui.close();
+                        }
                     });
                 });
 

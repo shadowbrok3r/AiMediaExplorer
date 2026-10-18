@@ -21,15 +21,10 @@ impl crate::ui::file_table::FileExplorer {
         }
     }
 
-    fn apply_thumbnail_message(&mut self, ctx: &eframe::egui::Context, thumbnail: crate::Thumbnail) {
+    fn apply_thumbnail_message(&mut self, ctx: &eframe::egui::Context, mut thumbnail: crate::Thumbnail) {
         // No more per-row <PAGE_DONE> path; page loads come via db_preload_rx
-        // Special-case: high-res preview thumbnails use a synthetic cache key ("preview::...")
-        // These should only populate the in-memory cache and not affect table rows or selection.
-        if thumbnail.path.starts_with("preview::") {
-            crate::ui::file_table::insert_thumbnail(&mut self.viewer.thumb_cache, thumbnail);
-            ctx.request_repaint();
-            return;
-        }
+        // Pixels in the message go to the thumbnail service; the row itself carries none.
+        crate::ui::file_table::thumbs::adopt_legacy_one(&self.viewer.thumbs, &mut thumbnail);
         log::debug!("Received: {}", thumbnail.filename);
         ctx.request_repaint();
         // Special control message: password prompt request
@@ -42,15 +37,6 @@ impl crate::ui::file_table::FileExplorer {
             self.show_zip_modal = true;
         }
 
-        // If this message carries image data, update the row thumbnail in-place
-        if thumbnail.thumbnail_b64.is_some() {
-            if let Some(idx) = self.table_pos(&thumbnail.path) {
-                if let Some(existing) = self.table.get_mut(idx) {
-                    existing.thumbnail_b64 = thumbnail.thumbnail_b64.clone();
-                }
-                ctx.request_repaint();
-            }
-        }
         // If we receive fresh rows while showing similarity, clear that mode
         if self.viewer.showing_similarity {
             self.viewer.showing_similarity = false;

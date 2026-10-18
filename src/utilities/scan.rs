@@ -1,9 +1,10 @@
 use crate::utilities::types::{Filters, FoundFile, MediaKind, DirItem, is_image, is_video, is_archive};
+use crate::utilities::thumbs::{EncodedThumb, ThumbSink, thumb_sink};
 use crate::utilities::filtering::FiltersExt;
 use crate::utilities::guard::{guarded, panic_message};
 use std::sync::atomic::{AtomicU64, Ordering};
 use jwalk::{WalkDirGeneric, Parallelism};
-use crossbeam::channel::{Sender, Receiver, unbounded};
+use crossbeam::channel::{Sender, Receiver, bounded, unbounded};
 use chrono::{DateTime, Local};
 use once_cell::sync::Lazy;
 use std::time::SystemTime;
@@ -17,6 +18,9 @@ static CANCELLED_SCANS: Lazy<std::sync::Mutex<std::collections::HashSet<u64>>> =
 static SCAN_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 /// send a progress update every N scanned paths in recursive mode
 const PROGRESS_EVERY: usize = 5_000;
+
+/// Scan id of thumbnail jobs queued outside a scan; they have no delivery route.
+pub const STANDALONE_SCAN_ID: u64 = 0;
 
 pub fn next_scan_id() -> u64 { SCAN_ID_COUNTER.fetch_add(1, Ordering::Relaxed) }
 
@@ -63,6 +67,8 @@ fn thumb_worker_count() -> usize {
 static THUMB_POOL: Lazy<ThreadPool> = Lazy::new(|| try_build_pool("thumb", thumb_worker_count()).expect("thumb pool"));
 
 static THUMB_TX: OnceLock<Sender<ThumbJob>> = OnceLock::new();
+static THUMB_PRIORITY_TX: OnceLock<Sender<ThumbJob>> = OnceLock::new();
+const PRIORITY_QUEUE_CAP: usize = 512;
 
 // Per-scan delivery route; removed once the walk finished and every queued thumbnail job completed.
 struct ScanRoute {
@@ -126,30 +132,61 @@ fn route_walk_done(scan_id: u64) {
 pub fn init_thumbnail_workers() {
     if THUMB_TX.get().is_some() { return; }
     let (tx, rx): (Sender<ThumbJob>, Receiver<ThumbJob>) = unbounded();
+    let (prio_tx, prio_rx): (Sender<ThumbJob>, Receiver<ThumbJob>) = bounded(PRIORITY_QUEUE_CAP);
     if THUMB_TX.set(tx).is_err() { return; }
-    start_thumbnail_workers(rx);
+    let _ = THUMB_PRIORITY_TX.set(prio_tx);
+    start_thumbnail_workers(rx, prio_rx);
 }
 
-fn start_thumbnail_workers(rx: Receiver<ThumbJob>) {
+fn start_thumbnail_workers(rx: Receiver<ThumbJob>, prio_rx: Receiver<ThumbJob>) {
+    let sink = thumb_sink();
     for _ in 0..THUMB_POOL.current_num_threads() {
-        let rx = rx.clone();
-        THUMB_POOL.spawn(move || run_thumb_worker(rx, generate_thumb));
+        let (rx, prio_rx, sink) = (rx.clone(), prio_rx.clone(), sink.clone());
+        THUMB_POOL.spawn(move || run_thumb_worker(rx, prio_rx, generate_thumb, sink));
     }
 }
 
-type ThumbGenerator = fn(&Path, &MediaKind) -> Result<String, String>;
+type ThumbGenerator = fn(&Path, &MediaKind) -> Result<EncodedThumb, String>;
 
-fn run_thumb_worker(rx: Receiver<ThumbJob>, generate: ThumbGenerator) {
-    while let Ok(job) = rx.recv() {
-        if !is_cancelled(job.scan_id) {
-            let result = guarded(|| generate(&job.path, &job.kind), |msg| format!("thumbnail worker panicked: {msg}"));
-            let msg = match result {
-                Ok(thumb) => ScanMsg::UpdateThumb { path: job.path.clone(), thumb },
-                Err(error) => ScanMsg::ThumbFailed { path: job.path.clone(), error },
-            };
-            route_send(job.scan_id, msg);
+// Next job, preferring the priority queue; None once the scan queue is closed.
+fn next_thumb_job(rx: &Receiver<ThumbJob>, prio_rx: &Receiver<ThumbJob>) -> Option<ThumbJob> {
+    if let Ok(job) = prio_rx.try_recv() { return Some(job); }
+    let mut select = crossbeam::channel::Select::new();
+    let prio_index = select.recv(prio_rx);
+    let scan_index = select.recv(rx);
+    let op = select.select();
+    if op.index() == prio_index {
+        match op.recv(prio_rx) {
+            Ok(job) => Some(job),
+            Err(_) => rx.recv().ok(),
         }
-        route_job_done(job.scan_id);
+    } else {
+        op.recv(rx).ok()
+    }
+}
+
+fn run_thumb_worker(rx: Receiver<ThumbJob>, prio_rx: Receiver<ThumbJob>, generate: ThumbGenerator, sink: Arc<dyn ThumbSink>) {
+    while let Some(job) = next_thumb_job(&rx, &prio_rx) {
+        if !is_cancelled(job.scan_id) {
+            let msg = produce_thumb(&job, generate, sink.as_ref());
+            if job.scan_id != STANDALONE_SCAN_ID { route_send(job.scan_id, msg); }
+        }
+        if job.scan_id != STANDALONE_SCAN_ID { route_job_done(job.scan_id); }
+    }
+}
+
+// Reuses a stored thumbnail that is still valid, otherwise generates one and hands the bytes to the sink.
+fn produce_thumb(job: &ThumbJob, generate: ThumbGenerator, sink: &dyn ThumbSink) -> ScanMsg {
+    let path = job.path.clone();
+    if let Some(key) = sink.fresh_key(&job.path) {
+        return ScanMsg::ThumbReady { path, key };
+    }
+    match guarded(|| generate(&job.path, &job.kind), |msg| format!("thumbnail worker panicked: {msg}")) {
+        Ok(thumb) => ScanMsg::ThumbReady { key: sink.accept(&job.path, thumb), path },
+        Err(error) => {
+            sink.failed(&job.path, &error);
+            ScanMsg::ThumbFailed { path, error }
+        }
     }
 }
 
@@ -161,12 +198,19 @@ fn enqueue_thumb_job(path: &Path, kind: MediaKind, scan_id: u64) {
     }
 }
 
-fn generate_thumb(path: &Path, kind: &MediaKind) -> Result<String, String> {
+// Queues a generation outside any scan, ahead of the scan backlog; false when the priority queue is full.
+pub fn request_priority_thumb(path: &Path, kind: MediaKind) -> bool {
+    init_thumbnail_workers();
+    let Some(tx) = THUMB_PRIORITY_TX.get() else { return false };
+    tx.try_send(ThumbJob { path: path.to_path_buf(), kind, scan_id: STANDALONE_SCAN_ID }).is_ok()
+}
+
+fn generate_thumb(path: &Path, kind: &MediaKind) -> Result<EncodedThumb, String> {
     match kind {
-        MediaKind::Image => crate::utilities::thumbs::generate_image_thumb_data(path),
+        MediaKind::Image => crate::utilities::thumbs::generate_image_thumb(path),
         MediaKind::Video => {
             #[cfg(windows)]
-            { crate::utilities::thumbs::generate_video_thumb_data(path) }
+            { crate::utilities::thumbs::generate_video_thumb(path) }
             #[cfg(not(windows))]
             { Err("video thumbs unsupported on this platform".to_string()) }
         }
@@ -180,9 +224,10 @@ pub enum ScanMsg {
     FoundBatch(Vec<FoundFile>),
     FoundDir(DirItem),
     FoundDirBatch(Vec<DirItem>),
-    UpdateThumb {
+    /// A thumbnail for `path` is stored under blob `key`; the pixels never travel through this message.
+    ThumbReady {
         path: std::path::PathBuf,
-        thumb: String,
+        key: String,
     },
     ThumbFailed {
         path: std::path::PathBuf,
@@ -609,12 +654,42 @@ mod tests {
         false
     }
 
-    fn scripted_generator(path: &Path, _kind: &MediaKind) -> Result<String, String> {
+    fn stub_thumb() -> EncodedThumb {
+        EncodedThumb { bytes: vec![0xFF, 0xD8, 0xFF, 0xD9], format: crate::utilities::thumbs::ThumbFormat::Jpeg, width: 2, height: 2 }
+    }
+
+    fn scripted_generator(path: &Path, _kind: &MediaKind) -> Result<EncodedThumb, String> {
         match path.file_name().and_then(|n| n.to_str()) {
             Some("panic.jpg") => panic!("decoder exploded"),
             Some("fail.jpg") => Err("plain failure".into()),
-            _ => Ok(format!("ok:{}", path.display())),
+            _ => Ok(stub_thumb()),
         }
+    }
+
+    #[derive(Default)]
+    struct TestSink {
+        accepted: std::sync::Mutex<Vec<PathBuf>>,
+        failed: std::sync::Mutex<Vec<(PathBuf, String)>>,
+        fresh: std::sync::Mutex<HashSet<PathBuf>>,
+    }
+
+    impl ThumbSink for TestSink {
+        fn fresh_key(&self, path: &Path) -> Option<String> {
+            self.fresh.lock().unwrap().contains(path).then(|| "fresh-key".to_string())
+        }
+
+        fn accept(&self, path: &Path, _thumb: EncodedThumb) -> String {
+            self.accepted.lock().unwrap().push(path.to_path_buf());
+            format!("key:{}", path.display())
+        }
+
+        fn failed(&self, path: &Path, error: &str) {
+            self.failed.lock().unwrap().push((path.to_path_buf(), error.to_string()));
+        }
+    }
+
+    fn no_priority() -> Receiver<ThumbJob> {
+        crossbeam::channel::never()
     }
 
     fn queue_jobs(scan_id: u64, names: &[&str]) -> Receiver<ThumbJob> {
@@ -640,14 +715,69 @@ mod tests {
         register_route(scan_id, utx);
         let jrx = queue_jobs(scan_id, &["a.jpg", "panic.jpg", "fail.jpg", "b.jpg"]);
         let pool = try_build_pool("test-worker", 1).unwrap();
-        pool.spawn(move || run_thumb_worker(jrx, scripted_generator));
+        let sink = Arc::new(TestSink::default());
+        let worker_sink = sink.clone();
+        pool.spawn(move || run_thumb_worker(jrx, no_priority(), scripted_generator, worker_sink));
         let msgs: Vec<ScanMsg> = (0..4).map(|_| recv(&urx).msg).collect();
-        assert!(matches!(&msgs[0], ScanMsg::UpdateThumb { path, .. } if path.ends_with("a.jpg")));
+        assert!(matches!(&msgs[0], ScanMsg::ThumbReady { path, key } if path.ends_with("a.jpg") && key == "key:a.jpg"));
         assert!(matches!(&msgs[1], ScanMsg::ThumbFailed { error, .. } if error.contains("thumbnail worker panicked: decoder exploded")));
         assert!(matches!(&msgs[2], ScanMsg::ThumbFailed { error, .. } if error == "plain failure"));
-        assert!(matches!(&msgs[3], ScanMsg::UpdateThumb { path, .. } if path.ends_with("b.jpg")));
+        assert!(matches!(&msgs[3], ScanMsg::ThumbReady { path, .. } if path.ends_with("b.jpg")));
+        assert_eq!(sink.accepted.lock().unwrap().len(), 2);
+        assert_eq!(sink.failed.lock().unwrap().len(), 2, "failures reach the sink too");
         route_walk_done(scan_id);
         assert!(route_gone(scan_id));
+    }
+
+    #[test]
+    fn a_fresh_stored_thumbnail_skips_generation() {
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        fn counting(_: &Path, _: &MediaKind) -> Result<EncodedThumb, String> {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            Ok(stub_thumb())
+        }
+        let scan_id = next_scan_id();
+        let (utx, urx) = unbounded::<ScanEnvelope>();
+        register_route(scan_id, utx);
+        let jrx = queue_jobs(scan_id, &["cached.jpg", "new.jpg"]);
+        let sink = Arc::new(TestSink::default());
+        sink.fresh.lock().unwrap().insert(PathBuf::from("cached.jpg"));
+        let worker_sink = sink.clone();
+        try_build_pool("test-fresh", 1).unwrap().spawn(move || run_thumb_worker(jrx, no_priority(), counting, worker_sink));
+        let first = recv(&urx).msg;
+        let second = recv(&urx).msg;
+        assert!(matches!(&first, ScanMsg::ThumbReady { key, .. } if key == "fresh-key"));
+        assert!(matches!(&second, ScanMsg::ThumbReady { key, .. } if key == "key:new.jpg"));
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(sink.accepted.lock().unwrap().len(), 1);
+        route_walk_done(scan_id);
+        assert!(route_gone(scan_id));
+    }
+
+    #[test]
+    fn priority_jobs_run_ahead_of_the_scan_backlog() {
+        let (scan_tx, scan_rx) = unbounded::<ThumbJob>();
+        let (prio_tx, prio_rx) = bounded::<ThumbJob>(8);
+        let job = |name: &str, id: u64| ThumbJob { path: PathBuf::from(name), kind: MediaKind::Image, scan_id: id };
+        for n in ["s1.jpg", "s2.jpg", "s3.jpg"] {
+            scan_tx.send(job(n, 77)).unwrap();
+        }
+        prio_tx.send(job("p1.jpg", STANDALONE_SCAN_ID)).unwrap();
+        prio_tx.send(job("p2.jpg", STANDALONE_SCAN_ID)).unwrap();
+        let order: Vec<String> = (0..5).filter_map(|_| next_thumb_job(&scan_rx, &prio_rx)).map(|j| j.path.display().to_string()).collect();
+        assert_eq!(order, ["p1.jpg", "p2.jpg", "s1.jpg", "s2.jpg", "s3.jpg"]);
+        drop(scan_tx);
+        assert!(next_thumb_job(&scan_rx, &prio_rx).is_none(), "a closed scan queue ends the worker");
+    }
+
+    #[test]
+    fn standalone_jobs_reach_the_sink_without_a_route() {
+        let (jtx, jrx) = unbounded::<ThumbJob>();
+        jtx.send(ThumbJob { path: PathBuf::from("solo.jpg"), kind: MediaKind::Image, scan_id: STANDALONE_SCAN_ID }).unwrap();
+        drop(jtx);
+        let sink = Arc::new(TestSink::default());
+        run_thumb_worker(jrx, no_priority(), scripted_generator, sink.clone());
+        assert_eq!(sink.accepted.lock().unwrap().as_slice(), [PathBuf::from("solo.jpg")]);
     }
 
     #[test]
@@ -668,16 +798,16 @@ mod tests {
     #[test]
     fn cancelled_scan_jobs_are_skipped_and_route_is_released() {
         static CALLS: AtomicUsize = AtomicUsize::new(0);
-        fn counting(_: &Path, _: &MediaKind) -> Result<String, String> {
+        fn counting(_: &Path, _: &MediaKind) -> Result<EncodedThumb, String> {
             CALLS.fetch_add(1, Ordering::SeqCst);
-            Ok(String::new())
+            Ok(stub_thumb())
         }
         let scan_id = next_scan_id();
         let (utx, urx) = unbounded::<ScanEnvelope>();
         register_route(scan_id, utx);
         let jrx = queue_jobs(scan_id, &["1.jpg", "2.jpg", "3.jpg"]);
         cancel_scan(scan_id);
-        try_build_pool("test-cancel", 1).unwrap().spawn(move || run_thumb_worker(jrx, counting));
+        try_build_pool("test-cancel", 1).unwrap().spawn(move || run_thumb_worker(jrx, no_priority(), counting, Arc::new(TestSink::default())));
         route_walk_done(scan_id);
         assert!(route_gone(scan_id));
         assert_eq!(CALLS.load(Ordering::SeqCst), 0);
@@ -768,7 +898,7 @@ mod tests {
             let Ok(env) = rx.recv_timeout(Duration::from_millis(200)) else { continue };
             match env.msg {
                 ScanMsg::FoundBatch(b) => found += b.len(),
-                ScanMsg::UpdateThumb { path, .. } => { updated.insert(path); }
+                ScanMsg::ThumbReady { path, .. } => { updated.insert(path); }
                 ScanMsg::ThumbFailed { path, error } => { failed.insert(path, error); }
                 ScanMsg::Done => done = true,
                 _ => {}
@@ -796,7 +926,7 @@ mod tests {
         register_route(scan_id, tx);
         enqueue_thumb_job(&arw, MediaKind::Image, scan_id);
         match recv(&rx).msg {
-            ScanMsg::UpdateThumb { thumb, .. } => eprintln!("real ARW thumbnail: {} chars", thumb.len()),
+            ScanMsg::ThumbReady { key, .. } => eprintln!("real ARW thumbnail stored as {key}"),
             other => panic!("expected a thumbnail, got {other:?}"),
         }
         route_walk_done(scan_id);
@@ -826,7 +956,7 @@ mod tests {
             other => panic!("expected a failed thumbnail, got {other:?}"),
         }
         enqueue_thumb_job(&arw, MediaKind::Image, scan_id);
-        assert!(matches!(recv(&rx).msg, ScanMsg::UpdateThumb { .. }), "pool must keep working after the failure");
+        assert!(matches!(recv(&rx).msg, ScanMsg::ThumbReady { .. }), "pool must keep working after the failure");
     }
 
     #[cfg(windows)]

@@ -17,8 +17,12 @@ pub mod snapshot;
 pub mod surql;
 pub mod maintenance;
 pub mod cli;
+pub mod thumb_blobs;
+pub mod thumb_migration;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod thumb_tests;
 pub use clip_embeddings::*;
 pub use files::*;
 pub use settings::*;
@@ -78,6 +82,7 @@ pub const SCHEMA_DDL: &str = r#"
         DEFINE TABLE IF NOT EXISTS clip_embeddings TYPE NORMAL SCHEMAFULL PERMISSIONS FULL;
         DEFINE TABLE IF NOT EXISTS assistant_sessions TYPE NORMAL SCHEMAFULL PERMISSIONS FULL;
         DEFINE TABLE IF NOT EXISTS assistant_messages TYPE NORMAL SCHEMAFULL PERMISSIONS FULL;
+        DEFINE TABLE IF NOT EXISTS thumb_blobs TYPE NORMAL SCHEMAFULL PERMISSIONS FULL;
 
         DEFINE FIELD IF NOT EXISTS caption ON thumbnails TYPE option<string> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS category ON thumbnails TYPE option<string> PERMISSIONS FULL;
@@ -114,6 +119,16 @@ pub const SCHEMA_DDL: &str = r#"
         DEFINE FIELD IF NOT EXISTS attachments_refs ON assistant_messages TYPE option<array<record<thumbnails>>> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS created ON assistant_messages TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
         
+        DEFINE FIELD IF NOT EXISTS path ON thumb_blobs TYPE string PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS key ON thumb_blobs TYPE string PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS bytes ON thumb_blobs TYPE bytes PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS format ON thumb_blobs TYPE string ASSERT $value IN ['jpeg', 'png'] PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS w ON thumb_blobs TYPE int PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS h ON thumb_blobs TYPE int PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS src_modified ON thumb_blobs TYPE option<datetime> PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS src_size ON thumb_blobs TYPE option<int> PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS created ON thumb_blobs TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
+
         DEFINE FIELD IF NOT EXISTS ext_enabled ON user_settings TYPE option<array<any>> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS excluded_dirs ON user_settings TYPE option<array<string>> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS group_by_category ON user_settings TYPE bool PERMISSIONS FULL;
@@ -176,6 +191,7 @@ pub const SCHEMA_DDL: &str = r#"
         DEFINE INDEX IF NOT EXISTS idx_cached_items_scan ON cached_scan_items FIELDS scan_ref;
         DEFINE INDEX IF NOT EXISTS idx_cached_scans_started ON cached_scans FIELDS started;
         DEFINE INDEX IF NOT EXISTS idx_assistant_session ON assistant_messages FIELDS session_ref;
+        DEFINE INDEX IF NOT EXISTS thumb_blobs_key_idx ON thumb_blobs FIELDS key UNIQUE;
 
         COMMIT;
 "#;
