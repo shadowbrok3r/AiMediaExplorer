@@ -145,6 +145,11 @@ async fn main() -> eframe::Result<()> {
         }
     }
 
+    let db_cli_args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(code) = database::cli::run(&db_cli_args) {
+        std::process::exit(code);
+    }
+
     // Theme flags: `--theme-dump` prints the resolved tokens and metrics as JSON and exits without a window, `--theme <path.json>` (or SMART_MEDIA_THEME) forces a theme file for the run, `--no-frost` disables the glass blur, `--theme-panel` opens the Theme window.
     let theme_options = match theme::cli::Options::from_env() {
         Ok(options) => options,

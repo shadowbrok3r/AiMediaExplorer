@@ -1,9 +1,9 @@
 use crate::ui::status::{GlobalStatusIndicator, StatusState, DB_STATUS};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use surrealdb::{Surreal, engine::local::Db};
 use std::{fs, path::{Path, PathBuf}};
 use crossbeam::channel::Sender;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 
 pub mod clip_embeddings;
 pub mod files;
@@ -13,6 +13,12 @@ pub mod logical_groups;
 pub mod filter_groups;
 pub mod cached_scans;
 pub mod assistant_chat;
+pub mod snapshot;
+pub mod surql;
+pub mod maintenance;
+pub mod cli;
+#[cfg(test)]
+mod tests;
 pub use clip_embeddings::*;
 pub use files::*;
 pub use settings::*;
@@ -22,6 +28,28 @@ pub use filter_groups::*;
 pub use cached_scans::*;
 
 pub static DB: LazyLock<Surreal<Db>> = LazyLock::new(Surreal::init);
+
+static DB_CONNECTED: AtomicBool = AtomicBool::new(false);
+static OPEN_TX: Mutex<Option<Sender<()>>> = Mutex::new(None);
+
+/// True once the global DB handle is connected to a store (it cannot be re-pointed afterwards).
+pub fn is_connected() -> bool {
+    DB_CONNECTED.load(Ordering::SeqCst)
+}
+
+/// Re-run `new` with the channel from the most recent open attempt.
+pub fn reopen_with_last_tx() -> bool {
+    let tx = OPEN_TX.lock().ok().and_then(|g| g.clone());
+    match tx {
+        Some(tx) => {
+            tokio::spawn(async move {
+                if let Err(e) = new(tx).await { log::error!("[DB] reopen failed: {e}"); }
+            });
+            true
+        }
+        None => false,
+    }
+}
 
 pub const NS: &str = "file_explorer";
 pub const DB_NAME: &str = "ai_search";
@@ -38,14 +66,8 @@ pub const LOGICAL_GROUPS: &str = "logical_groups";
 pub const ASSISTANT_SESSIONS: &str = "assistant_sessions";
 pub const ASSISTANT_MESSAGES: &str = "assistant_messages";
 
-pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
-    DB_STATUS.set_state(StatusState::Initializing, "Connecting DB");
-    let db_path = get_db_path();
-    DB.connect::<surrealdb::engine::local::SurrealKv>(&db_path).await?;
-    DB.use_ns(NS).use_db(DB_NAME).await?;
-
-    // DEFINE BUCKET userfiles BACKEND "memory";
-    let query = r#" 
+/// Schema definition script shared by `new`, imports and tests.
+pub const SCHEMA_DDL: &str = r#"
         BEGIN;
         DEFINE TABLE IF NOT EXISTS thumbnails TYPE NORMAL SCHEMAFULL PERMISSIONS FULL;
         DEFINE TABLE IF NOT EXISTS user_settings TYPE NORMAL SCHEMALESS PERMISSIONS FULL;
@@ -156,10 +178,43 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
         DEFINE INDEX IF NOT EXISTS idx_assistant_session ON assistant_messages FIELDS session_ref;
 
         COMMIT;
-    "#;
+"#;
 
-    let response = DB.query(query).await?;
+/// Run the schema definition script against a handle already pointed at NS/DB.
+pub async fn define_schema<C: surrealdb::Connection>(db: &Surreal<C>) -> anyhow::Result<(), anyhow::Error> {
+    let response = db.query(SCHEMA_DDL).await?;
     let _ = response.check()?;
+    Ok(())
+}
+
+pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
+    DB_STATUS.set_state(StatusState::Initializing, "Connecting DB");
+    let db_path = get_db_path();
+    if let Ok(mut g) = OPEN_TX.lock() { *g = Some(tx.clone()); }
+    let pre_open = if is_connected() {
+        None
+    } else {
+        match snapshot::prepare_open(Path::new(&db_path)).await {
+            Ok(pre) => {
+                snapshot::clear_blocked();
+                Some(pre)
+            }
+            Err(e) => {
+                snapshot::set_blocked(&e);
+                DB_STATUS.set_error(e.user_message());
+                return Err(anyhow::Error::new(e));
+            }
+        }
+    };
+    DB.connect::<surrealdb::engine::local::SurrealKv>(&db_path).await?;
+    DB_CONNECTED.store(true, Ordering::SeqCst);
+    DB.use_ns(NS).use_db(DB_NAME).await?;
+
+    // DEFINE BUCKET userfiles BACKEND "memory";
+    define_schema(&DB).await?;
+    if pre_open.is_some() {
+        snapshot::finish_open(Path::new(&db_path));
+    }
     // Ensure at least one logical group exists (Default)
     if crate::database::LogicalGroup::list_all().await?.is_empty() {
         let _ = crate::database::LogicalGroup::create("Default").await;
@@ -168,6 +223,9 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
     DB_STATUS.set_progress(0, 0);
     DB_STATUS.set_detail("");
     DB_STATUS.set_state(StatusState::Idle, "");
+    if let Some(pre) = pre_open {
+        snapshot::spawn_auto_export(PathBuf::from(&db_path), pre);
+    }
     Ok(())
 }
 

@@ -8337,6 +8337,7 @@ dependencies = [
  "fastembed",
  "ffmpeg-next",
  "flate2",
+ "fs2",
  "futures-core",
  "futures-util",
  "hf-hub 1.0.0",
