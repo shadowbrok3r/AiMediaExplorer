@@ -461,7 +461,7 @@ dependencies = [
 [[package]]
 name = "backdrop-blur-core"
 version = "0.3.0"
-source = "git+https://github.com/shadowbrok3r/egui-theme-kit?rev=ab708cbe629d4b589e604100936e40688039efe1#ab708cbe629d4b589e604100936e40688039efe1"
+source = "git+https://github.com/shadowbrok3r/egui-theme-kit?rev=d462da890f7abb6aa8b7d9cfcf6ab1ed1fc226de#d462da890f7abb6aa8b7d9cfcf6ab1ed1fc226de"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -469,7 +469,7 @@ dependencies = [
 [[package]]
 name = "backdrop-blur-egui"
 version = "0.3.0"
-source = "git+https://github.com/shadowbrok3r/egui-theme-kit?rev=ab708cbe629d4b589e604100936e40688039efe1#ab708cbe629d4b589e604100936e40688039efe1"
+source = "git+https://github.com/shadowbrok3r/egui-theme-kit?rev=d462da890f7abb6aa8b7d9cfcf6ab1ed1fc226de#d462da890f7abb6aa8b7d9cfcf6ab1ed1fc226de"
 dependencies = [
  "backdrop-blur-core",
  "backdrop-blur-glow",
@@ -482,7 +482,7 @@ dependencies = [
 [[package]]
 name = "backdrop-blur-glow"
 version = "0.3.0"
-source = "git+https://github.com/shadowbrok3r/egui-theme-kit?rev=ab708cbe629d4b589e604100936e40688039efe1#ab708cbe629d4b589e604100936e40688039efe1"
+source = "git+https://github.com/shadowbrok3r/egui-theme-kit?rev=d462da890f7abb6aa8b7d9cfcf6ab1ed1fc226de#d462da890f7abb6aa8b7d9cfcf6ab1ed1fc226de"
 dependencies = [
  "backdrop-blur-core",
  "glow",
@@ -2277,7 +2277,7 @@ dependencies = [
 [[package]]
 name = "egui-icon-pack"
 version = "0.1.0"
-source = "git+https://github.com/shadowbrok3r/egui-theme-kit?rev=ab708cbe629d4b589e604100936e40688039efe1#ab708cbe629d4b589e604100936e40688039efe1"
+source = "git+https://github.com/shadowbrok3r/egui-theme-kit?rev=d462da890f7abb6aa8b7d9cfcf6ab1ed1fc226de#d462da890f7abb6aa8b7d9cfcf6ab1ed1fc226de"
 dependencies = [
  "egui",
  "egui-phosphor",
@@ -2287,7 +2287,7 @@ dependencies = [
 [[package]]
 name = "egui-icon-pack-build"
 version = "0.1.0"
-source = "git+https://github.com/shadowbrok3r/egui-theme-kit?rev=ab708cbe629d4b589e604100936e40688039efe1#ab708cbe629d4b589e604100936e40688039efe1"
+source = "git+https://github.com/shadowbrok3r/egui-theme-kit?rev=d462da890f7abb6aa8b7d9cfcf6ab1ed1fc226de#d462da890f7abb6aa8b7d9cfcf6ab1ed1fc226de"
 
 [[package]]
 name = "egui-phosphor"
@@ -2300,7 +2300,7 @@ dependencies = [
 [[package]]
 name = "egui-theme-kit"
 version = "0.1.0"
-source = "git+https://github.com/shadowbrok3r/egui-theme-kit?rev=ab708cbe629d4b589e604100936e40688039efe1#ab708cbe629d4b589e604100936e40688039efe1"
+source = "git+https://github.com/shadowbrok3r/egui-theme-kit?rev=d462da890f7abb6aa8b7d9cfcf6ab1ed1fc226de#d462da890f7abb6aa8b7d9cfcf6ab1ed1fc226de"
 dependencies = [
  "anyhow",
  "backdrop-blur-egui",
@@ -2312,9 +2312,11 @@ dependencies = [
  "egui_dock",
  "egui_extras",
  "log",
+ "raw-window-handle",
  "rfd",
  "serde",
  "serde_json",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -8388,6 +8390,7 @@ dependencies = [
  "jwalk",
  "libc",
  "log",
+ "memchr",
  "once_cell",
  "open",
  "openssl",
@@ -8403,6 +8406,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sevenz-rust2",
+ "sha2 0.10.9",
  "simplelog",
  "static_vcruntime",
  "surrealdb",
@@ -8412,6 +8416,7 @@ dependencies = [
  "time",
  "tokenizers 0.23.2",
  "tokio",
+ "toml 0.8.23",
  "widestring",
  "windows 0.62.2",
  "winres",

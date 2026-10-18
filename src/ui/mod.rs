@@ -8,6 +8,9 @@ pub mod image_edit;
 pub mod devtools;
 pub mod dialogs;
 pub mod statusbar;
+pub mod titlebar;
+#[cfg(test)]
+pub(crate) mod test_support;
 
 /// Icon-then-text button tinted as a destructive action.
 pub fn danger_icon_button(

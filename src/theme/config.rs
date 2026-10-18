@@ -93,6 +93,12 @@ mod tests {
     }
 
     #[test]
+    fn the_title_bar_flag_passes_the_theme_parser() {
+        let options = parse(&["--system-titlebar", "--theme-panel"], &[("EGUI_THEME_KIT_SYSTEM_TITLEBAR", "1")]);
+        assert!(options.theme_panel && !options.theme_dump && options.theme_path.is_none());
+    }
+
+    #[test]
     fn the_theme_flags_still_parse() {
         let options = parse(&["--theme-dump", "--theme-panel", "--theme=a.json"], &[]);
         assert!(options.theme_dump && options.theme_panel);

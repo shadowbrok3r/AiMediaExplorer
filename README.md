@@ -29,3 +29,9 @@ The styling system is the `egui-theme-kit` and `egui-icon-pack` crates (https://
 - The export holds the old settings including API keys: it is written with mode 0600 and deleted afterwards unless `--keep-export` is given.
 - Afterwards run `--db-thumbs migrate` then `--db-thumbs finish` (or pass `--then-migrate-thumbs`). Blobs are keyed by the stored path, so finish the path map first.
 - Exit codes: 0 ok, 1 failed, 2 usage, 3 database in use, 4 engine unavailable, 5 verification problems, 6 path map needs review, 7 cancelled.
+
+# Window title bar
+The main window draws its own title bar (logo, File and View menus, engine status chips, minimize, maximize and close) and resize edges; secondary windows such as the AI Assistant keep the system title bar.
+
+- View > Custom title bar switches to the system title bar and back; the choice is saved to `<config dir>/smart-media/window_settings.json`.
+- `--system-titlebar` or `EGUI_THEME_KIT_SYSTEM_TITLEBAR=1` keeps the system title bar for one launch without changing the saved choice.

@@ -24,8 +24,9 @@ impl eframe::App for app::SmartMediaApp {
         theme::glass::frost_open_windows(&ctx);
         self.context.receive(&ctx);
         self.sync_focused_explorer();
+        self.title_strip(ui);
         settings::banner::show(ui);
-        self.navbar(ui);
+        self.status_bar(ui);
         self.drain_open_tab_requests();
         self.open_refine_tab_if_requested();
 
@@ -65,6 +66,7 @@ impl eframe::App for app::SmartMediaApp {
         self.context.appearance.show(&ctx);
         theme::debug_panel::record_ui_time(&ctx, started.elapsed());
         theme::debug_panel::record_frame_cpu(&ctx, frame.info().cpu_usage);
+        self.window_edges(ui);
     }
 
     fn persist_egui_memory(&self) -> bool { true }
@@ -215,15 +217,17 @@ async fn main() -> eframe::Result<()> {
         .unwrap();
     theme::cli::install(theme_options);
 
+    let chrome = ui::titlebar::resolve_chrome();
     let _ = eframe::run_native(
         format!("Smart Media {}", env!("CARGO_PKG_VERSION")).as_str(),
         eframe::NativeOptions {
-            viewport: eframe::egui::ViewportBuilder::default()
-                .with_inner_size([1000.0, 750.0])
-                .with_drag_and_drop(true),
+            viewport: ui::titlebar::viewport(&chrome),
             ..Default::default()
         },
-        Box::new(|cc| Ok(Box::new(app::SmartMediaApp::new(cc)))),
+        Box::new(move |cc| {
+            theme::title_bar::windows::client_area::install(cc);
+            Ok(Box::new(app::SmartMediaApp::new(cc, chrome)))
+        }),
     );
     
     Ok(())

@@ -479,6 +479,7 @@ impl FileExplorer {
         self.preview_pane(ui);
         self.quick_access_pane(ui);
         self.navbar(ui);
+        self.breadcrumbs(ui);
 
         // For recursive scan pagination: ensure filtered snapshot stays in sync with current user filter
         if self.recursive_scan {

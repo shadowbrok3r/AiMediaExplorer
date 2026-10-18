@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::Context as _;
 use egui_theme_kit::saved::{SavedTheme, theme_from_json, theme_to_json};
 use egui_theme_kit::store::{
-    CachedStore, NamedTheme, StartupTheme, StoreOp, StoreSnapshot, ThemeBackend, ThemeStore,
+    CachedStore, ChangeCallback, NamedTheme, StartupTheme, StoreOp, StoreSnapshot, ThemeBackend, ThemeStore,
 };
 use serde_json::{Value, json};
 use surrealdb::engine::local::Db;
@@ -441,15 +441,14 @@ impl ThemeStore for SurrealThemeStore {
     fn clear_error(&self) {
         self.inner.clear_error();
     }
-}
 
-impl egui_theme_kit::startup::ThemeStore for SurrealThemeStore {
-    fn load_active(&self) -> Option<SavedTheme> {
-        ThemeStore::load_active(self)
+    // Not ready until the first real read from the database has succeeded.
+    fn is_ready(&self) -> bool {
+        self.is_loaded() && self.inner.is_ready()
     }
 
-    fn save_active(&self, theme: &SavedTheme) {
-        ThemeStore::save_active(self, theme);
+    fn on_change(&self, callback: ChangeCallback) {
+        self.inner.on_change(callback);
     }
 }
 

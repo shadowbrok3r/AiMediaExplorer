@@ -7,6 +7,7 @@ use once_cell::sync::Lazy;
 use std::sync::Mutex;
 use crate::{ui::{file_table::FileExplorer, refine::RefinementsPanel}, UiSettings};
 use egui_toast::Toasts;
+use crate::theme::chrome::Chrome;
 
 // Global atomic flag to request opening the settings modal from anywhere (e.g., navbar without direct &mut SmartMediaApp access)
 pub static OPEN_SETTINGS_REQUEST: Lazy<std::sync::atomic::AtomicBool> = Lazy::new(|| std::sync::atomic::AtomicBool::new(false));
@@ -20,6 +21,7 @@ pub struct SmartMediaApp {
     pub tree: DockState<String>,
     pub context: SmartMediaContext,
     pub egui_ctx: Context,
+    pub chrome: Chrome,
 }
 
 /// Preferences window state: the settings when it opened and the copy being edited.
@@ -96,9 +98,14 @@ pub enum DbSelectMode {
 }
 
 impl SmartMediaApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, chrome: Chrome) -> Self {
         let appearance = crate::theme::setup(cc);
         restore_egui_preferences(&cc.egui_ctx, cc.storage);
+        Self::assemble(cc.egui_ctx.clone(), appearance, chrome, FileExplorer::new(false))
+    }
+
+    /// The app over an installed theme: dock layout, panels and the main explorer.
+    pub fn assemble(egui_ctx: Context, appearance: crate::theme::Appearance, chrome: Chrome, file_explorer: FileExplorer) -> Self {
         let (db_ready_tx, db_ready_rx) = crossbeam::channel::bounded(1);
         let (toast_tx, toast_rx) = crossbeam::channel::unbounded();
         let (refine_tx, refine_rx) = crossbeam::channel::unbounded();
@@ -139,7 +146,7 @@ impl SmartMediaApp {
             prefs: None,
             egui_prefs_save_requested: false,
             pending_tab_adds: Vec::new(),
-            file_explorer: FileExplorer::new(false),
+            file_explorer,
             open_tabs,
             filtered_tabs: std::collections::HashMap::new(),
             assistant: crate::ui::assistant::AssistantPanel::new(),
@@ -165,7 +172,8 @@ impl SmartMediaApp {
         Self {
             context,
             tree,
-            egui_ctx: cc.egui_ctx.clone(),
+            egui_ctx,
+            chrome,
         }
     }
 }
