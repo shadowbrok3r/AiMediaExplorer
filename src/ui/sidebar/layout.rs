@@ -41,7 +41,7 @@ pub struct UiLayout {
     pub section_open: BTreeMap<String, bool>,
     #[serde(default = "yes")]
     pub bottom_bar_open: bool,
-    #[serde(default = "yes")]
+    #[serde(default)]
     pub right_rail_open: bool,
 }
 
@@ -53,7 +53,7 @@ impl Default for UiLayout {
             sidebar_width: DEFAULT_WIDTH,
             section_open: BTreeMap::new(),
             bottom_bar_open: true,
-            right_rail_open: true,
+            right_rail_open: false,
         }
     }
 }

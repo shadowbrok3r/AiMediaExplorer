@@ -70,6 +70,7 @@ impl Rig {
         let mut app = SmartMediaApp::assemble(ctx.clone(), appearance, Chrome { frameless: true, available: true }, FileExplorer::new(true));
         app.shell.sidebar.data.preset(fill);
         app.context.db_ready = true;
+        app.context.inspector.set_open(app.shell.layout.layout.right_rail_open);
         Self { app, ctx, size: (width, height), _fixture: fixture, _runtime: runtime }
     }
 
@@ -340,11 +341,11 @@ fn shell_actions_flip_the_chrome_flags() {
         (ShellAction::ToggleBottomBar, |l| l.bottom_bar_open),
         (ShellAction::ToggleRightRail, |l| l.right_rail_open),
     ] {
-        assert!(read(&rig.app.shell.layout.layout));
+        let before = read(&rig.app.shell.layout.layout);
         rig.app.run_shell_action(&ctx, action);
-        assert!(!read(&rig.app.shell.layout.layout), "{action:?}");
+        assert_eq!(read(&rig.app.shell.layout.layout), !before, "{action:?}");
         rig.app.run_shell_action(&ctx, action);
-        assert!(read(&rig.app.shell.layout.layout), "{action:?}");
+        assert_eq!(read(&rig.app.shell.layout.layout), before, "{action:?}");
     }
 }
 

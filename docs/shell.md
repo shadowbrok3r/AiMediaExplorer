@@ -40,7 +40,7 @@ Below 900 px the sidebar is an icon rail: one icon per section opens its rows in
   "sidebar_width": 240.0,
   "section_open": { "places": true, "tags": true },
   "bottom_bar_open": true,
-  "right_rail_open": true
+  "right_rail_open": false
 }
 ```
 

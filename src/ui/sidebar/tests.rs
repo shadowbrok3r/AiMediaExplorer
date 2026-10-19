@@ -39,7 +39,7 @@ fn missing_fields_take_their_defaults() {
     let layout = UiLayout::parse(r#"{"sidebar_open": false}"#).unwrap();
     assert!(!layout.sidebar_open);
     assert_eq!(layout.sidebar_width, DEFAULT_WIDTH);
-    assert!(layout.bottom_bar_open && layout.right_rail_open);
+    assert!(layout.bottom_bar_open && !layout.right_rail_open);
     assert!(layout.section_open.is_empty());
     assert_eq!(UiLayout::parse("{}"), Ok(UiLayout::default()));
 }
