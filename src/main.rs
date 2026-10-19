@@ -12,6 +12,7 @@ pub mod icons;
 pub mod theme;
 pub mod settings;
 pub mod video;
+pub mod zc;
 
 pub use utilities::{explorer::*, scan::*, thumbs::*, types::*};
 pub use database::*;
