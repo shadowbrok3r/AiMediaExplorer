@@ -1,0 +1,14 @@
+{"t_ms":0,"dir":"in","frame":{"type":"session_start","session_id":"fixture-session","resumed":false,"message_count":0}}
+{"t_ms":3,"dir":"out","frame":{"type":"connect","device_name":"zeroclaw-client","capabilities":["text"]}}
+{"t_ms":4,"dir":"in","frame":{"type":"connected","message":"Connection established"}}
+{"t_ms":20,"dir":"out","frame":{"type":"message","content":"edit the sunset shoot"}}
+{"t_ms":30,"dir":"in","frame":{"type":"agent_start","model_provider":"llama","model":"qwen3.8-27b"}}
+{"t_ms":60,"dir":"in","frame":{"type":"tool_call","id":"c1","name":"aimedia__library_search_semantic","args":{"query":"sunset","limit":5}}}
+{"t_ms":90,"dir":"in","frame":{"type":"tool_result","id":"c1","name":"aimedia__library_search_semantic","output":"5 results"}}
+{"t_ms":100,"dir":"in","frame":{"type":"tool_call","id":"c2","name":"aimedia__image_edit_run","args":{"path":"a.jpg","prompt":"warmer"}}}
+{"t_ms":110,"dir":"in","frame":{"type":"approval_request","request_id":"r1","tool":"aimedia__image_edit_run","arguments_summary":"edit a.jpg: warmer","arguments":{"path":"a.jpg","prompt":"warmer"},"timeout_secs":300}}
+{"t_ms":900,"dir":"out","frame":{"type":"approval_response","request_id":"r1","decision":"approve"}}
+{"t_ms":950,"dir":"in","frame":{"type":"tool_result","id":"c2","name":"aimedia__image_edit_run","output":"job 7 started"}}
+{"t_ms":960,"dir":"in","frame":{"type":"plan","entries":[{"content":"search","status":"completed"},{"content":"edit","status":"in_progress"}]}}
+{"t_ms":1000,"dir":"in","frame":{"type":"chunk","content":"Started job 7."}}
+{"t_ms":1010,"dir":"in","frame":{"type":"done","full_response":"Started job 7.","input_tokens":2200,"output_tokens":30,"tokens_used":2230,"cost_usd":0.0,"model":"qwen3.8-27b","provider":"llama","max_context_tokens":131072,"last_input_tokens":2200}}

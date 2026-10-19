@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 build = "build.rs"
 
+[workspace]
+members = ["crates/zeroclaw-client"]
+
 [dependencies]
 eframe = { version="0.37.0", features=["persistence", "serde",  "default_fonts", "glow", "x11", "clipboard"], default-features=false }
 egui_extras = { version = "0.37.0", features = ["datepicker", "syntect", "serde", "image", "svg", "all_loaders" ]}

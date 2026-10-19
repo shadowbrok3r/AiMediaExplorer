@@ -1,0 +1,11 @@
+# Error codes, frames from other event-bus producers and a fork frame that drifted from the documented shape.
+{"t_ms":0,"dir":"in","frame":{"type":"session_start","session_id":"fixture-session","resumed":false,"message_count":0}}
+{"t_ms":3,"dir":"out","frame":{"type":"connect","device_name":"zeroclaw-client","capabilities":["text"]}}
+{"t_ms":4,"dir":"in","frame":{"type":"connected","message":"Connection established"}}
+{"t_ms":20,"dir":"out","frame":{"type":"message","content":"go"}}
+{"t_ms":30,"dir":"in","frame":{"type":"error","code":"STEERING_QUEUE_FULL","message":"steering queue is full"}}
+{"t_ms":40,"dir":"in","frame":{"type":"chunk","content":"partial"}}
+{"t_ms":50,"dir":"in","frame":{"type":"cron_result","job":"nightly","ok":true}}
+{"t_ms":60,"dir":"in","frame":{"type":"tool_call","id":{"nested":1},"name":"x","args":{}}}
+{"t_ms":70,"dir":"in","frame":{"type":"fork_feature","payload":[1,2,3]}}
+{"t_ms":80,"dir":"in","frame":{"type":"error","code":"PROVIDER_ERROR","message":"upstream returned 502"}}

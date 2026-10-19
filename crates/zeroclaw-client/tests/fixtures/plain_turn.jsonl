@@ -1,0 +1,12 @@
+# Hand-written from the documented /ws/chat frames (docs/research/zeroclaw-integration.md, Appendix B).
+{"t_ms":0,"dir":"in","frame":{"type":"session_start","session_id":"fixture-session","resumed":false,"message_count":0}}
+{"t_ms":3,"dir":"out","frame":{"type":"connect","device_name":"zeroclaw-client","capabilities":["text"]}}
+{"t_ms":4,"dir":"in","frame":{"type":"connected","message":"Connection established"}}
+{"t_ms":20,"dir":"out","frame":{"type":"message","content":"find sunsets"}}
+{"t_ms":30,"dir":"in","frame":{"type":"agent_start","model_provider":"llama","model":"qwen3.8-27b"}}
+{"t_ms":120,"dir":"in","frame":{"type":"thinking","content":"The user wants "}}
+{"t_ms":130,"dir":"in","frame":{"type":"thinking","content":"sunset photos."}}
+{"t_ms":400,"dir":"in","frame":{"type":"chunk","content":"Found "}}
+{"t_ms":420,"dir":"in","frame":{"type":"chunk","content":"12 sunsets."}}
+{"t_ms":430,"dir":"in","frame":{"type":"done","full_response":"Found 12 sunsets.","input_tokens":1234,"output_tokens":18,"tokens_used":1252,"cost_usd":null,"model":"qwen3.8-27b","provider":"llama","max_context_tokens":131072,"last_input_tokens":1234}}
+{"t_ms":431,"dir":"in","frame":{"type":"agent_end","model_provider":"llama","model":"qwen3.8-27b"}}

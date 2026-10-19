@@ -1,0 +1,10 @@
+# Stop is a REST call; the socket then reports aborted.
+{"t_ms":0,"dir":"in","frame":{"type":"session_start","session_id":"fixture-session","resumed":false,"message_count":0}}
+{"t_ms":3,"dir":"out","frame":{"type":"connect","device_name":"zeroclaw-client","capabilities":["text"]}}
+{"t_ms":4,"dir":"in","frame":{"type":"connected","message":"Connection established"}}
+{"t_ms":20,"dir":"out","frame":{"type":"message","content":"write a long essay"}}
+{"t_ms":30,"dir":"in","frame":{"type":"agent_start","model_provider":"llama","model":"qwen3.8-27b"}}
+{"t_ms":60,"dir":"in","frame":{"type":"thinking","content":"Outline first."}}
+{"t_ms":90,"dir":"in","frame":{"type":"chunk","content":"Working"}}
+{"t_ms":400,"dir":"in","frame":{"type":"aborted"}}
+{"t_ms":401,"dir":"in","frame":{"type":"agent_end","model_provider":"llama","model":"qwen3.8-27b"}}
