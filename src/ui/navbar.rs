@@ -246,6 +246,10 @@ impl crate::app::SmartMediaApp {
                 crate::ui::devtools::toggle_filters(ui.ctx());
                 ui.close();
             }
+            if icons::button(ui, svg::SQUARES_FOUR, "Grid").clicked() {
+                crate::ui::devtools::toggle_grid(ui.ctx());
+                ui.close();
+            }
         });
 
         ui.separator();

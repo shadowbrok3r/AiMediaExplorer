@@ -198,7 +198,7 @@ Selects and previews the row of a path in the focused tab; `not_found` when the 
 
 ### open_devtools
 
-Opens a debug window: `theme_panel`, `settings_store`, `db_maintenance`, `legacy_import`, `thumb_storage`, `thumb_cache`, `tasks`, `command_log`, `perf`, `row_store`, `collections`, `video`, `scope`, `filters`.
+Opens a debug window: `theme_panel`, `settings_store`, `db_maintenance`, `legacy_import`, `thumb_storage`, `thumb_cache`, `tasks`, `command_log`, `perf`, `row_store`, `collections`, `video`, `scope`, `filters`, `grid`.
 
 The `scope` window takes a scope string and shows how it parses (kind, title, parent, whether a folder exists), opens it in the focused tab or a new one, steps back and forward, lists the history stack of the focused tab with the scroll row and selection saved in each entry, and shows the timing of its recent loads: rows, batches, time to the first batch and total time.
 
@@ -236,6 +236,14 @@ Changes the filters of the focused tab. Filters never remove rows: a row that is
 ```json
 {"cmd": "set_filter", "filter": {"size": {"min": null, "max": 5242880}, "types": {"videos": false}}}
 {"cmd": "set_filter", "filter": {"tags": ["sunset"], "clip": "yes"}, "replace": true}
+### set_view_mode
+
+Switches the focused tab between the thumbnail grid and the details table, and sets how the grid looks. The choice is remembered for new tabs and the next session (`<config>/smart-media/view_prefs.json`). A tab opens in the grid by default.
+
+```json
+{"cmd": "set_view_mode", "mode": "grid", "size": 160, "fit": "crop", "captions": true}
+{"cmd": "set_view_mode", "mode": "details"}
+{"cmd": "set_view_mode", "mode": "grid", "stress": 40}
 ```
 
 | Field | Meaning |
@@ -270,6 +278,15 @@ Applies a saved filter view (Views in the filter strip) to the focused tab by na
 ```json
 {"cmd": "apply_saved_view", "name": "Holidays"}
 ```
+| `mode` | `grid` or `details` |
+| `size` | Optional tile size in points, 64 to 320 (values outside are clamped); the presets are S 96, M 160 and L 256 |
+| `fit` | Optional: `crop` fills each square tile, `fit` shows the whole image |
+| `captions` | Optional: file names under the tiles |
+| `stress` | Optional: rows per second the grid scrolls up and down by itself, for performance checks (0 stops it; Devtools > Grid has the same control) |
+
+The command acts on the focused tab; in a `--run` list the tab opened by an earlier entry takes focus only after its first frame, so the main explorer is the one that changes. Devtools > Grid drives the same settings for the tab it shows.
+
+Keys in the grid: arrows move by tile and row, Page Up and Page Down by a screen, Home and End to the ends, Shift extends, Ctrl+A selects all, Enter opens, Space toggles the preview, Esc clears, plus and minus resize the tiles, Ctrl+wheel zooms, F9 switches Grid and Details, Ctrl+1 and Ctrl+2 pick one. Dragging over empty space selects with a band (hold Ctrl to add).
 
 ## Results
 

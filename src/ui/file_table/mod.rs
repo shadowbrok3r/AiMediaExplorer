@@ -85,6 +85,8 @@ pub struct FileExplorer {
     #[serde(skip)]
     pub details: table::details::DetailsView,
     #[serde(skip)]
+    pub browse: table::browse::Browse,
+    #[serde(skip)]
     row_sync: explorer::rows::RowSync,
     pub viewer: FileTableViewer,
     batch_size: usize,
@@ -246,6 +248,7 @@ impl FileExplorer {
             view: Default::default(),
             selection: Default::default(),
             details: Default::default(),
+            browse: Default::default(),
             row_sync: Default::default(),
             viewer: FileTableViewer::new(
                 thumbnail_tx.clone(),
@@ -451,7 +454,7 @@ impl FileExplorer {
                 ui.separator();
             }
             chips::show(ui, self);
-            self.details_panel(ui);
+            self.browse_panel(ui);
 
             // Modal password prompt (appears at end of scans or when browsing encrypted archives)
             if self.show_zip_modal {

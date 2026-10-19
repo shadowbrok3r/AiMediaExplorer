@@ -6,6 +6,7 @@ use super::bus::CommandBus;
 use super::log::{CommandLog, Outcome};
 use super::model::{ActionId, AppCommand, DevtoolsWindow, NavOp, Section, Selector, Target, Tool, ToastLevel};
 use super::scope::Scope;
+use crate::ui::file_table::table::view_mode::{TileFit, ViewMode};
 use super::model::RowsTab;
 use crate::tasks::{TaskEvent, TaskId};
 
@@ -90,6 +91,7 @@ pub trait CommandSink {
     fn set_filter(&mut self, filter: &serde_json::Value, replace: bool) -> CommandResult;
     fn clear_filters(&mut self) -> CommandResult;
     fn apply_saved_view(&mut self, name: &str) -> CommandResult;
+    fn set_view_mode(&mut self, mode: ViewMode, size: Option<f32>, fit: Option<TileFit>, captions: Option<bool>, stress: Option<f32>) -> CommandResult;
 }
 
 /// Runs one command; an action on an empty set of files is an error, never "all files".
@@ -122,6 +124,7 @@ pub fn dispatch(sink: &mut dyn CommandSink, cmd: AppCommand) -> CommandResult {
         AppCommand::ClearFilters => sink.clear_filters(),
         AppCommand::ApplySavedView { name } if name.trim().is_empty() => Err(CommandError::invalid("no view name")),
         AppCommand::ApplySavedView { name } => sink.apply_saved_view(&name),
+        AppCommand::SetViewMode { mode, size, fit, captions, stress } => sink.set_view_mode(mode, size, fit, captions, stress),
     }
 }
 
@@ -235,6 +238,9 @@ pub(crate) mod fake {
         fn apply_saved_view(&mut self, name: &str) -> CommandResult {
             self.done(format!("apply_saved_view {name}"))
         }
+        fn set_view_mode(&mut self, mode: ViewMode, size: Option<f32>, fit: Option<TileFit>, captions: Option<bool>, stress: Option<f32>) -> CommandResult {
+            self.done(format!("view {mode:?} {size:?} {fit:?} {captions:?} {stress:?}"))
+        }
     }
 }
 
@@ -264,6 +270,7 @@ mod tests {
             AppCommand::SetFilter { filter: serde_json::json!({"skip_icons": true}), replace: true },
             AppCommand::ClearFilters,
             AppCommand::ApplySavedView { name: "Holidays".into() },
+            AppCommand::SetViewMode { mode: ViewMode::Details, size: Some(96.0), fit: None, captions: Some(false), stress: None },
         ];
         for cmd in cmds {
             assert!(dispatch(&mut sink, cmd).is_ok());
@@ -288,6 +295,7 @@ mod tests {
                 "set_filter {\"skip_icons\":true} true",
                 "clear_filters",
                 "apply_saved_view Holidays",
+                "view Details Some(96.0) None Some(false) None",
             ]
         );
     }

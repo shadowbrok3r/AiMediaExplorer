@@ -148,6 +148,7 @@ pub enum DecodeEnd {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CoreStats {
     pub requests: u64,
+    pub ahead_requests: u64,
     pub negative_hits: u64,
     pub wants_created: u64,
     pub cancelled_stale: u64,
@@ -375,6 +376,22 @@ impl<V> Core<V> {
                 None => Lookup::Pending,
             };
         }
+        self.want_missing(key, scope, path, tier, prio)
+    }
+
+    /// Registers interest in a texture that is about to scroll into view; a cached texture is not stamped as drawn, so it stays evictable. Returns whether it is cached.
+    pub fn request_ahead(&mut self, scope: u32, path: &str, tier: Tier, prio: f32) -> bool {
+        self.stats.ahead_requests += 1;
+        let key = CacheKey::new(path, tier);
+        if self.cache.contains(&key) {
+            return true;
+        }
+        let _ = self.want_missing(key, scope, path, tier, prio);
+        false
+    }
+
+    // Creates or refreshes the want for a texture that is not cached.
+    fn want_missing(&mut self, key: CacheKey, scope: u32, path: &str, tier: Tier, prio: f32) -> Lookup<'_, V> {
         let scope_gen = *self.scopes.entry(scope).or_insert(0);
         if let Some(w) = self.wants.get_mut(&key) {
             w.last_wanted = self.frame;
@@ -1305,6 +1322,49 @@ mod tests {
         assert!(c.cache_stats().evictions >= 2);
         assert!(matches!(c.request(1, "/b/0.jpg", Tier::Thumb, 0.0), Lookup::Pending));
         assert_eq!(c.cache_stats().thrash, 1);
+    }
+
+    #[test]
+    fn an_ahead_request_wants_an_uncached_texture_without_a_second_want() {
+        let mut c = core_with(cfg());
+        assert!(!c.request_ahead(1, "/ahead.jpg", Tier::Thumb, 900.0));
+        assert!(!c.request_ahead(1, "/ahead.jpg", Tier::Thumb, 400.0));
+        assert!(c.is_wanted("/ahead.jpg", Tier::Thumb));
+        assert_eq!(c.stats().wants_created, 1);
+        assert_eq!(c.stats().ahead_requests, 2);
+        assert_eq!(c.stats().requests, 0, "ahead requests are counted apart from draws");
+        assert_eq!(fetch_keys(&plan(&mut c)), vec![ThumbKey::from_path("/ahead.jpg")]);
+    }
+
+    #[test]
+    fn an_ahead_request_does_not_mark_a_cached_texture_as_drawn() {
+        let mut c = core_with(cfg());
+        c.request(1, "/c.jpg", Tier::Thumb, 0.0);
+        let a = plan(&mut c);
+        c.on_fetch_done(batch_id(&a), Ok((vec![(ThumbKey::from_path("/c.jpg"), blob())], Vec::new())));
+        let planned = plan(&mut c);
+        finish_ok(&mut c, decodes(&planned)[0]);
+        for _ in 0..3 {
+            next_frame(&mut c, 16);
+        }
+        assert_eq!(c.on_screen_count(), 0, "nothing drew it for a while");
+        assert!(c.request_ahead(1, "/c.jpg", Tier::Thumb, 10.0), "it is cached");
+        assert_eq!(c.on_screen_count(), 0, "an ahead request leaves it evictable");
+        assert!(matches!(c.request(1, "/c.jpg", Tier::Thumb, 0.0), Lookup::Ready(_)));
+        assert_eq!(c.on_screen_count(), 1, "drawing stamps it");
+    }
+
+    #[test]
+    fn ahead_wants_expire_like_any_other_when_the_viewport_moves_on() {
+        let mut config = cfg();
+        config.stale_frames = 2;
+        let mut c = core_with(config);
+        c.request_ahead(1, "/soon.jpg", Tier::Thumb, 100.0);
+        for _ in 0..4 {
+            next_frame(&mut c, 16);
+        }
+        assert!(!c.is_wanted("/soon.jpg", Tier::Thumb));
+        assert_eq!(c.stats().cancelled_stale, 1);
     }
 
     #[test]

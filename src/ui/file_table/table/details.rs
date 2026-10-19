@@ -51,6 +51,7 @@ pub struct DetailsView {
     scroll_to: Option<usize>,
     scroll_to_min: bool,
     scroll_top: bool,
+    scroll_row_top: Option<usize>,
     kb_active: bool,
     frame_ms: VecDeque<f32>,
     drawn_rows: usize,
@@ -59,7 +60,7 @@ pub struct DetailsView {
 
 impl Default for DetailsView {
     fn default() -> Self {
-        Self { prefs: DetailsPrefs::default(), page_rows: 8, scroll_to: None, scroll_to_min: false, scroll_top: false, kb_active: false, frame_ms: VecDeque::new(), drawn_rows: 0, rects: Vec::new() }
+        Self { prefs: DetailsPrefs::default(), page_rows: 8, scroll_to: None, scroll_to_min: false, scroll_top: false, scroll_row_top: None, kb_active: false, frame_ms: VecDeque::new(), drawn_rows: 0, rects: Vec::new() }
     }
 }
 
@@ -107,6 +108,11 @@ impl DetailsView {
     /// Jumps to the first row on the next frame.
     pub fn scroll_to_top(&mut self) {
         self.scroll_top = true;
+    }
+
+    /// Scrolls so the row at view position `pos` is the top row on the next frame.
+    pub fn scroll_row_to_top(&mut self, pos: usize) {
+        self.scroll_row_top = Some(pos);
     }
 
     /// Whether the table currently takes keyboard commands.
@@ -174,6 +180,7 @@ impl DetailsView {
         let scroll_to = self.scroll_to.take();
         let scroll_to_align = std::mem::take(&mut self.scroll_to_min).then_some(Align::Min);
         let scroll_top = std::mem::take(&mut self.scroll_top);
+        let row_top = self.scroll_row_top.take().map(|pos| pos as f32 * (ROW_HEIGHT + ui.spacing().item_spacing.y));
         let mut drawn = 0usize;
         let mut rects = std::mem::take(&mut self.rects);
         rects.clear();
@@ -196,6 +203,8 @@ impl DetailsView {
                 }
                 if scroll_top {
                     builder = builder.vertical_scroll_offset(0.0);
+                } else if let Some(offset) = row_top {
+                    builder = builder.vertical_scroll_offset(offset);
                 }
                 for (i, col) in cols.iter().enumerate() {
                     let w = col.width();
@@ -302,7 +311,7 @@ fn menu_targets(input: &DetailsInputs<'_>, key: &PathKey, row: &Thumbnail) -> Me
     MenuTargets { rows: input.selection.len(), dirs }
 }
 
-fn row_menu(ui: &mut Ui, input: &DetailsInputs<'_>, key: &PathKey, row: &Thumbnail, events: &mut Vec<DetailsEvent>) {
+pub(super) fn row_menu(ui: &mut Ui, input: &DetailsInputs<'_>, key: &PathKey, row: &Thumbnail, events: &mut Vec<DetailsEvent>) {
     let targets = menu_targets(input, key, row);
     ui.label(RichText::new(if targets.rows == 1 { "1 item".to_string() } else { format!("{} items", targets.rows) }).weak());
     ui.separator();

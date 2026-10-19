@@ -341,6 +341,11 @@ impl ThumbService {
         }
     }
 
+    /// Registers interest in a cell that is about to scroll into view without marking a cached texture as drawn; returns whether it is cached.
+    pub fn request_ahead(&self, scope: ScopeId, path: &str, tier: Tier, priority: f32) -> bool {
+        lock(&self.core).request_ahead(scope, path, tier, priority)
+    }
+
     /// Cached texture for `path` without registering interest.
     pub fn texture_for(&self, path: &str, tier: Tier) -> ThumbView {
         match lock(&self.core).peek(path, tier) {

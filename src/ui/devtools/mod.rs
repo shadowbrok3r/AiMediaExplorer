@@ -4,6 +4,7 @@ pub mod collections;
 pub mod command_log;
 pub mod db_maintenance;
 pub mod filters;
+pub mod grid;
 pub mod legacy_import;
 pub mod perf;
 pub mod row_store;
@@ -74,6 +75,10 @@ pub fn toggle_perf(ctx: &Context) {
     perf::set_open(ctx, !perf::is_open(ctx));
 }
 
+pub fn toggle_grid(ctx: &Context) {
+    grid::toggle(ctx);
+}
+
 /// Opens `window`, whichever debug window it names.
 pub fn open(ctx: &Context, window: DevtoolsWindow) {
     match window {
@@ -91,6 +96,7 @@ pub fn open(ctx: &Context, window: DevtoolsWindow) {
         DevtoolsWindow::Video => video::set_open(ctx, true),
         DevtoolsWindow::Scope => scope::set_open(ctx, true),
         DevtoolsWindow::Filters => filters::set_open(ctx, true),
+        DevtoolsWindow::Grid => grid::set_open(ctx, true),
     }
     ctx.request_repaint();
 }
@@ -110,6 +116,7 @@ pub fn show(ctx: &Context) {
     video::show(ctx);
     scope::show(ctx);
     filters::show(ctx);
+    grid::show(ctx);
 }
 
 #[cfg(test)]
@@ -131,6 +138,7 @@ mod tests {
             DevtoolsWindow::Video => video::is_open(ctx),
             DevtoolsWindow::Scope => scope::is_open(ctx),
             DevtoolsWindow::Filters => filters::is_open(ctx),
+            DevtoolsWindow::Grid => grid::is_open(ctx),
             DevtoolsWindow::ThemePanel => crate::theme::debug_panel::is_open(ctx),
         }
     }
@@ -153,6 +161,7 @@ mod tests {
             DevtoolsWindow::Video,
             DevtoolsWindow::Scope,
             DevtoolsWindow::Filters,
+            DevtoolsWindow::Grid,
         ];
         for w in windows {
             assert!(!is_open(&ctx, w), "{w:?} starts closed");

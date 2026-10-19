@@ -245,7 +245,7 @@ fn frame_section(ui: &mut Ui, s: &Snapshot) {
     ui.label(format!("{} rows laid out of {} visible ({} fit the window)", s.drawn_rows, s.view_len, s.page_rows));
 }
 
-fn sparkline(ui: &mut Ui, series: &[f32]) {
+pub fn sparkline(ui: &mut Ui, series: &[f32]) {
     let width = ui.available_width().max(120.0);
     let (rect, _) = ui.allocate_exact_size(vec2(width, 48.0), Sense::hover());
     let painter = ui.painter_at(rect);

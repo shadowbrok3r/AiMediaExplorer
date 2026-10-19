@@ -8,6 +8,7 @@ use super::scope::Scope;
 use crate::database::Thumbnail;
 use crate::tasks::{TaskEvent, TaskId};
 use crate::ui::file_table::FilterRequest;
+use crate::ui::file_table::table::view_mode::{TileFit, ViewMode};
 
 /// Where a newly opened scope goes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -146,6 +147,7 @@ pub enum DevtoolsWindow {
     Video,
     Scope,
     Filters,
+    Grid,
 }
 
 /// A move through the history of the focused tab, or the load it is showing.
@@ -257,6 +259,20 @@ pub enum AppCommand {
     ClearFilters,
     /// Apply the saved filter view called `name` to the focused tab.
     ApplySavedView { name: String },
+    /// Switch the focused tab between the grid and the details table, and set the grid's look.
+    SetViewMode {
+        mode: ViewMode,
+        /// Tile size in points, 64 to 320.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        size: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fit: Option<TileFit>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        captions: Option<bool>,
+        /// Rows per second the grid scrolls up and down by itself; zero stops it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stress: Option<f32>,
+    },
 }
 
 impl AppCommand {
@@ -281,6 +297,7 @@ impl AppCommand {
             Self::SetFilter { .. } => "set_filter",
             Self::ClearFilters => "clear_filters",
             Self::ApplySavedView { .. } => "apply_saved_view",
+            Self::SetViewMode { .. } => "set_view_mode",
         }
     }
 
@@ -385,6 +402,8 @@ mod tests {
             AppCommand::SetFilter { filter: serde_json::json!({"tags": ["sun"]}), replace: true },
             AppCommand::ClearFilters,
             AppCommand::ApplySavedView { name: "Holidays".into() },
+            AppCommand::SetViewMode { mode: ViewMode::Grid, size: Some(120.0), fit: Some(TileFit::Fit), captions: Some(false), stress: Some(30.0) },
+            AppCommand::SetViewMode { mode: ViewMode::Details, size: None, fit: None, captions: None, stress: None },
         ]
     }
 
@@ -430,7 +449,7 @@ mod tests {
                 parsed.insert(cmd.name());
             }
         }
-        for name in ["open_scope", "open_rows", "open_tool", "run", "show_settings", "attach_to_assistant", "refine", "toast", "task_update", "clear_selection", "focus_path", "open_devtools", "show_task_center", "navigate", "connect_database", "set_filter", "clear_filters", "apply_saved_view"] {
+        for name in ["open_scope", "open_rows", "open_tool", "run", "show_settings", "attach_to_assistant", "refine", "toast", "task_update", "clear_selection", "focus_path", "open_devtools", "show_task_center", "navigate", "connect_database", "set_filter", "clear_filters", "apply_saved_view", "set_view_mode"] {
             assert!(parsed.contains(name), "the docs have no example for {name}");
         }
     }

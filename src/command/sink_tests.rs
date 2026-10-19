@@ -414,3 +414,22 @@ fn the_filters_window_opens_by_command() {
     rig.app.open_devtools(DevtoolsWindow::Filters).unwrap();
     assert!(crate::ui::devtools::filters::is_open(&rig.app.egui_ctx));
 }
+
+#[test]
+fn the_view_command_sets_the_focused_tabs_mode_size_and_fit() {
+    use crate::ui::file_table::table::view_mode::{TileFit, ViewMode};
+    let mut rig = Rig::new();
+    open_folder(&mut rig, "Sink view", Target::NewTab).unwrap();
+    let id = rig.app.context.browser_titled("Sink view").map(|(id, _)| id).expect("the view tab");
+    rig.app.context.active_tab = Some(crate::ui::tabs::TabKind::Browser { id });
+    let text = rig.app.set_view_mode(ViewMode::Details, Some(200.0), Some(TileFit::Fit), Some(false), None).unwrap();
+    assert!(text.contains("Details") && text.contains("200"), "{text}");
+    let ex = &rig.app.context.filtered_tabs[&id];
+    assert_eq!((ex.browse.mode, ex.browse.tile, ex.browse.fit, ex.browse.captions), (ViewMode::Details, 200.0, TileFit::Fit, false));
+    rig.app.set_view_mode(ViewMode::Grid, Some(9_999.0), None, None, Some(30.0)).unwrap();
+    let ex = &rig.app.context.filtered_tabs[&id];
+    assert_eq!((ex.browse.mode, ex.browse.tile), (ViewMode::Grid, 320.0), "sizes are clamped");
+    assert_eq!(ex.browse.grid.stress().map(|s| s.rows_per_s), Some(30.0));
+    let err = rig.app.set_view_mode(ViewMode::Grid, Some(f32::NAN), None, None, None).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Invalid);
+}

@@ -12,13 +12,22 @@ use crate::ui::file_table::thumbs::{ScopeId, ThumbPresence, ThumbService, alloc_
 use crate::{Thumbnail, UiSettings};
 
 pub mod actions;
+pub mod browse;
 pub mod cells;
 pub mod columns;
 pub mod details;
+pub mod grid;
+pub mod grid_facts;
+pub mod grid_layout;
+pub mod grid_tile;
 pub mod keys;
+pub mod view_mode;
+pub mod view_strip;
 
 #[cfg(test)]
 mod details_tests;
+#[cfg(test)]
+mod grid_tests;
 
 #[derive(Default, Copy, Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ExplorerMode {

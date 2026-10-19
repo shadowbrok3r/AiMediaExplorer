@@ -2,6 +2,7 @@
 
 use egui::{InputState, Key, Modifiers};
 
+use super::grid_layout::Motion;
 use crate::ui::file_table::rows::Step;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,6 +56,46 @@ pub fn read(input: &mut InputState, page_rows: usize) -> Vec<KeyAction> {
     if input.consume_key(Modifiers::NONE, Key::Escape) {
         out.push(KeyAction::ClearSelection);
     }
+    out
+}
+
+/// A key command of the grid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GridKey {
+    /// Arrow, PageUp or PageDown; `extend` is set while Shift is held.
+    Move { motion: Motion, extend: bool },
+    /// Plus or minus: the tile size grows or shrinks by one step.
+    Zoom(i32),
+    /// A command shared with the details view.
+    Common(KeyAction),
+}
+
+/// Consumes the grid's keys from `input`; `page_rows` is how many tile rows fit on screen.
+pub fn read_grid(input: &mut InputState, page_rows: usize) -> Vec<GridKey> {
+    let mut out = Vec::new();
+    for extend in [true, false] {
+        let mods = if extend { Modifiers::SHIFT } else { Modifiers::NONE };
+        for (key, motion) in [
+            (Key::ArrowLeft, Motion::Left),
+            (Key::ArrowRight, Motion::Right),
+            (Key::ArrowUp, Motion::Up),
+            (Key::ArrowDown, Motion::Down),
+            (Key::PageUp, Motion::PageUp),
+            (Key::PageDown, Motion::PageDown),
+        ] {
+            for _ in 0..input.count_and_consume_key(mods, key) {
+                out.push(GridKey::Move { motion, extend });
+            }
+        }
+    }
+    for mods in [Modifiers::SHIFT, Modifiers::NONE] {
+        for (key, step) in [(Key::Plus, 1), (Key::Equals, 1), (Key::Minus, -1)] {
+            for _ in 0..input.count_and_consume_key(mods, key) {
+                out.push(GridKey::Zoom(step));
+            }
+        }
+    }
+    out.extend(read(input, page_rows).into_iter().map(GridKey::Common));
     out
 }
 
@@ -130,6 +171,62 @@ mod tests {
         ctx.run_ui(RawInput { events: vec![press(Key::ArrowDown, Modifiers::NONE)], ..Default::default() }, |ui| {
             ui.input_mut(|i| read(i, 10));
             left = ui.input(|i| i.key_pressed(Key::ArrowDown));
+        })
+        .drop_without_applying_deltas();
+        assert!(!left);
+    }
+
+    fn grid_keys(events: Vec<Event>) -> Vec<GridKey> {
+        let ctx = Context::default();
+        let mut out = Vec::new();
+        ctx.run_ui(RawInput { events, ..Default::default() }, |ui| {
+            out = ui.input_mut(|i| read_grid(i, 10));
+        })
+        .drop_without_applying_deltas();
+        out
+    }
+
+    #[test]
+    fn grid_arrows_move_by_direction_and_shift_extends() {
+        assert_eq!(grid_keys(vec![press(Key::ArrowLeft, Modifiers::NONE)]), [GridKey::Move { motion: Motion::Left, extend: false }]);
+        assert_eq!(grid_keys(vec![press(Key::ArrowDown, Modifiers::SHIFT)]), [GridKey::Move { motion: Motion::Down, extend: true }]);
+        assert_eq!(grid_keys(vec![press(Key::PageUp, Modifiers::NONE)]), [GridKey::Move { motion: Motion::PageUp, extend: false }]);
+    }
+
+    #[test]
+    fn grid_repeated_presses_are_separate_moves() {
+        let events = vec![press(Key::ArrowRight, Modifiers::NONE), press(Key::ArrowRight, Modifiers::NONE)];
+        assert_eq!(grid_keys(events).len(), 2);
+    }
+
+    #[test]
+    fn grid_keeps_the_shared_commands() {
+        let keys = grid_keys(vec![press(Key::A, Modifiers::COMMAND), press(Key::Enter, Modifiers::NONE), press(Key::Space, Modifiers::NONE), press(Key::Escape, Modifiers::NONE), press(Key::Home, Modifiers::NONE), press(Key::End, Modifiers::SHIFT)]);
+        assert!(keys.contains(&GridKey::Common(KeyAction::SelectAll)));
+        assert!(keys.contains(&GridKey::Common(KeyAction::Open)));
+        assert!(keys.contains(&GridKey::Common(KeyAction::TogglePreview)));
+        assert!(keys.contains(&GridKey::Common(KeyAction::ClearSelection)));
+        assert!(keys.contains(&GridKey::Common(KeyAction::Move { step: Step::Home, extend: false })));
+        assert!(keys.contains(&GridKey::Common(KeyAction::Move { step: Step::End, extend: true })));
+        assert!(keys.iter().all(|k| !matches!(k, GridKey::Common(KeyAction::Move { step: Step::Up(_) | Step::Down(_), .. }))));
+    }
+
+    #[test]
+    fn plus_and_minus_resize_the_tiles() {
+        assert_eq!(grid_keys(vec![press(Key::Plus, Modifiers::NONE)]), [GridKey::Zoom(1)]);
+        assert_eq!(grid_keys(vec![press(Key::Equals, Modifiers::NONE)]), [GridKey::Zoom(1)]);
+        assert_eq!(grid_keys(vec![press(Key::Plus, Modifiers::SHIFT)]), [GridKey::Zoom(1)]);
+        assert_eq!(grid_keys(vec![press(Key::Minus, Modifiers::NONE)]), [GridKey::Zoom(-1)]);
+        assert!(grid_keys(vec![press(Key::Minus, Modifiers::COMMAND)]).is_empty(), "Ctrl+minus zooms the whole window");
+    }
+
+    #[test]
+    fn grid_keys_are_consumed() {
+        let ctx = Context::default();
+        let mut left = true;
+        ctx.run_ui(RawInput { events: vec![press(Key::ArrowLeft, Modifiers::NONE)], ..Default::default() }, |ui| {
+            ui.input_mut(|i| read_grid(i, 10));
+            left = ui.input(|i| i.key_pressed(Key::ArrowLeft));
         })
         .drop_without_applying_deltas();
         assert!(!left);

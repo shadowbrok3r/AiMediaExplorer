@@ -97,7 +97,7 @@ impl FileExplorer {
     }
 
     /// Follows the preview target and refreshes the selection counts.
-    fn settle_selection(&mut self) {
+    pub(crate) fn settle_selection(&mut self) {
         let revision = self.selection.revision();
         let target = self.selection.preview_target().cloned();
         if target != self.row_sync.preview {
@@ -117,7 +117,7 @@ impl FileExplorer {
     }
 
     /// Starts the on-demand work of a row that kept the focus for a moment.
-    fn fire_settled_focus(&mut self, ctx: &Context) {
+    pub(crate) fn fire_settled_focus(&mut self, ctx: &Context) {
         let Some((key, since)) = self.row_sync.settle.clone() else { return };
         let waited = since.elapsed();
         if waited < FOCUS_SETTLE {
@@ -190,7 +190,7 @@ impl FileExplorer {
         self.publish_row_debug(&ctx);
     }
 
-    fn load_details_prefs_once(&mut self, ctx: &Context) {
+    pub(crate) fn load_details_prefs_once(&mut self, ctx: &Context) {
         if std::mem::replace(&mut self.row_sync.prefs_loaded, true) {
             return;
         }
@@ -334,7 +334,7 @@ impl FileExplorer {
         self.sync_view();
     }
 
-    fn run_row_commands(&mut self, ctx: &Context) {
+    pub(crate) fn run_row_commands(&mut self, ctx: &Context) {
         for command in row_store::take_commands(ctx, self.debug_id()) {
             match command {
                 Command::CheckInvariants => {
@@ -355,7 +355,7 @@ impl FileExplorer {
         egui::Id::new(("ame_row_store_owner", self.viewer.scope))
     }
 
-    fn publish_row_debug(&self, ctx: &Context) {
+    pub(crate) fn publish_row_debug(&self, ctx: &Context) {
         if !row_store::is_open(ctx) {
             return;
         }

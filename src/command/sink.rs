@@ -11,6 +11,7 @@ use crate::tasks::{TaskEvent, TaskId};
 use crate::ui::file_table::FileExplorer;
 use crate::ui::file_table::scope::nav::check_openable;
 use crate::ui::tabs::{BrowserId, TabKind};
+use crate::ui::file_table::table::view_mode::{TileFit, ViewMode};
 
 /// Most files `Open` and `Reveal` act on at once.
 const OPEN_LIMIT: usize = 20;
@@ -258,6 +259,27 @@ impl CommandSink for SmartMediaApp {
 
     fn apply_saved_view(&mut self, name: &str) -> CommandResult {
         self.context.active_explorer().apply_saved_view(name).map_err(CommandError::not_found)
+    }
+
+    fn set_view_mode(&mut self, mode: ViewMode, size: Option<f32>, fit: Option<TileFit>, captions: Option<bool>, stress: Option<f32>) -> CommandResult {
+        if size.is_some_and(|s| !s.is_finite()) || stress.is_some_and(|s| !s.is_finite()) {
+            return Err(CommandError::invalid("size and stress must be finite numbers"));
+        }
+        let ex = self.context.active_explorer();
+        ex.set_view_mode(mode);
+        if let Some(size) = size {
+            ex.set_tile_size(size);
+        }
+        if let Some(fit) = fit {
+            ex.set_tile_fit(fit);
+        }
+        if let Some(on) = captions {
+            ex.set_captions(on);
+        }
+        if let Some(rate) = stress {
+            ex.browse.grid.set_stress(Some(rate));
+        }
+        Ok(format!("{} view with {:.0} px tiles", mode.label(), ex.browse.tile))
     }
 }
 
