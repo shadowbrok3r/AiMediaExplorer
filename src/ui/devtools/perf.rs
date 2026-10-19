@@ -124,6 +124,7 @@ fn body(ctx: &Context, ui: &mut Ui) {
         meter_row(ui, "RAM", metrics.ram.map(|(u, t)| format!("{u:.0} of {t:.0} MiB")));
         meter_row(ui, "VRAM", metrics.vram.map(|(u, t)| format!("{u:.0} of {t:.0} MiB")));
     });
+    super::scan_perf::section(ctx, ui);
 }
 
 /// Draws the window when open.

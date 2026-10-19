@@ -1,5 +1,6 @@
 //! Debug windows for subsystems, opened from the View menu.
 
+pub mod actions;
 pub mod collections;
 pub mod command_log;
 pub mod db_maintenance;
@@ -10,7 +11,9 @@ pub mod legacy_import;
 pub mod perf;
 pub mod row_store;
 pub mod scope;
+pub mod scan_perf;
 pub mod settings_store;
+pub mod sidebar;
 pub mod tasks;
 pub mod thumb_cache;
 pub mod thumb_storage;
@@ -84,6 +87,14 @@ pub fn toggle_grid(ctx: &Context) {
     grid::toggle(ctx);
 }
 
+pub fn toggle_sidebar(ctx: &Context) {
+    sidebar::set_open(ctx, !sidebar::is_open(ctx));
+}
+
+pub fn toggle_actions(ctx: &Context) {
+    actions::set_open(ctx, !actions::is_open(ctx));
+}
+
 /// Opens `window`, whichever debug window it names.
 pub fn open(ctx: &Context, window: DevtoolsWindow) {
     match window {
@@ -103,6 +114,8 @@ pub fn open(ctx: &Context, window: DevtoolsWindow) {
         DevtoolsWindow::Filters => filters::set_open(ctx, true),
         DevtoolsWindow::Grid => grid::set_open(ctx, true),
         DevtoolsWindow::Inspector => inspector::set_open(ctx, true),
+        DevtoolsWindow::Sidebar => sidebar::set_open(ctx, true),
+        DevtoolsWindow::Actions => actions::set_open(ctx, true),
     }
     ctx.request_repaint();
 }
@@ -124,6 +137,8 @@ pub fn show(ctx: &Context) {
     filters::show(ctx);
     grid::show(ctx);
     inspector::show(ctx);
+    sidebar::show(ctx);
+    actions::show(ctx);
 }
 
 #[cfg(test)]
@@ -147,6 +162,8 @@ mod tests {
             DevtoolsWindow::Filters => filters::is_open(ctx),
             DevtoolsWindow::Grid => grid::is_open(ctx),
             DevtoolsWindow::Inspector => inspector::is_open(ctx),
+            DevtoolsWindow::Sidebar => sidebar::is_open(ctx),
+            DevtoolsWindow::Actions => actions::is_open(ctx),
             DevtoolsWindow::ThemePanel => crate::theme::debug_panel::is_open(ctx),
         }
     }
@@ -171,6 +188,8 @@ mod tests {
             DevtoolsWindow::Filters,
             DevtoolsWindow::Grid,
             DevtoolsWindow::Inspector,
+            DevtoolsWindow::Sidebar,
+            DevtoolsWindow::Actions,
         ];
         for w in windows {
             assert!(!is_open(&ctx, w), "{w:?} starts closed");

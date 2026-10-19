@@ -295,6 +295,12 @@ impl CommandSink for SmartMediaApp {
         self.egui_ctx.request_repaint();
         Ok(format!("inspector {}", if now_open { "shown" } else { "hidden" }))
     }
+
+    fn open_palette(&mut self, query: Option<String>) -> CommandResult {
+        self.shell.palette.open_with(query);
+        self.egui_ctx.request_repaint();
+        Ok("palette opened".to_string())
+    }
 }
 
 /// Rows describing each failed thumbnail, marked with the failed-thumbnail category.

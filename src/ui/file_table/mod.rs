@@ -10,7 +10,7 @@ pub mod explorer;
 pub mod filters;
 pub mod load;
 pub mod menus;
-pub mod quick_access_pane;
+pub mod scan_perf;
 pub mod receive;
 #[path = "../../rows/mod.rs"]
 pub mod rows;
@@ -92,7 +92,6 @@ pub struct FileExplorer {
     files: Vec<Thumbnail>,
     pub current_path: String,
     pub open_preview_pane: bool,
-    open_quick_access: bool,
     pub file_scan_progress: f32,
     recursive_scan: bool,
     pub scan_done: bool,
@@ -256,7 +255,6 @@ impl FileExplorer {
             ),
             files: Default::default(),
             open_preview_pane: false,
-            open_quick_access: false,
             current_path: current_path.clone(),
             file_scan_progress: 0.0,
             recursive_scan: false,
@@ -348,7 +346,6 @@ impl FileExplorer {
             ui.ctx().request_repaint();
             self.repaint_next = false;
         }
-        self.quick_access_pane(ui);
         self.navbar(ui);
         self.breadcrumbs(ui);
         self.scope_footer(ui);

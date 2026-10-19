@@ -149,6 +149,8 @@ pub enum DevtoolsWindow {
     Filters,
     Grid,
     Inspector,
+    Sidebar,
+    Actions,
 }
 
 /// A move through the history of the focused tab, or the load it is showing.
@@ -279,6 +281,11 @@ pub enum AppCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         open: Option<bool>,
     },
+    /// Open the command palette, optionally with text typed in.
+    OpenPalette {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+    },
 }
 
 impl AppCommand {
@@ -305,6 +312,7 @@ impl AppCommand {
             Self::ApplySavedView { .. } => "apply_saved_view",
             Self::SetViewMode { .. } => "set_view_mode",
             Self::InspectorToggle { .. } => "inspector_toggle",
+            Self::OpenPalette { .. } => "open_palette",
         }
     }
 
@@ -413,6 +421,8 @@ mod tests {
             AppCommand::SetViewMode { mode: ViewMode::Details, size: None, fit: None, captions: None, stress: None },
             AppCommand::InspectorToggle { open: Some(true) },
             AppCommand::InspectorToggle { open: None },
+            AppCommand::OpenPalette { query: Some("tag".into()) },
+            AppCommand::OpenPalette { query: None },
         ]
     }
 
@@ -458,7 +468,7 @@ mod tests {
                 parsed.insert(cmd.name());
             }
         }
-        for name in ["open_scope", "open_rows", "open_tool", "run", "show_settings", "attach_to_assistant", "refine", "toast", "task_update", "clear_selection", "focus_path", "open_devtools", "show_task_center", "navigate", "connect_database", "set_filter", "clear_filters", "apply_saved_view", "set_view_mode", "inspector_toggle"] {
+        for name in ["open_scope", "open_rows", "open_tool", "run", "show_settings", "attach_to_assistant", "refine", "toast", "task_update", "clear_selection", "focus_path", "open_devtools", "show_task_center", "navigate", "connect_database", "set_filter", "clear_filters", "apply_saved_view", "set_view_mode", "inspector_toggle", "open_palette"] {
             assert!(parsed.contains(name), "the docs have no example for {name}");
         }
     }

@@ -93,6 +93,7 @@ pub trait CommandSink {
     fn apply_saved_view(&mut self, name: &str) -> CommandResult;
     fn set_view_mode(&mut self, mode: ViewMode, size: Option<f32>, fit: Option<TileFit>, captions: Option<bool>, stress: Option<f32>) -> CommandResult;
     fn inspector_toggle(&mut self, open: Option<bool>) -> CommandResult;
+    fn open_palette(&mut self, query: Option<String>) -> CommandResult;
 }
 
 /// Runs one command; an action on an empty set of files is an error, never "all files".
@@ -127,6 +128,7 @@ pub fn dispatch(sink: &mut dyn CommandSink, cmd: AppCommand) -> CommandResult {
         AppCommand::ApplySavedView { name } => sink.apply_saved_view(&name),
         AppCommand::SetViewMode { mode, size, fit, captions, stress } => sink.set_view_mode(mode, size, fit, captions, stress),
         AppCommand::InspectorToggle { open } => sink.inspector_toggle(open),
+        AppCommand::OpenPalette { query } => sink.open_palette(query),
     }
 }
 
@@ -246,6 +248,9 @@ pub(crate) mod fake {
         fn inspector_toggle(&mut self, open: Option<bool>) -> CommandResult {
             self.done(format!("inspector {open:?}"))
         }
+        fn open_palette(&mut self, query: Option<String>) -> CommandResult {
+            self.done(format!("palette {query:?}"))
+        }
     }
 }
 
@@ -277,6 +282,7 @@ mod tests {
             AppCommand::ApplySavedView { name: "Holidays".into() },
             AppCommand::SetViewMode { mode: ViewMode::Details, size: Some(96.0), fit: None, captions: Some(false), stress: None },
             AppCommand::InspectorToggle { open: Some(false) },
+            AppCommand::OpenPalette { query: Some("tag".into()) },
         ];
         for cmd in cmds {
             assert!(dispatch(&mut sink, cmd).is_ok());
@@ -303,6 +309,7 @@ mod tests {
                 "apply_saved_view Holidays",
                 "view Details Some(96.0) None Some(false) None",
                 "inspector Some(false)",
+                "palette Some(\"tag\")",
             ]
         );
     }

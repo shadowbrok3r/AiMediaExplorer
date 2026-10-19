@@ -198,7 +198,7 @@ Selects the row of a path in the focused tab, which the inspector rail previews 
 
 ### open_devtools
 
-Opens a debug window: `theme_panel`, `settings_store`, `db_maintenance`, `legacy_import`, `thumb_storage`, `thumb_cache`, `tasks`, `command_log`, `perf`, `row_store`, `collections`, `video`, `scope`, `filters`, `grid`, `inspector`.
+Opens a debug window: `theme_panel`, `settings_store`, `db_maintenance`, `legacy_import`, `thumb_storage`, `thumb_cache`, `tasks`, `command_log`, `perf`, `row_store`, `collections`, `video`, `scope`, `filters`, `grid`, `inspector`, `sidebar`, `actions`.
 
 The `scope` window takes a scope string and shows how it parses (kind, title, parent, whether a folder exists), opens it in the focused tab or a new one, steps back and forward, lists the history stack of the focused tab with the scroll row and selection saved in each entry, and shows the timing of its recent loads: rows, batches, time to the first batch and total time.
 
@@ -302,6 +302,14 @@ Every browser tab keeps a history: the scopes it showed, with the first row on s
 A tab is named after its scope (a folder's name, `Tag: sunset`, `Search: red car`); a title given with a command lasts until the tab navigates. The address box of the toolbar takes a scope string or a plain path.
 
 Loads run as Database tasks in the status bar and can be cancelled there; a failed load keeps the rows already read, shows the reason in the footer with a Retry, and the task list offers the same retry.
+
+### open_palette
+
+Opens the command palette (Ctrl+K), optionally with `query` typed in. The palette matches commands, places, collections, tags, categories, scans and settings sections; a query also offers `Search library for "<query>"`, which sends `open_scope` with a `q:sem:` scope. Devtools > Actions lists every palette command with its shortcut, whether it can run now and why not.
+
+```json
+{"cmd": "open_palette", "query": "no clip"}
+```
 
 ## Results
 

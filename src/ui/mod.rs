@@ -1,4 +1,7 @@
 pub mod navbar;
+pub mod shell;
+pub mod sidebar;
+pub mod palette;
 pub mod file_table;
 pub mod status;
 pub mod tabs;

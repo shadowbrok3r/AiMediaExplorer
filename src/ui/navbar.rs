@@ -1,6 +1,29 @@
-use crate::{icons::{self, svg}, theme::{chrome, controls::MenuButton}, ui::{dialogs, status::{self, GlobalStatusIndicator}, tabs::TabKind}};
+use crate::command::{self, AppCommand, Scope, Target, Tool};
+use crate::icons::{self, Icon, svg};
+use crate::theme::{chrome, controls::MenuButton};
+use crate::ui::shell::ShellAction;
+use crate::ui::tabs::TabKind;
 use eframe::egui::*;
 use egui_dock::SurfaceIndex;
+
+/// Menu entry with an icon and an optional shortcut hint.
+fn item(ui: &mut Ui, icon: Icon, text: &str, shortcut: Option<&str>) -> Response {
+    let mut button = icons::button_widget(ui, icon, text);
+    if let Some(shortcut) = shortcut {
+        button = button.shortcut_text(shortcut);
+    }
+    ui.add(button)
+}
+
+/// Menu entry that shows whether its option is on.
+fn toggle_item(ui: &mut Ui, icon: Icon, on: bool, text: &str, shortcut: Option<&str>) -> Response {
+    let size = icons::IconSize::Md.px(ui);
+    let mut button = Button::selectable(on, (icon.image(size), WidgetText::from(text))).image_tint_follows_text_color(true);
+    if let Some(shortcut) = shortcut {
+        button = button.shortcut_text(shortcut);
+    }
+    ui.add(button)
+}
 
 impl crate::app::SmartMediaApp {
     /// File menu button for the title strip.
@@ -13,187 +36,98 @@ impl crate::app::SmartMediaApp {
         let _ = MenuButton::new("View").show(ui, |ui| self.view_menu_items(ui));
     }
 
-    fn file_menu_items(&mut self, ui: &mut Ui) {
-        icons::menu_button(ui, svg::AME_DATABASE, "Database", |ui| {
-            if icons::button(ui, svg::AME_THUMBNAIL_GRID, "View Entire Database").on_hover_text("Show all thumbnails from all directories").clicked() {
-                crate::command::send(crate::command::AppCommand::open(crate::command::Scope::Library));
-            }
-            if icons::button(ui, svg::AME_REFINE, "Refine (AI, DB-only)").on_hover_text("Open AI Refinements panel to generate proposals from the database").clicked() {
-                self.focus_or_open_tab(TabKind::Refine);
-                ui.close();
-            }
-            if icons::button(ui, svg::AME_CATEGORY, "Group by Categories").on_hover_text("Show virtual folders for each category").clicked() {
-                let ex = self.context.active_explorer();
-                ex.load_virtual_categories_view();
-                ui.close();
-            }
-            if icons::button(ui, svg::TAG, "Group by Tags").on_hover_text("Show virtual folders for each tag").clicked() {
-                let ex = self.context.active_explorer();
-                ex.load_virtual_tags_view();
-                ui.close();
-            }
-            ui.separator();
-            if icons::button(ui, svg::FOLDER_OPEN, "Choose DB Folder…").clicked() {
-                dialogs::pick_folder(ui.ctx(), "Choose database folder", move |dir| {
-                    let path_str = dir.display().to_string();
-                    match crate::database::set_db_path(&path_str) {
-                        Ok(()) => dialogs::toast(egui_toast::ToastKind::Info, format!("Database folder set to {path_str}. Restart the app to open it.")),
-                        Err(e) => {
-                            log::error!("set_db_path failed: {e}");
-                            dialogs::toast(egui_toast::ToastKind::Error, format!("Could not set the database folder: {e}"));
-                        }
-                    }
-                });
-                ui.close();
-            }
-            if icons::button(ui, svg::AME_DATABASE, "Database maintenance…").clicked() {
-                crate::ui::devtools::toggle_db_maintenance(ui.ctx());
-                ui.close();
-            }
-            if icons::button(ui, svg::AME_DB_EXPORT, "Export Backup…").clicked() {
-                let ctx = ui.ctx().clone();
-                let confirm_ctx = ctx.clone();
-                dialogs::save_file(&ctx, "Export SurrealDB backup to .surql", "backup.surql", Some(("SurrealQL", &["surql"])), move |file| {
-                    let description = format!("Export database to {}?", file.display());
-                    dialogs::confirm(&confirm_ctx, "Export Database", &description, rfd::MessageLevel::Info, move || {
-                        tokio::spawn(async move {
-                            let spec = crate::tasks::TaskSpec::new(crate::tasks::TaskKind::Database, format!("Export database to {}", file.display())).user_initiated();
-                            let _ = crate::tasks::track(spec, |_| crate::database::export_to(&file)).await;
-                        });
-                    });
-                });
-                ui.close();
-            }
-            if icons::button(ui, svg::AME_DB_IMPORT, "Import…").clicked() {
-                let ctx = ui.ctx().clone();
-                let confirm_ctx = ctx.clone();
-                dialogs::pick_file(&ctx, "Import SurrealDB .surql file", move |file| {
-                    let description = format!("Import from {}? This may overwrite existing data.", file.display());
-                    dialogs::confirm(&confirm_ctx, "Import Database", &description, rfd::MessageLevel::Warning, move || {
-                        tokio::spawn(async move {
-                            let spec = crate::tasks::TaskSpec::new(crate::tasks::TaskKind::Database, format!("Import database from {}", file.display())).user_initiated();
-                            let _ = crate::tasks::track(spec, |_| crate::database::import_from(&file)).await;
-                        });
-                    });
-                });
-                ui.close();
-            }
-        });
+    /// Tools menu button for the title strip.
+    pub fn tools_menu(&mut self, ui: &mut Ui) {
+        let _ = MenuButton::new("Tools").show(ui, |ui| self.tools_menu_items(ui));
+    }
 
-        icons::menu_button(ui, svg::AME_MODEL, "AI", |ui| {
-            // Enable AI Search: spawn async global init if not already in progress
-            if icons::button(ui, svg::AME_SEMANTIC_SEARCH, "Enable AI Search").clicked() {
-                status::VISION_STATUS.set_state(status::StatusState::Initializing, "Loading vision model");
-                tokio::spawn(async move {
-                    crate::ai::init_global_ai_engine_async().await;
-                    status::VISION_STATUS.set_state(status::StatusState::Idle, "Ready");
-                });
-            }
-            if icons::button(ui, svg::AME_AI_DESCRIBE, "Enable Auto Indexing").clicked() {
-                // Toggle auto indexing flag inside global engine (atomic set true)
-                crate::ai::GLOBAL_AI_ENGINE.auto_descriptions_enabled.store(true, std::sync::atomic::Ordering::Relaxed);
-                status::VISION_STATUS.set_state(status::StatusState::Running, "Auto descriptions enabled");
-            }
-            if icons::button(ui, svg::AME_CLIP_EMBED, "Enable Auto CLIP").clicked() {
-                crate::ai::GLOBAL_AI_ENGINE.auto_clip_enabled.store(true, std::sync::atomic::Ordering::Relaxed);
-                status::CLIP_STATUS.set_state(status::StatusState::Running, "Auto CLIP backfill");
-                tokio::spawn(async move {
-                    let added = crate::ai::GLOBAL_AI_ENGINE.clip_generate_recursive().await?;
-                    log::info!("[CLIP] Auto CLIP enabled via navbar; backfill added {added}");
-                    status::CLIP_STATUS.set_state(status::StatusState::Idle, "Idle");
-                    Ok::<(), anyhow::Error>(())
-                });
-            }
-            if icons::button(ui, svg::AME_EMBEDDING, "Generate CLIP (Missing)").clicked() {
-                status::CLIP_STATUS.set_state(status::StatusState::Running, "Generating missing");
-                tokio::spawn(async move {
-                    let count_before = crate::ai::GLOBAL_AI_ENGINE.clip_missing_count().await;
-                    let added = crate::ai::GLOBAL_AI_ENGINE.clip_generate_recursive().await?;
-                    let remaining = crate::ai::GLOBAL_AI_ENGINE.clip_missing_count().await;
-                    log::info!("[CLIP] Manual missing generation added {added}; remaining {remaining} (was {count_before})");
-                    status::CLIP_STATUS.set_state(status::StatusState::Idle, format!("Remaining {remaining}"));
-                    Ok::<(), anyhow::Error>(())
-                });
-            }
-            if icons::button(ui, svg::CURSOR_CLICK, "Generate CLIP (Selected)").clicked() {
-                let path = self.context.active_explorer().current_thumb.path.clone();
-                if !path.is_empty() {
-                    status::CLIP_STATUS.set_state(status::StatusState::Running, "Selected path");
-                    tokio::spawn(async move {
-                        match crate::ai::GLOBAL_AI_ENGINE.clip_generate_for_paths(&[path.clone()]).await {
-                            Ok(added) => log::info!("[CLIP] Manual per-item generation: added {added} for {path}"),
-                            Err(e) => log::error!("engine.clip_generate_for_paths: {e:?}")
-                        }
-                        status::CLIP_STATUS.set_state(status::StatusState::Idle, "Idle");
-                        Ok::<(), anyhow::Error>(())
-                    });
-                } else {
-                    log::warn!("[CLIP] No current preview path set for generation");
-                }
-            }
-            if icons::button(ui, svg::GAUGE, "CLIP Missing Count").clicked() {
-                tokio::spawn(async move {
-                    let missing = crate::ai::GLOBAL_AI_ENGINE.clip_missing_count().await;
-                    log::info!("[CLIP] Missing embeddings: {missing}");
-                    status::CLIP_STATUS.set_state(status::StatusState::Idle, format!("Missing {missing}"));
-                });
-            }
-        });
-        if icons::button(ui, svg::GEAR, "Preferences").clicked() {
-            crate::app::OPEN_SETTINGS_REQUEST.store(true, std::sync::atomic::Ordering::Relaxed);
-        }
-        if icons::button(ui, svg::PALETTE, "Appearance…").on_hover_text("Theme presets, colors, density and text size").clicked() {
-            self.context.appearance.open();
+    /// Help menu button for the title strip.
+    pub fn help_menu(&mut self, ui: &mut Ui) {
+        let _ = MenuButton::new("Help").show(ui, |ui| self.help_menu_items(ui));
+    }
+
+    /// Menu entry that runs a shell action and closes the menu.
+    fn shell_item(&mut self, ui: &mut Ui, action: ShellAction, icon: Icon, shortcut: Option<&str>) {
+        if item(ui, icon, action.label(), shortcut).clicked() {
+            self.run_shell_action(ui.ctx(), action);
             ui.close();
-        }
-        ui.separator();
-        if icons::button(ui, svg::POWER, "Exit").clicked() {
-            ui.send_viewport_cmd(ViewportCommand::Close);
         }
     }
 
+    fn file_menu_items(&mut self, ui: &mut Ui) {
+        self.shell_item(ui, ShellAction::OpenFolder, svg::FOLDER_OPEN, None);
+        self.shell_item(ui, ShellAction::ScanFolder, svg::AME_SCAN, None);
+        ui.separator();
+        icons::menu_button(ui, svg::AME_DATABASE, "Database", |ui| {
+            if item(ui, svg::AME_THUMBNAIL_GRID, "View Entire Database", None).on_hover_text("Show all thumbnails from all directories").clicked() {
+                command::send(AppCommand::OpenScope { scope: Scope::Library, target: Target::NewTab, title: Some("Entire Database".to_string()), recursive: false });
+                ui.close();
+            }
+            ui.separator();
+            self.shell_item(ui, ShellAction::DatabaseMaintenance, svg::AME_DATABASE, None);
+            self.shell_item(ui, ShellAction::ExportBackup, svg::AME_DB_EXPORT, None);
+            self.shell_item(ui, ShellAction::ImportBackup, svg::AME_DB_IMPORT, None);
+            self.shell_item(ui, ShellAction::ChooseDbFolder, svg::FOLDER_OPEN, None);
+        });
+        ui.separator();
+        if item(ui, svg::GEAR, "Preferences", None).clicked() {
+            command::send(AppCommand::ShowSettings { section: None });
+            ui.close();
+        }
+        ui.separator();
+        self.shell_item(ui, ShellAction::Quit, svg::POWER, None);
+    }
+
     fn view_menu_items(&mut self, ui: &mut Ui) {
-        if icons::button(ui, svg::PALETTE, "Appearance…").on_hover_text("Theme presets, colors, density and text size").clicked() {
+        let layout = &self.shell.layout.layout;
+        for (action, icon, on, label, shortcut) in [
+            (ShellAction::ToggleSidebar, svg::SIDEBAR_SIMPLE, layout.sidebar_open, "Sidebar", Some("Ctrl+B")),
+            (ShellAction::ToggleBottomBar, svg::LIST_CHECKS, layout.bottom_bar_open, "Bottom bar", None),
+            (ShellAction::ToggleRightRail, svg::COLUMNS, self.context.inspector.is_open(), "Right rail", Some("Ctrl+I")),
+        ] {
+            if toggle_item(ui, icon, on, label, shortcut).clicked() {
+                self.run_shell_action(ui.ctx(), action);
+            }
+        }
+        ui.separator();
+        if item(ui, svg::PALETTE, "Appearance…", None).on_hover_text("Theme presets, colors, density and text size").clicked() {
             self.context.appearance.open();
             ui.close();
         }
-        if icons::button(ui, svg::SLIDERS, "Egui Settings").clicked() {
+        if item(ui, svg::SLIDERS, "Egui Settings", None).clicked() {
             self.context.open_ui_settings = true;
         }
-
-        // allow certain tabs to be toggled
-        for tab in TabKind::TOGGLED {
-            if icons::selectable_button(ui, tab_icon(&tab), self.context.open_tabs.contains(&tab), tab.menu_label())
-                .clicked()
-            {
-                if let Some(index) = self.tree.find_tab(&tab) {
-                    self.tree.remove_tab(index);
-                    self.context.open_tabs.remove(&tab);
-                } else {
-                    self.tree[SurfaceIndex::main()].push_to_focused_leaf(tab);
-                    self.context.open_tabs.insert(tab);
-                }
-
-                ui.close();
-            }
-        }
-
+        let _ = chrome::toggle_row(ui, &mut self.chrome, "Custom title bar");
         ui.separator();
-        let mut inspector_open = self.context.inspector.is_open();
-        if icons::checkbox(ui, &mut inspector_open, svg::SIDEBAR_SIMPLE, "Inspector").on_hover_text("Preview and details of the selection (Ctrl+I)").changed() {
-            self.context.inspector.set_open(inspector_open);
-        }
-        // Toggle for Assistant Viewport window
+
+        icons::menu_button(ui, svg::TABS, "Tabs", |ui| {
+            for tab in TabKind::TOGGLED {
+                if icons::selectable_button(ui, tab_icon(&tab), self.context.open_tabs.contains(&tab), tab.menu_label()).clicked() {
+                    if let Some(index) = self.tree.find_tab(&tab) {
+                        self.tree.remove_tab(index);
+                        self.context.open_tabs.remove(&tab);
+                    } else {
+                        self.tree[SurfaceIndex::main()].push_to_focused_leaf(tab);
+                        self.context.open_tabs.insert(tab);
+                    }
+                    ui.close();
+                }
+            }
+        });
         let mut was_open = self.context.assistant_window_open;
         if icons::checkbox(ui, &mut was_open, svg::AME_ASSISTANT, "AI Assistant Window").clicked() {
             self.context.assistant_window_open = was_open;
         }
         ui.separator();
-        if icons::button(ui, svg::AME_LOGO, "Icon gallery").clicked() {
-            icons::gallery::toggle(ui.ctx());
-            ui.close();
-        }
+        self.devtools_menu(ui);
+    }
+
+    fn devtools_menu(&mut self, ui: &mut Ui) {
         icons::menu_button(ui, svg::WRENCH, "Devtools", |ui| {
+            if icons::button(ui, svg::AME_LOGO, "Icon gallery").clicked() {
+                icons::gallery::toggle(ui.ctx());
+                ui.close();
+            }
             if icons::button(ui, svg::SLIDERS, "Theme panel").clicked() {
                 crate::theme::debug_panel::toggle(ui.ctx());
                 ui.close();
@@ -242,35 +176,77 @@ impl crate::app::SmartMediaApp {
                 crate::ui::devtools::toggle_video(ui.ctx());
                 ui.close();
             }
-            if icons::button(ui, svg::AME_FOLDER_TREE, "Scope").clicked() {
-                crate::ui::devtools::toggle_scope(ui.ctx());
+            if icons::button(ui, svg::SIDEBAR_SIMPLE, "Sidebar").clicked() {
+                crate::ui::devtools::toggle_sidebar(ui.ctx());
                 ui.close();
             }
-            if icons::button(ui, svg::FUNNEL, "Filters").clicked() {
-                crate::ui::devtools::toggle_filters(ui.ctx());
-                ui.close();
-            }
-            if icons::button(ui, svg::SQUARES_FOUR, "Grid").clicked() {
-                crate::ui::devtools::toggle_grid(ui.ctx());
-                ui.close();
-            }
-            if icons::button(ui, svg::SIDEBAR_SIMPLE, "Inspector").clicked() {
-                crate::ui::devtools::toggle_inspector(ui.ctx());
+            if icons::button(ui, svg::LIST_BULLETS, "Actions").clicked() {
+                crate::ui::devtools::toggle_actions(ui.ctx());
                 ui.close();
             }
         });
+    }
 
+    fn tools_menu_items(&mut self, ui: &mut Ui) {
+        self.shell_item(ui, ShellAction::ScanFolder, svg::AME_SCAN, None);
+        icons::menu_button(ui, svg::AME_MODEL, "AI processing", |ui| {
+            self.shell_item(ui, ShellAction::EnableAiSearch, svg::AME_SEMANTIC_SEARCH, None);
+            self.shell_item(ui, ShellAction::EnableAutoIndexing, svg::AME_AI_DESCRIBE, None);
+            self.shell_item(ui, ShellAction::EnableAutoClip, svg::AME_CLIP_EMBED, None);
+            self.shell_item(ui, ShellAction::ClipMissing, svg::AME_EMBEDDING, None);
+            self.shell_item(ui, ShellAction::ClipSelected, svg::CURSOR_CLICK, None);
+            self.shell_item(ui, ShellAction::ClipMissingCount, svg::GAUGE, None);
+        });
+        if item(ui, svg::AME_REFINE, "Refine (AI, DB-only)", None).on_hover_text("Open AI Refinements panel to generate proposals from the database").clicked() {
+            command::send(AppCommand::OpenTool { tool: Tool::Refinements, path: None, target: Target::NewTab });
+            ui.close();
+        }
+        if item(ui, svg::AME_IMAGE_EDIT, "Image edit", None).clicked() {
+            command::send(AppCommand::OpenTool { tool: Tool::ImageEdit, path: None, target: Target::NewTab });
+            ui.close();
+        }
+        icons::menu_button(ui, svg::AME_LOGICAL_GROUP, "Collections", |ui| {
+            self.shell_item(ui, ShellAction::ShowCollections, svg::AME_LOGICAL_GROUP, None);
+            self.shell_item(ui, ShellAction::NewCollection, svg::FOLDER_PLUS, None);
+        });
         ui.separator();
-        let _ = chrome::toggle_row(ui, &mut self.chrome, "Custom title bar");
+        icons::menu_button(ui, svg::SLIDERS, "Scan settings", |ui| scan_settings(ui));
+    }
+
+    fn help_menu_items(&mut self, ui: &mut Ui) {
+        if item(ui, svg::TERMINAL_WINDOW, "Logs", None).clicked() {
+            command::send(AppCommand::OpenTool { tool: Tool::Logs, path: None, target: Target::NewTab });
+            ui.close();
+        }
+        if item(ui, svg::MAGNIFYING_GLASS, "Command palette", Some("Ctrl+K")).clicked() {
+            command::send(AppCommand::OpenPalette { query: None });
+            ui.close();
+        }
+        ui.separator();
+        self.shell_item(ui, ShellAction::ShowAbout, svg::INFO, None);
     }
 
     /// Icon gallery window and the bottom status bar of the focused explorer.
     pub fn status_bar(&mut self, ui: &mut Ui) {
         icons::gallery::show_window(ui.ctx());
+        if !self.shell.layout.layout.bottom_bar_open {
+            return;
+        }
 
         let owner = self.context.active_owner();
         crate::ui::taskbar::show(ui, self.context.active_explorer(), &owner);
     }
+}
+
+/// Batch size of the next scan, saved with the settings.
+fn scan_settings(ui: &mut Ui) {
+    let mut batch = crate::settings::store().read(|s| s.scan_found_batch_max).unwrap_or(128);
+    ui.horizontal(|ui| {
+        ui.label("FoundBatch size");
+        if ui.add(DragValue::new(&mut batch).range(16..=4096)).on_hover_text("Rows per scan batch, used by the next scan").changed() {
+            crate::settings::update("tools:scan_batch", |s| s.scan_found_batch_max = Some(batch));
+        }
+    });
 }
 
 /// Icon of a dockable tab.

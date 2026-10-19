@@ -37,6 +37,7 @@ impl eframe::App for app::SmartMediaApp {
         self.title_strip(ui);
         settings::banner::show(ui);
         self.status_bar(ui);
+        self.side_panels(ui);
         self.inspector_rail(ui);
         self.pump_commands(&ctx);
 
@@ -71,6 +72,7 @@ impl eframe::App for app::SmartMediaApp {
         }
 
         ui::devtools::show(&ctx);
+        self.shell_overlays(&ctx);
         theme::debug_panel::show(&ctx);
         self.context.appearance.update(&ctx);
         self.context.appearance.show(&ctx);

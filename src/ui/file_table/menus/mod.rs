@@ -29,13 +29,6 @@ impl super::FileExplorer {
             ui.set_height(25.);
             ui.horizontal_top(|ui| {
                 ui.add_space(5.);
-                if icons::toggle_button(ui, svg::GEAR, self.open_quick_access, "Open Options side panel").clicked() {
-                    self.open_quick_access = !self.open_quick_access;
-                }
-
-                ui.add_space(5.);
-                ui.separator();
-                ui.add_space(5.);
                 let (can_up, can_back, can_forward) = (self.can_go_up(), self.can_go_back(), self.can_go_forward());
                 if ui.add_enabled_ui(can_up, |ui| icons::icon_button(ui, svg::ARROW_UP, "Up (Alt+Up)")).inner.clicked() { self.nav_up(); }
                 if ui.add_enabled_ui(can_back, |ui| icons::icon_button(ui, svg::ARROW_LEFT, "Back (Alt+Left)")).inner.clicked() { self.nav_back(); }

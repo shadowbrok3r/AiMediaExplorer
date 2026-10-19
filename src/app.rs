@@ -20,6 +20,7 @@ pub struct SmartMediaApp {
     pub context: SmartMediaContext,
     pub egui_ctx: Context,
     pub chrome: Chrome,
+    pub shell: crate::ui::shell::Shell,
 }
 
 /// Preferences window state: the settings when it opened and the copy being edited.
@@ -107,6 +108,8 @@ impl SmartMediaApp {
         let mut app = Self::assemble(cc.egui_ctx.clone(), appearance, chrome, FileExplorer::new(false));
         app.context.task_poller = crate::tasks::Poller::standard();
         app.context.inspector.load_prefs();
+        app.shell = crate::ui::shell::Shell::live();
+        app.context.inspector.set_open(app.shell.layout.layout.right_rail_open);
         app
     }
 
@@ -179,6 +182,7 @@ impl SmartMediaApp {
             tree,
             egui_ctx,
             chrome,
+            shell: Default::default(),
         }
     }
 }

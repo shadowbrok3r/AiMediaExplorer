@@ -156,7 +156,7 @@ fn the_title_takes_the_version_only_when_it_fits() {
         rig.width = width as f32;
         let frame = rig.settle();
         let title = drawn(&frame).unwrap_or_else(|| panic!("{width}px draws no title: {:?}", frame.layout));
-        if width >= 1000 {
+        if width >= 1500 {
             assert_eq!(title, TITLE_LONG, "{width}px: {:?}", frame.layout);
         }
         seen.insert(title);
@@ -164,26 +164,92 @@ fn the_title_takes_the_version_only_when_it_fits() {
     assert!(seen.contains(TITLE_SHORT) && seen.contains(TITLE_LONG), "{seen:?}");
 }
 
-#[test]
-fn file_and_view_open_under_the_strip_with_every_entry() {
-    let mut rig = Rig::new(true, 1000.0);
+/// Opens `menu` and returns the frame with its entries; each entry must draw under the strip.
+fn open_menu(rig: &mut Rig, menu: &str, entries: &[&str]) -> Frame {
     let l = rig.settle().layout;
-    let strip_bottom = l.rect.bottom();
-
-    let file = rig.click(pos2(l.left.left() + 12.0, l.rect.center().y));
-    let texts = file.texts();
-    for entry in ["Database", "AI", "Preferences", "Appearance…", "Exit"] {
-        let (_, at) = texts.iter().find(|(t, _)| t == entry).unwrap_or_else(|| panic!("File menu lacks {entry}: {texts:?}"));
-        assert!(at.y > strip_bottom, "{entry} is not under the strip");
+    let at = rig.settle().text_pos(menu) + vec2(6.0, 6.0);
+    let frame = rig.click(at);
+    let texts = frame.texts();
+    for entry in entries {
+        let (_, at) = texts.iter().find(|(t, _)| t == entry).unwrap_or_else(|| panic!("{menu} menu lacks {entry}: {texts:?}"));
+        assert!(at.y > l.rect.bottom(), "{entry} is not under the strip");
     }
+    frame
+}
 
-    let view = rig.click(pos2(l.left.right() - 12.0, l.rect.center().y));
-    let texts = view.texts();
-    for entry in ["Appearance…", "Egui Settings", "File Explorer", "Logs", "AI Refinements", "AI Assistant Window", "Icon gallery", "Devtools", "Custom title bar"] {
-        let (_, at) = texts.iter().find(|(t, _)| t == entry).unwrap_or_else(|| panic!("View menu lacks {entry}: {texts:?}"));
-        assert!(at.y > strip_bottom, "{entry} is not under the strip");
+/// Closes any open menu by clicking empty space.
+fn close_menus(rig: &mut Rig) {
+    rig.click(pos2(500.0, 500.0));
+}
+
+#[test]
+fn file_view_tools_and_help_open_under_the_strip_with_every_entry() {
+    let mut rig = Rig::new(true, 1200.0);
+    open_menu(&mut rig, "File", &["Open folder...", "Scan folder...", "Database", "Preferences", "Quit"]);
+    let view = open_menu(&mut rig, "View", &["Sidebar", "Bottom bar", "Right rail", "Appearance…", "Egui Settings", "Custom title bar", "Tabs", "AI Assistant Window", "Devtools"]);
+    assert!(view.texts().iter().all(|(t, _)| t != "Quit"), "File closed when View opened");
+    open_menu(&mut rig, "Tools", &["Scan folder...", "AI processing", "Refine (AI, DB-only)", "Image edit", "Collections", "Scan settings"]);
+    open_menu(&mut rig, "Help", &["Logs", "Command palette", "About"]);
+}
+
+#[test]
+fn submenus_hold_the_rest_of_the_old_menu_actions() {
+    let mut rig = Rig::new(true, 1200.0);
+    let cases: [(&str, &str, &[&str]); 6] = [
+        ("File", "Database", &["View Entire Database", "Database backup and restore", "Export backup...", "Import backup...", "Choose database folder..."]),
+        ("View", "Tabs", &["File Explorer", "Logs", "AI Refinements"]),
+        ("View", "Devtools", &["Icon gallery", "Theme panel", "Settings store", "Tasks", "Command log", "Perf", "Row store", "Collections", "Video", "Sidebar", "Actions"]),
+        ("Tools", "AI processing", &["Enable AI search", "Enable auto indexing", "Enable auto CLIP", "Generate CLIP for missing files", "Generate CLIP for the previewed file", "Count files missing CLIP"]),
+        ("Tools", "Collections", &["Show collections", "New collection..."]),
+        ("Tools", "Scan settings", &["FoundBatch size"]),
+    ];
+    for (menu, item, entries) in cases {
+        close_menus(&mut rig);
+        let open = open_menu(&mut rig, menu, &[item]);
+        let at = open.text_pos(item) + vec2(6.0, 6.0);
+        let sub = rig.click(at);
+        let texts = sub.texts();
+        for entry in entries {
+            assert!(texts.iter().any(|(t, _)| t == entry), "{menu} > {item} lacks {entry}: {texts:?}");
+        }
     }
-    assert!(texts.iter().all(|(t, _)| t != "Exit"), "File closed when View opened");
+}
+
+#[test]
+fn the_view_menu_shows_which_chrome_is_on() {
+    let mut rig = Rig::new(true, 1200.0);
+    let open = open_menu(&mut rig, "View", &["Sidebar"]);
+    let before = rig.app.shell.layout.layout.sidebar_open;
+    let toggled = rig.click(open.text_pos("Sidebar") + vec2(6.0, 6.0));
+    assert_ne!(rig.app.shell.layout.layout.sidebar_open, before, "the entry flips the sidebar");
+    assert!(toggled.layout.rect.height() > 0.0);
+}
+
+#[test]
+fn the_palette_entry_opens_the_palette_and_shows_its_shortcut_when_wide() {
+    let mut rig = Rig::new(true, 1600.0);
+    let l = rig.settle();
+    assert!(l.texts().iter().any(|(t, _)| t == "Search or run a command"));
+    assert!(l.texts().iter().any(|(t, _)| t == "Ctrl+K"));
+    assert!(l.layout.search.width() > 200.0 && !l.layout.search_compact);
+    assert!(!rig.app.shell.palette.open);
+    rig.click(l.layout.search.center());
+    assert!(rig.app.shell.palette.open);
+}
+
+#[test]
+fn the_palette_entry_gives_way_before_the_menus_do() {
+    let mut last_width = 0.0_f32;
+    for width in [640.0_f32, 700.0, 800.0, 1000.0, 1200.0, 1600.0] {
+        let mut rig = Rig::new(true, width);
+        let l = rig.settle().layout;
+        assert!(l.search.width() == 0.0 || l.search.left() >= l.left.left(), "{width}: {l:?}");
+        assert!(l.search.width() + 0.5 >= last_width, "a wider window shrank the palette entry at {width}px: {l:?}");
+        last_width = l.search.width();
+        assert_eq!(l.search_compact, l.search.width() < 150.0, "{width}: {l:?}");
+        let menus_right = l.search.left();
+        assert!(menus_right >= l.left.left() + 4.0 * 40.0 || l.search.width() == 0.0, "{width}: the four menus keep their room");
+    }
 }
 
 #[test]
@@ -191,22 +257,20 @@ fn the_view_menu_switches_the_title_bar_live_and_remembers_it() {
     let _lock = CHROME_PREFS.lock().unwrap_or_else(|e| e.into_inner());
     chrome::resolve(MEMORY_ID, Vec::new(), |_| None);
     let mut rig = Rig::new(true, 1000.0);
-    let l = rig.settle().layout;
-    let view_at = pos2(l.left.right() - 12.0, l.rect.center().y);
+    rig.settle();
 
-    let open = rig.click(view_at);
+    let open = open_menu(&mut rig, "View", &["Custom title bar"]);
     let row = open.text_pos("Custom title bar");
     let switched = rig.click(row + vec2(12.0, 6.0));
     assert!(!rig.app.chrome.frameless, "the click turned the custom bar off");
     assert_eq!(switched.layout.title, "", "the strip drops its title with the system bar");
     assert!(!ChromePrefs::load(MEMORY_ID).custom_title_bar, "the choice is saved");
 
-    let view_again = pos2(switched.layout.left.right() - 12.0, l.rect.center().y);
-    let again = rig.click(view_again);
+    let again = open_menu(&mut rig, "View", &["Custom title bar"]);
     let row = again.text_pos("Custom title bar");
     let back = rig.click(row + vec2(12.0, 6.0));
     assert!(rig.app.chrome.frameless);
-    assert_eq!(back.layout.title, TITLE_LONG);
+    assert!(back.layout.title == TITLE_LONG || back.layout.title == TITLE_SHORT, "{}", back.layout.title);
     assert!(ChromePrefs::load(MEMORY_ID).custom_title_bar);
 }
 
@@ -215,8 +279,7 @@ fn switching_sends_the_decorations_command() {
     let _lock = CHROME_PREFS.lock().unwrap_or_else(|e| e.into_inner());
     chrome::resolve(MEMORY_ID, Vec::new(), |_| None);
     let mut rig = Rig::new(true, 1000.0);
-    let l = rig.settle().layout;
-    let open = rig.click(pos2(l.left.right() - 12.0, l.rect.center().y));
+    let open = open_menu(&mut rig, "View", &["Custom title bar"]);
     let row = open.text_pos("Custom title bar");
     let click = rig.frame(press_release(row + vec2(12.0, 6.0)));
     assert!(click.commands.iter().any(|c| matches!(c, ViewportCommand::Decorations(true))), "{:?}", click.commands);
