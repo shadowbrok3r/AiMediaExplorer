@@ -9,7 +9,7 @@ use surrealdb::types::{RecordId, SurrealValue};
 use super::clock::Clock;
 use super::ctx::DbSource;
 use super::error::ToolError;
-use super::proposals::{Counts, MAX_CATEGORY, MAX_REASON, MAX_TAG, Status};
+use super::proposals::{Counts, MAX_CATEGORY, MAX_TAG, Status};
 
 pub const TABLE: &str = "mcp_taxonomy_proposals";
 const DDL: &str = "DEFINE TABLE IF NOT EXISTS mcp_taxonomy_proposals TYPE NORMAL SCHEMALESS PERMISSIONS FULL;";

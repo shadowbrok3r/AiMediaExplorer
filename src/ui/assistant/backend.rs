@@ -7,7 +7,6 @@ use zeroclaw_client::{ApprovalDecision, InlineImage};
 
 use crate::UiSettings;
 use crate::ui::file_table::AIUpdate;
-use crate::zc::events::Tagged;
 use crate::zc::health::Health;
 use crate::zc::profile::{BackendPref, ZcProfile};
 use crate::zc::runtime::ZcRuntime;

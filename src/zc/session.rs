@@ -9,7 +9,7 @@ use tokio::sync::Notify;
 use zeroclaw_client::{AbortOutcome, ApprovalDecision, ChatSession, ClientFrame, ConnectOptions, DisconnectReason, Error, Event, HistoryPager, InlineImage};
 
 use super::coalesce::{Coalescer, Run, RunKind};
-use super::events::{ChatEv, LinkState, PlanRow, Tagged};
+use super::events::{ChatEv, LinkState, PlanRow};
 use super::runtime::Shared;
 
 /// What the interface asks one connection to do.

@@ -1,6 +1,6 @@
 //! Devtools window for the gateway usage: totals, tables per session and per day, and a reset.
 
-use eframe::egui::{self, Context, Grid, Id, RichText, ScrollArea, Ui, Window};
+use eframe::egui::{Context, Grid, Id, RichText, ScrollArea, Ui, Window};
 
 use crate::zc::events::now_ms;
 use crate::zc::usage::{self, UsageData, UsageStore, dollars, grouped};
