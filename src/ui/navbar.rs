@@ -169,6 +169,10 @@ impl crate::app::SmartMediaApp {
                 crate::ui::devtools::toggle_zeroclaw(ui.ctx());
                 ui.close();
             }
+            if icons::button(ui, svg::LIST_CHECKS, "ZeroClaw jobs").clicked() {
+                crate::ui::devtools::toggle_zc_jobs(ui.ctx());
+                ui.close();
+            }
             if icons::button(ui, svg::STACK, "Row store").clicked() {
                 crate::ui::devtools::toggle_row_store(ui.ctx());
                 ui.close();

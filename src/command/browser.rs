@@ -15,10 +15,12 @@ pub enum QueryMode {
     Semantic,
     /// Files like a given file; Enter opens a similarity scope.
     Similar,
+    /// A sentence the ZeroClaw gateway turns into filters; Enter asks, then applies the previewed filters.
+    Ask,
 }
 
 impl QueryMode {
-    pub const ALL: [QueryMode; 4] = [Self::Name, Self::Text, Self::Semantic, Self::Similar];
+    pub const ALL: [QueryMode; 5] = [Self::Name, Self::Text, Self::Semantic, Self::Similar, Self::Ask];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -26,6 +28,7 @@ impl QueryMode {
             Self::Text => "Text",
             Self::Semantic => "Semantic",
             Self::Similar => "Similar",
+            Self::Ask => "Ask",
         }
     }
 
@@ -36,6 +39,7 @@ impl QueryMode {
             Self::Text => "Filter by name, tags, category, description",
             Self::Semantic => "Describe what to find, then Enter",
             Self::Similar => "Path of a file (empty: the focused file), then Enter",
+            Self::Ask => "Describe the files in a sentence, then Enter",
         }
     }
 

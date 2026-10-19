@@ -27,7 +27,7 @@ With Settings > General > Restore tabs on, a tab that comes back from `workspace
 
 ## Query bar
 
-A text field with a mode: **Name | Text | Semantic | Similar**.
+A text field with a mode: **Name | Text | Semantic | Similar | Ask**.
 
 | Mode | While typing | Enter |
 |---|---|---|
@@ -35,8 +35,11 @@ A text field with a mode: **Name | Text | Semantic | Similar**.
 | Text | text found in name, type, path, tags, category or description (live) | keeps the filter |
 | Semantic | no filter | opens `q:sem:"<text>"`, which pages results by CLIP |
 | Similar | no filter | opens `sim:<path>` for the path typed, or for the focused file when the field is empty |
+| Ask | nothing | sends the sentence to the ZeroClaw gateway, shows the filters it returned as chips under the field with Apply and Dismiss; Enter again on the unchanged sentence applies them |
 
 Name and Text write the `name` and `query` conditions of the tab's filter, so they show as chips (`Name: ...`, `Search: ...`), hide rows without removing them and go away with the chip. The bar follows changes made elsewhere: removing the chip empties it, a search scope puts its text in it, a filter set by command or saved view shows in it. Ctrl+F puts the cursor in the field; Esc clears the text and keeps the cursor, a second Esc leaves the field. Devtools > Query shows the text, what typing runs, what Enter runs and a history of runs; `{"cmd": "query", ...}` and `--query <mode>:<text>` drive it without the mouse.
+
+Ask is drawn as its own segment after the four others and is disabled, with the reason as its tooltip, while the gateway is not Online (`docs/zeroclaw.md`). A sentence such as "videos larger than 1 GB from 2023" becomes conditions of the tab's filter; the preview lists them as chips and nothing changes until Apply. Applying replaces the tab's conditions as `set_filter` with `replace` does, rows are only hidden, and nothing but filters is ever run from a reply. A reply that is not a valid filter shows the error and changes nothing. Typing in Ask leaves the live filter alone.
 
 ## Selection action bar
 

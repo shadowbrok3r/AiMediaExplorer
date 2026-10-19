@@ -13,7 +13,7 @@ fn devtools_command(name: &str) -> Result<AppCommand, String> {
 /// The query command `--query <mode>:<text>` stands for.
 fn query_command(value: &str) -> Result<AppCommand, String> {
     let (mode, text) = value.split_once(':').unwrap_or((value, ""));
-    let mode = serde_json::from_value::<super::browser::QueryMode>(serde_json::Value::String(mode.trim().to_lowercase())).map_err(|_| format!("unknown query mode '{}' (use name, text, semantic or similar)", mode.trim()))?;
+    let mode = serde_json::from_value::<super::browser::QueryMode>(serde_json::Value::String(mode.trim().to_lowercase())).map_err(|_| format!("unknown query mode '{}' (use name, text, semantic, similar or ask)", mode.trim()))?;
     Ok(AppCommand::Query { mode, text: text.to_string(), run: true })
 }
 

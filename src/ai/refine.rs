@@ -7,6 +7,7 @@ use crate::Thumbnail;
 
 mod cloud;
 mod jina;
+pub mod zeroclaw;
 #[cfg(test)]
 mod tests;
 

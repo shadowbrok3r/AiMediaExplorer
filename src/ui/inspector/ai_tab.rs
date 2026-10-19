@@ -95,6 +95,8 @@ pub fn show(ui: &mut Ui, ex: &mut FileExplorer, row: &Thumbnail) {
         }
     });
     ui.separator();
+    super::suggest::show(ui, row);
+    ui.separator();
     ui.label(RichText::new("Refine").strong());
     ui.label(RichText::new("Review AI proposals for the tags and category of this file.").weak());
     if icons::button(ui, svg::AME_REFINE, "Refine this item").clicked() {

@@ -13,6 +13,7 @@ mod panel;
 pub mod prefs;
 pub mod preview;
 pub mod state;
+pub mod suggest;
 pub mod tags;
 pub mod target;
 pub mod video;

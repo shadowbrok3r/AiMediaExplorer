@@ -256,7 +256,9 @@ impl RefinementsPanel {
                     ui.selectable_value(&mut self.reranker_choice, RerankerType::Heuristic, "Heuristic");
                     ui.selectable_value(&mut self.reranker_choice, RerankerType::JinaM0, "Jina M0");
                 });
-                ui.checkbox(&mut self.use_cloud_model, "Use a cloud model");
+                if ui.checkbox(&mut self.use_cloud_model, "Use a cloud model").changed() && self.use_cloud_model {
+                    self.use_zeroclaw = false;
+                }
                 if self.use_cloud_model {
                     ComboBox::from_id_salt("refine-cloud-provider").selected_text(self.cloud_provider.clone()).show_ui(ui, |ui| {
                         for name in ["openai", "openrouter", "groq", "gemini", "custom"] {
@@ -266,6 +268,7 @@ impl RefinementsPanel {
                     ui.add(TextEdit::singleline(&mut self.cloud_model_name).hint_text("Model (blank: the default)").desired_width(180.0));
                 }
             });
+            self.zeroclaw_source(ui);
             ui.horizontal_wrapped(|ui| {
                 if self.is_running() {
                     if icons::button(ui, svg::STOP, "Cancel").on_hover_text("Stop generating; proposals made so far stay").clicked() {
@@ -279,7 +282,8 @@ impl RefinementsPanel {
                 }
                 self.run_status(ui);
             });
-            ui.label(RichText::new("Generating stops the vision worker (and unloads CLIP for Jina M0) to free memory; cloud runs leave the local models alone.").small().weak());
+            let note = if self.use_zeroclaw { "ZeroClaw runs leave the local models alone and send one request per batch of files." } else { "Generating stops the vision worker (and unloads CLIP for Jina M0) to free memory; cloud runs leave the local models alone." };
+            ui.label(RichText::new(note).small().weak());
         });
         ui.horizontal_wrapped(|ui| {
             icons::label(ui, svg::AME_MCP, "Stored proposals");
@@ -298,6 +302,28 @@ impl RefinementsPanel {
             if icons::button(ui, svg::ARROWS_CLOCKWISE, "Refresh").clicked() {
                 self.store_status.at = None;
                 self.refresh_store();
+            }
+        });
+    }
+
+    /// The ZeroClaw source: a switch that works only while the gateway is Online, its route hint and what is sent.
+    fn zeroclaw_source(&mut self, ui: &mut Ui) {
+        let jobs = self.zc_jobs();
+        let reason = jobs.availability().reason().map(str::to_string);
+        ui.horizontal_wrapped(|ui| {
+            let switch = ui.add_enabled(reason.is_none(), Checkbox::new(&mut self.use_zeroclaw, "Use ZeroClaw"));
+            match &reason {
+                Some(why) => {
+                    switch.on_disabled_hover_text(why.as_str());
+                    ui.label(RichText::new(format!("ZeroClaw is unavailable: {}", clipped(why, 110))).small().color(crate::theme::warn(ui))).on_hover_text(why.as_str());
+                }
+                None => {
+                    if self.use_zeroclaw {
+                        self.use_cloud_model = false;
+                        ui.add(TextEdit::singleline(&mut self.zc_hint).hint_text(format!("Hint ({})", jobs.default_hint())).desired_width(110.0));
+                        ui.label(RichText::new("Text only: file names, folders and metadata are sent in batches; no pictures.").small().weak());
+                    }
+                }
             }
         });
     }

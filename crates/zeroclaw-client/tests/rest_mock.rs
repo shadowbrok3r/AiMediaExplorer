@@ -341,3 +341,15 @@ async fn redirects_are_not_followed_so_credentials_stay_on_the_origin() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(hit_rx.try_recv().is_err(), "the redirect target must never be contacted");
 }
+
+#[tokio::test]
+async fn scripted_complete_answers_are_served_in_order_then_the_echo_returns() {
+    let mock = MockGateway::start().await;
+    mock.script_complete_reply("first");
+    mock.script_complete(503, json!({"error": "busy"}), Duration::from_millis(30));
+    let rest = client(&mock);
+    assert_eq!(rest.complete(&CompleteRequest::new("a")).await.unwrap().response, "first");
+    let err = rest.complete(&CompleteRequest::new("b")).await.unwrap_err();
+    assert!(matches!(err, Error::Http { status: 503, .. }) && err.is_retryable(), "{err:?}");
+    assert_eq!(rest.complete(&CompleteRequest::new("c")).await.unwrap().response, "echo: c");
+}

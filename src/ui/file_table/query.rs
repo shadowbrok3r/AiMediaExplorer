@@ -5,11 +5,15 @@ use std::time::Instant;
 
 use eframe::egui::*;
 
+mod ask;
+
 use super::FileExplorer;
 use crate::command::{CommandError, CommandResult, QueryMode, Scope};
 use crate::icons::{self, Icon, svg};
 use crate::theme::controls::{Segment, segmented};
 use crate::ui::titlebar::kit_icon;
+
+pub use ask::{Action as AskAction, AskState, Phase as AskPhase};
 
 /// Runs kept for the Devtools window.
 pub const HISTORY: usize = 40;
@@ -19,6 +23,8 @@ pub const HISTORY: usize = 40;
 pub enum Plan {
     /// Conditions of the tab's filter: file name and search text.
     Filter { name: String, query: String },
+    /// A sentence for the gateway to turn into filters.
+    Ask(String),
     /// A scope the tab shows.
     Open(Scope),
     /// Nothing to run, with the reason.
@@ -39,6 +45,9 @@ pub fn plan(mode: QueryMode, text: &str, focus: Option<&str>, enter: bool) -> Pl
         QueryMode::Name => Plan::Filter { name: text.to_string(), query: String::new() },
         QueryMode::Text => Plan::Filter { name: String::new(), query: text.to_string() },
         QueryMode::Semantic | QueryMode::Similar if !enter => Plan::clear(),
+        QueryMode::Ask if !enter => Plan::Idle("Press Enter to ask ZeroClaw".to_string()),
+        QueryMode::Ask if text.is_empty() => Plan::Idle("Describe the files to look for first".to_string()),
+        QueryMode::Ask => Plan::Ask(text.to_string()),
         QueryMode::Semantic if text.is_empty() => Plan::Idle("Type what to look for first".to_string()),
         QueryMode::Semantic => Plan::Open(Scope::Semantic(text.to_string())),
         QueryMode::Similar => match (text.is_empty(), focus) {
@@ -56,6 +65,7 @@ pub fn describe(plan: &Plan) -> String {
         Plan::Filter { name, query } if query.is_empty() => format!("filter: file name contains \"{name}\""),
         Plan::Filter { name, query } if name.is_empty() => format!("filter: search text \"{query}\" in name, type, path, tags, category, description"),
         Plan::Filter { name, query } => format!("filter: name \"{name}\" and text \"{query}\""),
+        Plan::Ask(text) => format!("ask ZeroClaw for a filter: \"{text}\""),
         Plan::Open(scope) => format!("open {}", scope.format()),
         Plan::Idle(reason) => format!("nothing to run: {reason}"),
     }
@@ -68,6 +78,7 @@ pub fn mode_icon(mode: QueryMode) -> Icon {
         QueryMode::Text => svg::LIST_MAGNIFYING_GLASS,
         QueryMode::Semantic => svg::AME_SEMANTIC_SEARCH,
         QueryMode::Similar => svg::AME_FIND_SIMILAR,
+        QueryMode::Ask => svg::SPARKLE,
     }
 }
 
@@ -93,6 +104,8 @@ pub struct QueryBar {
     pub focus: bool,
     pub history: VecDeque<Run>,
     pub runs: u64,
+    /// The sentence-to-filter state of the Ask mode.
+    pub ask: AskState,
 }
 
 impl QueryBar {
@@ -107,6 +120,10 @@ impl QueryBar {
     /// Takes in a filter that changed outside the bar: a chip removed, a saved view, a command.
     fn reflect(&mut self, now: &(String, String)) {
         if self.applied.as_ref() == Some(now) {
+            return;
+        }
+        if self.mode == QueryMode::Ask {
+            self.applied = Some(now.clone());
             return;
         }
         let (name, query) = now;
@@ -139,7 +156,7 @@ impl QueryBar {
                 self.mode = QueryMode::Similar;
                 self.text = path.clone();
             }
-            _ if !self.mode.is_live() && self.scope_seen.is_some() => {
+            _ if !self.mode.is_live() && self.mode != QueryMode::Ask && self.scope_seen.is_some() => {
                 self.mode = QueryMode::Name;
                 self.text.clear();
             }
@@ -166,6 +183,11 @@ impl FileExplorer {
 
     /// Writes what the bar holds to the tab's filter: the conditions of Name and Text, none while a search mode is chosen.
     pub fn apply_query_live(&mut self) {
+        if self.toolbar.query.mode == QueryMode::Ask {
+            let spec = self.filter_spec();
+            self.toolbar.query.applied = Some((spec.name, spec.query));
+            return;
+        }
         let q = &self.toolbar.query;
         let (name, query) = match plan(q.mode, &q.text, None, false) {
             Plan::Filter { name, query } => (name, query),
@@ -188,12 +210,36 @@ impl FileExplorer {
                 self.apply_query_live();
                 Ok(describe(&planned))
             }
+            Plan::Ask(sentence) => self.ask_enter(sentence),
             Plan::Open(scope) => self.open_scope(scope.clone()).map(|()| describe(&planned)).map_err(CommandError::not_found),
             Plan::Idle(reason) => Err(CommandError::invalid(reason.clone())),
         };
         let outcome = result.as_ref().map(String::clone).map_err(|e| e.message.clone());
         self.toolbar.query.record(mode, text, describe(&planned), outcome);
         result
+    }
+
+    /// Enter in the Ask mode: the first press asks the gateway, a press on the unchanged sentence applies the preview.
+    fn ask_enter(&mut self, sentence: &str) -> CommandResult {
+        if self.toolbar.query.ask.preview().is_some_and(|p| p.sentence == sentence) {
+            return self.apply_ask();
+        }
+        self.toolbar.query.ask.start(sentence).map_err(CommandError::invalid)?;
+        Ok(format!("asking ZeroClaw for a filter: \"{sentence}\""))
+    }
+
+    /// Applies the filters of the Ask preview to the tab, replacing its conditions as `set_filter` with `replace` does.
+    pub fn apply_ask(&mut self) -> CommandResult {
+        let Some(preview) = self.toolbar.query.ask.take_preview() else { return Err(CommandError::invalid("no Ask preview is waiting")) };
+        match self.apply_filter_patch(&preview.patch, true) {
+            Ok(summary) => {
+                self.toolbar.query.ask.applied += 1;
+                let spec = self.filter_spec();
+                self.toolbar.query.applied = Some((spec.name, spec.query));
+                Ok(format!("applied the filters for \"{}\": {summary}", preview.sentence))
+            }
+            Err(e) => Err(CommandError::invalid(e)),
+        }
     }
 
     /// Sets the bar from a command: mode and text, then the live filter, and with `run` Enter.
@@ -286,19 +332,31 @@ pub(crate) fn text_id(ex: &FileExplorer) -> Id {
     Id::unique(("ame_query_text", ex.viewer.scope))
 }
 
-fn mode_control(ui: &mut Ui, mode: &mut QueryMode, style: ModeStyle) -> Response {
+fn mode_control(ui: &mut Ui, mode: &mut QueryMode, style: ModeStyle, ask_unavailable: Option<&str>) -> Response {
     match style {
         ModeStyle::Labels | ModeStyle::Icons => {
             let labels = style == ModeStyle::Labels;
-            let segments: Vec<Segment<'_, QueryMode>> = QueryMode::ALL.into_iter().map(|m| Segment::new(m, if labels { m.label() } else { "" }).icon(kit_icon(mode_icon(m)))).collect();
-            let response = segmented(ui, mode, &segments);
-            response.on_hover_text("Name and Text filter as you type; Semantic and Similar search when you press Enter")
+            let segment = |m: QueryMode| Segment::new(m, if labels { m.label() } else { "" }).icon(kit_icon(mode_icon(m)));
+            let segments: Vec<Segment<'_, QueryMode>> = QueryMode::ALL.into_iter().filter(|m| *m != QueryMode::Ask).map(segment).collect();
+            let response = segmented(ui, mode, &segments).on_hover_text("Name and Text filter as you type; Semantic and Similar search when you press Enter");
+            let ask = ui.add_enabled_ui(ask_unavailable.is_none() || *mode == QueryMode::Ask, |ui| segmented(ui, mode, &[segment(QueryMode::Ask)])).inner;
+            match ask_unavailable {
+                Some(reason) => ask.on_disabled_hover_text(format!("Ask is unavailable: {reason}")),
+                None => ask.on_hover_text("Describe the files in a sentence; ZeroClaw turns it into filters you can review"),
+            };
+            response
         }
         ModeStyle::Menu => {
             let current = *mode;
             icons::icon_menu_button(ui, mode_icon(current), &format!("Search mode: {}", current.label()), |ui| {
                 for m in QueryMode::ALL {
-                    if icons::selectable_button(ui, mode_icon(m), current == m, m.label()).clicked() {
+                    let blocked = (m == QueryMode::Ask).then_some(ask_unavailable).flatten();
+                    let clicked = ui.add_enabled_ui(blocked.is_none(), |ui| icons::selectable_button(ui, mode_icon(m), current == m, m.label())).inner;
+                    let clicked = match blocked {
+                        Some(reason) => clicked.on_disabled_hover_text(format!("Ask is unavailable: {reason}")),
+                        None => clicked,
+                    };
+                    if clicked.clicked() {
                         *mode = m;
                         ui.close();
                     }
@@ -315,7 +373,8 @@ pub fn show(ui: &mut Ui, ex: &mut FileExplorer, style: ModeStyle) -> QueryRects 
     let id = text_id(ex);
     let before_mode = ex.toolbar.query.mode;
     let mut mode = before_mode;
-    let mode_response = mode_control(ui, &mut mode, style);
+    let ask_unavailable = ex.toolbar.query.ask.unavailable();
+    let mode_response = mode_control(ui, &mut mode, style, ask_unavailable.as_deref());
     let mut apply = false;
     let mut focus_text = false;
     if mode != before_mode {
@@ -357,6 +416,28 @@ pub fn show(ui: &mut Ui, ex: &mut FileExplorer, style: ModeStyle) -> QueryRects 
     }
     if apply {
         ex.apply_query_live();
+    }
+    if ex.toolbar.query.mode == QueryMode::Ask {
+        ex.toolbar.query.ask.poll();
+        if ex.toolbar.query.ask.is_working() {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(150));
+        }
+        let replaces = !ex.filter_spec().chips().is_empty();
+        let popup_id = Id::new(("ame_ask_popup", ex.viewer.scope));
+        let shown_reason = if ex.toolbar.query.ask.is_working() { None } else { ask_unavailable.as_deref() };
+        match ask::preview_popup(ui.ctx(), popup_id, response.rect, &ex.toolbar.query.ask, replaces, shown_reason) {
+            Some(AskAction::Apply) => {
+                if let Err(e) = ex.apply_ask() {
+                    crate::ui::dialogs::toast(egui_toast::ToastKind::Warning, e.message);
+                }
+            }
+            Some(AskAction::Dismiss) => ex.toolbar.query.ask.dismiss(),
+            Some(AskAction::Cancel) => ex.toolbar.query.ask.cancel(),
+            None => {}
+        }
+        if escape && had_focus {
+            ex.toolbar.query.ask.dismiss();
+        }
     }
     if enter {
         if let Err(e) = ex.run_query() {

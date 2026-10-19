@@ -6,6 +6,8 @@ mod run;
 mod store;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod zc_tests;
 mod view;
 
 use std::collections::BTreeSet;
@@ -21,15 +23,32 @@ use once_cell::sync::Lazy;
 
 use crate::ai::mcp::ctx::DbSource;
 use crate::ai::refine::RerankerType;
+use crate::zc::jobs::ZcJobs;
 use crate::ui::file_table::thumbs::{ScopeId, ThumbService};
 
 pub use accept::Outcome;
 pub use model::{BulkPlan, FieldKind, ListFilter, Proposal, ProposalKey, ProposalSource, SortKey};
-pub use run::{CloudChoice, Msg, RunSpec};
+pub use run::{CloudChoice, Msg, RunSpec, ZcChoice};
 pub use store::StoreSource;
 
 /// Paths the command dispatcher hands to the refinements panel until it is shown
 pub static REFINE_SELECTION_REQUESTS: Lazy<Mutex<Vec<Vec<String>>>> = Lazy::new(|| Mutex::new(Vec::new()));
+
+/// A ZeroClaw run the `zc` command asked for: the files and the route hint.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ZcRunRequest {
+    pub paths: Vec<String>,
+    pub hint: String,
+}
+
+/// ZeroClaw runs the `zc` command queued until the tab is shown.
+pub static REFINE_ZC_REQUESTS: Lazy<Mutex<Vec<ZcRunRequest>>> = Lazy::new(|| Mutex::new(Vec::new()));
+
+/// Queues a ZeroClaw run over `paths` for the Refine tab; the tab itself is opened by the `refine` command.
+pub fn request_zeroclaw_run(paths: Vec<String>, hint: Option<String>) {
+    REFINE_ZC_REQUESTS.lock().unwrap_or_else(|e| e.into_inner()).push(ZcRunRequest { paths, hint: hint.unwrap_or_default() });
+    crate::command::request_repaint();
+}
 
 pub fn request_refine_for_paths(paths: Vec<String>) {
     if paths.is_empty() { return; }
@@ -80,6 +99,11 @@ pub struct RefinementsPanel {
     pub use_cloud_model: bool,
     pub cloud_model_name: String,
     pub cloud_provider: String,
+    /// Ask the ZeroClaw gateway instead of the local or cloud generators.
+    pub use_zeroclaw: bool,
+    /// Route hint of a ZeroClaw run; blank takes the profile's.
+    pub zc_hint: String,
+    zc_jobs: Option<Arc<ZcJobs>>,
     pub filter: ListFilter,
     pub(crate) proposals: Vec<Proposal>,
     scope: BTreeSet<String>,
@@ -122,6 +146,9 @@ impl RefinementsPanel {
             use_cloud_model: false,
             cloud_model_name: String::new(),
             cloud_provider: "openrouter".into(),
+            use_zeroclaw: false,
+            zc_hint: String::new(),
+            zc_jobs: None,
             filter: ListFilter::default(),
             proposals: Vec::new(),
             scope: BTreeSet::new(),
@@ -144,6 +171,21 @@ impl RefinementsPanel {
             notice: None,
             global_requests: false,
         }
+    }
+
+    /// The job service ZeroClaw runs go through.
+    pub fn zc_jobs(&self) -> Arc<ZcJobs> {
+        self.zc_jobs.clone().unwrap_or_else(|| crate::zc::jobs::jobs().clone())
+    }
+
+    /// Uses `jobs` for ZeroClaw runs, for tests and tools with their own gateway.
+    pub fn set_zc_jobs(&mut self, jobs: Arc<ZcJobs>) {
+        self.zc_jobs = Some(jobs);
+    }
+
+    /// Why a ZeroClaw run cannot start now, if it cannot.
+    pub fn zc_unavailable(&self) -> Option<String> {
+        self.zc_jobs().availability().reason().map(str::to_string)
     }
 
     /// Sender that background jobs report to; tests use it to feed messages.
@@ -197,6 +239,19 @@ impl RefinementsPanel {
         }
         let batches: Vec<Vec<String>> = std::mem::take(&mut *REFINE_SELECTION_REQUESTS.lock().unwrap_or_else(|e| e.into_inner()));
         self.absorb_requests(batches);
+        let runs: Vec<ZcRunRequest> = std::mem::take(&mut *REFINE_ZC_REQUESTS.lock().unwrap_or_else(|e| e.into_inner()));
+        self.absorb_zc_runs(runs);
+    }
+
+    /// Starts a ZeroClaw run over the files of each request.
+    pub fn absorb_zc_runs(&mut self, runs: Vec<ZcRunRequest>) {
+        for run in runs {
+            self.absorb_requests(vec![run.paths]);
+            self.use_zeroclaw = true;
+            self.use_cloud_model = false;
+            self.zc_hint = run.hint;
+            self.start_run();
+        }
     }
 
     /// Adds the files of the requests to the scope of the next run.
@@ -211,9 +266,16 @@ impl RefinementsPanel {
         if self.is_running() {
             return;
         }
+        if self.use_zeroclaw && !self.zc_jobs().is_settling() {
+            if let Some(reason) = self.zc_unavailable() {
+                self.run = RunState::Failed(reason);
+                return;
+            }
+        }
         let spec = RunSpec {
             reranker: self.reranker_choice,
-            cloud: self.use_cloud_model.then(|| CloudChoice { provider: self.cloud_provider.clone(), model: self.cloud_model_name.clone() }),
+            cloud: (self.use_cloud_model && !self.use_zeroclaw).then(|| CloudChoice { provider: self.cloud_provider.clone(), model: self.cloud_model_name.clone() }),
+            zeroclaw: self.use_zeroclaw.then(|| ZcChoice { jobs: self.zc_jobs(), db: self.db.clone(), hint: self.zc_hint.trim().to_string() }),
             scope: (!self.scope.is_empty()).then(|| self.scope.iter().cloned().collect()),
         };
         let cancel = Arc::new(AtomicBool::new(false));
@@ -301,6 +363,7 @@ impl RefinementsPanel {
                     self.toast(ToastKind::Info, format!("Proposals ready ({})", self.run_produced));
                 }
             }
+            Msg::Notice(text) => self.note(false, text),
             Msg::Failed(e) => {
                 self.toast(ToastKind::Error, format!("Refine failed: {e}"));
                 self.run = RunState::Failed(e);

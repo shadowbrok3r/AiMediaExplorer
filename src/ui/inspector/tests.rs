@@ -24,6 +24,7 @@ use crate::ui::test_support::{test_ctx, texts};
 mod commands;
 mod flows;
 mod frames;
+mod suggest;
 
 struct NoProducer;
 

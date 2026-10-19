@@ -9,6 +9,7 @@ pub mod debug;
 pub mod events;
 pub mod health;
 pub mod import;
+pub mod jobs;
 pub mod profile;
 pub mod runtime;
 pub mod secrets;

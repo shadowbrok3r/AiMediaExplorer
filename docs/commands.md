@@ -198,6 +198,11 @@ Sets up and drives the ZeroClaw gateway connection of the assistant (`docs/zeroc
 | `open` | Shows the assistant in the right rail | |
 | `ping_tools` | Asks the agent to call `aimedia__util_ping` and report the result | |
 | `forget_token` | Deletes the stored token | |
+| `jobs` | Returns the job service as one JSON line: availability, the queue, the running job, usage totals and the newest finished jobs with their reply text | |
+| `job_submit` | Queues a one-request Manual job in the job service (single-flight; at most 8 wait) and returns its number | `prompt`, `hint`, `system`, `temperature` |
+| `job_cancel` | Cancels the job `job`, or every queued and running job when none is given | `job` |
+| `refine` | Opens the AI Refinements tab for `paths` and starts a run with the ZeroClaw source (an `invalid` error without paths; a gateway that is not Online shows its reason in the tab) | `paths`, `hint` |
+| `suggest` | Selects the file `path`, asks the gateway for tags, a category and a caption for it, and keeps the answer for the Inspector AI tab of that file (an `invalid` error while the gateway is not Online) | `path`, `hint` |
 
 ```json
 {"cmd": "zc", "op": "status"}
@@ -209,6 +214,11 @@ Sets up and drives the ZeroClaw gateway connection of the assistant (`docs/zeroc
 {"cmd": "zc", "op": "complete", "prompt": "Suggest three tags for a sunset", "hint": "quick", "temperature": 0.2}
 {"cmd": "zc", "op": "send", "text": "How many pictures are in the library?"}
 {"cmd": "zc", "op": "ping_tools"}
+{"cmd": "zc", "op": "job_submit", "prompt": "Suggest three tags for a sunset", "hint": "quick"}
+{"cmd": "zc", "op": "jobs"}
+{"cmd": "zc", "op": "job_cancel", "job": 3}
+{"cmd": "zc", "op": "refine", "paths": ["/home/u/Pictures/a.jpg", "/home/u/Pictures/b.jpg"], "hint": "quick"}
+{"cmd": "zc", "op": "suggest", "path": "/home/u/Pictures/a.jpg"}
 ```
 
 Start-up flag: `--zc-status [--zc-url URL] [--zc-agent ALIAS] [--zc-token-file PATH]` probes a gateway, prints one JSON line and exits without opening the window or the database (exit 0 online, 2 not set up, 3 token refused, 4 unreachable, 1 anything else). `ZC_URL`, `ZC_AGENT` and `ZC_TOKEN_FILE` fill in missing flags.
@@ -299,14 +309,15 @@ Clears the selection of the focused tab.
 
 ### query
 
-Sets the query bar of the focused tab. `mode` is `name` or `text` (live filters: the text goes to the name condition or the search-text condition of the tab's filter, so rows are only hidden, never removed), `semantic` (search the library by meaning, as Enter does) or `similar` (files like the one `text` names, else the focused file). `text` can be left out. Without `run` the bar is set and its live filter applied: `name` and `text` filter at once, `semantic` and `similar` clear the live filter and wait for Enter. With `"run": true` Enter is pressed: `semantic` opens `q:sem:"<text>"` and `similar` opens `sim:<path>` in the focused tab. An empty semantic text, or `similar` with no text and no focused file, is an `invalid` error. The Query window of Devtools shows the text, what typing runs, what Enter runs and the history of runs.
+Sets the query bar of the focused tab. `mode` is `name` or `text` (live filters: the text goes to the name condition or the search-text condition of the tab's filter, so rows are only hidden, never removed), `semantic` (search the library by meaning, as Enter does) or `similar` (files like the one `text` names, else the focused file) or `ask` (a sentence the ZeroClaw gateway turns into filters). `text` can be left out. Without `run` the bar is set and its live filter applied: `name` and `text` filter at once, `semantic` and `similar` clear the live filter and wait for Enter. With `"run": true` Enter is pressed: `semantic` opens `q:sem:"<text>"` and `similar` opens `sim:<path>` in the focused tab. An empty semantic text, or `similar` with no text and no focused file, is an `invalid` error. `ask` leaves the live filter alone and works only while the gateway is Online (otherwise it is an `invalid` error that names the reason); with `"run": true` the first Enter sends the sentence to the gateway through one `/api/complete` call (`docs/zeroclaw.md`) and shows the filters it returned as chips with an Apply button, and Enter again on the unchanged sentence applies them like `set_filter` with `replace`. A reply that is not a valid filter (unknown field, malformed date, no condition) shows the error and changes nothing. The Query window of Devtools shows the text, what typing runs, what Enter runs and the history of runs.
 
 ```json
 {"cmd": "query", "mode": "name", "text": "beach"}
 {"cmd": "query", "mode": "semantic", "text": "a red car", "run": true}
+{"cmd": "query", "mode": "ask", "text": "videos larger than 1 GB from 2023", "run": true}
 ```
 
-Start-up flag: `--query <mode>:<text>` (repeatable) is the same command with `run`, for example `--query semantic:'a red car'`.
+Start-up flag: `--query <mode>:<text>` (repeatable) is the same command with `run`, for example `--query semantic:'a red car'` or `--query ask:'untagged videos from 2023'` (the gateway is probed first; the question waits up to 8 s for it).
 
 ### dialog
 
@@ -327,7 +338,7 @@ Selects the row of a path in the focused tab, which the inspector rail previews 
 
 ### open_devtools
 
-Opens a debug window: `theme_panel`, `settings_store`, `wizard`, `db_maintenance`, `legacy_import`, `thumb_storage`, `thumb_cache`, `tasks`, `command_log`, `perf`, `zeroclaw`, `row_store`, `collections`, `query`, `browser_actions`, `video`, `scope`, `filters`, `grid`, `inspector`, `journal`, `workspace`, `refine`, `sidebar`, `actions`, `mcp_server`.
+Opens a debug window: `theme_panel`, `settings_store`, `wizard`, `db_maintenance`, `legacy_import`, `thumb_storage`, `thumb_cache`, `tasks`, `command_log`, `perf`, `zeroclaw`, `zeroclaw_jobs`, `row_store`, `collections`, `query`, `browser_actions`, `video`, `scope`, `filters`, `grid`, `inspector`, `journal`, `workspace`, `refine`, `sidebar`, `actions`, `mcp_server`.
 
 The `scope` window takes a scope string and shows how it parses (kind, title, parent, whether a folder exists), opens it in the focused tab or a new one, steps back and forward, lists the history stack of the focused tab with the scroll row and selection saved in each entry, and shows the timing of its recent loads: rows, batches, time to the first batch and total time.
 

@@ -184,6 +184,8 @@ pub enum DevtoolsWindow {
     Perf,
     #[serde(rename = "zeroclaw")]
     ZeroClaw,
+    #[serde(rename = "zeroclaw_jobs")]
+    ZeroClawJobs,
     RowStore,
     Collections,
     Query,

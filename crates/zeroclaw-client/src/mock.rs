@@ -274,6 +274,7 @@ struct Inner {
     requests: Vec<RestRequest>,
     overrides: HashMap<(String, String), RestOverride>,
     complete_reply: Option<String>,
+    complete_script: VecDeque<(u16, Value, Duration)>,
     hints: Vec<String>,
     next_session: usize,
     live: usize,
@@ -352,6 +353,7 @@ impl MockGateway {
                 requests: Vec::new(),
                 overrides: HashMap::new(),
                 complete_reply: None,
+                complete_script: VecDeque::new(),
                 hints: vec!["quick".into()],
                 next_session: 1,
                 live: 0,
@@ -483,6 +485,16 @@ impl MockGateway {
 
     pub fn set_complete_reply(&self, reply: &str) {
         self.shared.lock().complete_reply = Some(reply.to_string());
+    }
+
+    /// Queues the answer to the next `/api/complete` call; unscripted calls use the reply or echo.
+    pub fn script_complete(&self, status: u16, body: Value, delay: Duration) {
+        self.shared.lock().complete_script.push_back((status, body, delay));
+    }
+
+    /// Queues a successful `/api/complete` answer carrying `reply`.
+    pub fn script_complete_reply(&self, reply: &str) {
+        self.script_complete(200, json!({"response": reply, "model": "mock-model", "hint": "quick"}), Duration::ZERO);
     }
 
     /// Pins the response for `method path`, replacing the built-in handler.
@@ -946,7 +958,16 @@ async fn rest_handler(State(sh): State<Arc<Shared>>, method: Method, uri: Uri, h
             inner.messages.remove(&format!("gw_{id}"));
             if inner.sessions.len() == before { err(404, "Session not found") } else { json_response(200, json!({"deleted": true})) }
         }
-        ("POST", ["api", "complete"]) => complete(&sh, &body_json),
+        ("POST", ["api", "complete"]) => {
+            let scripted = sh.lock().complete_script.pop_front();
+            match scripted {
+                Some((status, body, delay)) => {
+                    tokio::time::sleep(delay).await;
+                    json_response(status, body)
+                }
+                None => complete(&sh, &body_json),
+            }
+        }
         ("GET", ["api", "memory"]) => {
             let inner = sh.lock();
             let recall = ["query", "since", "until"].iter().any(|k| query.contains_key(*k));

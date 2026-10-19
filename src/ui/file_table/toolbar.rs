@@ -163,8 +163,8 @@ pub fn sizes(ui: &Ui) -> Sizes {
         gap,
         scan_text: button_width(ui, "Scan"),
         process_text: button_width(ui, "Process"),
-        mode_labels: crate::command::QueryMode::ALL.iter().map(|m| segment(m.label())).sum::<f32>() + 8.0,
-        mode_icons: 4.0 * (IconSize::Sm.px(ui) + 24.0) + 8.0,
+        mode_labels: crate::command::QueryMode::ALL.iter().map(|m| segment(m.label())).sum::<f32>() + 8.0 + gap,
+        mode_icons: crate::command::QueryMode::ALL.len() as f32 * (IconSize::Sm.px(ui) + 24.0) + 8.0 + gap,
     }
 }
 

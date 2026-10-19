@@ -63,6 +63,8 @@ pub enum ProposalSource {
     Heuristic,
     Reranker(String),
     Cloud(String),
+    /// A model of the ZeroClaw gateway; the text is the route hint.
+    ZeroClaw(String),
     /// Stored by a tool client of the MCP server.
     Mcp(String),
     Other(String),
@@ -75,6 +77,7 @@ impl ProposalSource {
             Self::Heuristic => "Heuristic".to_string(),
             Self::Reranker(name) | Self::Other(name) => name.clone(),
             Self::Cloud(provider) => format!("Cloud {provider}"),
+            Self::ZeroClaw(hint) => format!("ZeroClaw {hint}"),
             Self::Mcp(client) if client.trim().is_empty() => "MCP".to_string(),
             Self::Mcp(client) => format!("MCP {client}"),
         }
@@ -88,6 +91,8 @@ impl ProposalSource {
     pub fn from_generator(generator: &str) -> Self {
         if let Some(provider) = generator.strip_prefix("cloud:") {
             Self::Cloud(provider.to_string())
+        } else if let Some(hint) = crate::ai::refine::zeroclaw::hint_of(generator) {
+            Self::ZeroClaw(hint.to_string())
         } else if generator.starts_with("Heuristic") {
             Self::Heuristic
         } else {

@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use zeroclaw_client::CompleteRequest;
 
 use super::profile::{BackendPref, ZcProfile};
-use super::{import, runtime, save_profile, secrets, tools};
+use super::{import, jobs, runtime, save_profile, secrets, tools};
 use crate::command::{AppCommand, CommandError, CommandResult, ToastLevel};
 
 /// What a `zc` command does.
@@ -39,10 +39,20 @@ pub enum ZcOp {
     PingTools,
     /// Delete the stored token.
     ForgetToken,
+    /// Report the job queue, the running job, usage totals and the newest finished jobs as JSON.
+    Jobs,
+    /// Queue a one-request job in the job service with `prompt`, `hint`, `system` and `temperature`.
+    JobSubmit,
+    /// Cancel the job `job`, or every queued and running job when none is given.
+    JobCancel,
+    /// Open the Refine tab for `paths` and start a run with the ZeroClaw source (`hint` names the route).
+    Refine,
+    /// Ask the gateway for tag, category and caption suggestions for the file `path`; they show in the Inspector AI tab of that file.
+    Suggest,
 }
 
 impl ZcOp {
-    pub const ALL: [ZcOp; 14] = [
+    pub const ALL: [ZcOp; 19] = [
         Self::Status,
         Self::Check,
         Self::Connect,
@@ -57,6 +67,11 @@ impl ZcOp {
         Self::Open,
         Self::PingTools,
         Self::ForgetToken,
+        Self::Jobs,
+        Self::JobSubmit,
+        Self::JobCancel,
+        Self::Refine,
+        Self::Suggest,
     ];
 }
 
@@ -95,6 +110,12 @@ pub struct ZcArgs {
     /// Serve the MCP tools to the gateway.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<bool>,
+    /// A job number of the job service.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<u64>,
+    /// Files for `refine`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paths: Option<Vec<String>>,
 }
 
 /// The prompt that asks the agent to prove the tools server is reachable.
@@ -248,7 +269,87 @@ pub fn run(op: ZcOp, args: ZcArgs) -> CommandResult {
             rt.clear_token().map_err(CommandError::failed)?;
             Ok("the token was deleted".to_string())
         }
+        ZcOp::Jobs => Ok(jobs_json(&jobs::jobs().snapshot()).to_string()),
+        ZcOp::JobSubmit => {
+            let prompt = need(&args.prompt, "a prompt")?.to_string();
+            let title = format!("Manual: {}", crate::ai::mcp::activity::clip(&prompt, 40));
+            let mut step = jobs::Step::new("manual", prompt);
+            if let Some(system) = args.system.clone().filter(|s| !s.trim().is_empty()) {
+                step = step.system(system);
+            }
+            if let Some(t) = args.temperature {
+                step = step.temperature(t);
+            }
+            let mut spec = jobs::JobSpec::new(jobs::JobKind::Manual, title).step(step);
+            if let Some(hint) = args.hint.clone() {
+                spec = spec.hint(hint);
+            }
+            let handle = jobs::jobs().submit(spec).map_err(|e| CommandError::invalid(e.to_string()))?;
+            Ok(format!("queued job {}", handle.id()))
+        }
+        ZcOp::Refine => {
+            let paths: Vec<String> = args.paths.clone().unwrap_or_default().into_iter().filter(|p| !p.trim().is_empty()).collect();
+            if paths.is_empty() {
+                return Err(CommandError::invalid("this command needs paths"));
+            }
+            let count = paths.len();
+            crate::ui::refine::request_zeroclaw_run(paths.clone(), args.hint.clone());
+            crate::command::send(AppCommand::Refine { paths });
+            Ok(format!("refining {count} files with the ZeroClaw source"))
+        }
+        ZcOp::Suggest => {
+            let path = need(&args.path, "a path")?.to_string();
+            suggest_for(&path, args.hint.clone())
+        }
+        ZcOp::JobCancel => match args.job {
+            Some(id) if jobs::jobs().cancel(id) => Ok(format!("cancelling job {id}")),
+            Some(id) => Err(CommandError::not_found(format!("job {id} is not queued or running"))),
+            None => Ok(format!("cancelled {} jobs", jobs::jobs().cancel_all())),
+        },
     }
+}
+
+/// Asks for suggestions for the file at `path` and selects it so the Inspector can show them.
+fn suggest_for(path: &str, hint: Option<String>) -> CommandResult {
+    use crate::ui::inspector::suggest::Env;
+    let env = Env::global();
+    if let Some(reason) = env.unavailable() {
+        return Err(CommandError::invalid(reason));
+    }
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else { return Err(CommandError::failed("no async runtime is available")) };
+    let path = path.to_string();
+    crate::command::send(AppCommand::FocusPath { path: path.clone() });
+    runtime.spawn(async move {
+        let stored = match env.db.get() {
+            Ok(db) => crate::database::collections::rows_for_paths(db, std::slice::from_ref(&path)).await.ok().and_then(|rows| rows.into_iter().next()),
+            Err(_) => None,
+        };
+        let row = stored.unwrap_or_else(|| {
+            let mut row = crate::Thumbnail::new(path.rsplit(['/', '\\']).next().unwrap_or(&path));
+            row.path = path.clone();
+            row
+        });
+        env.ask_with_hint(&row, hint);
+    });
+    Ok("asking for suggestions; open the AI tab of the Inspector on that file".to_string())
+}
+
+/// The JSON `jobs` reports: what is queued and running, usage totals and the newest finished jobs without their requests.
+pub fn jobs_json(snap: &jobs::Snapshot) -> Value {
+    let record = |r: &jobs::JobRecord| {
+        json!({
+            "id": r.id, "kind": r.kind, "title": r.title, "hint": r.hint, "outcome": r.outcome_label(),
+            "requests": r.steps.len(), "attempts": r.attempts(), "prompt_bytes": r.prompt_bytes(), "response_bytes": r.response_bytes(), "duration_ms": r.duration_ms(),
+            "steps": r.steps.iter().map(|s| json!({ "label": s.label, "model": s.model, "attempts": s.attempts, "prompt_bytes": s.prompt_bytes, "response_bytes": s.response_bytes, "duration_ms": s.duration_ms, "json": s.json, "error": s.error, "response": s.response.as_deref().map(|t| crate::ai::mcp::activity::clip(t, 1500)) })).collect::<Vec<_>>(),
+        })
+    };
+    json!({
+        "available": snap.availability.is_ready(), "reason": snap.availability.reason(), "hint": snap.hint, "queue_limit": snap.queue_limit,
+        "queue": snap.queue.iter().map(|q| json!({ "id": q.id, "kind": q.kind, "title": q.title, "requests": q.steps, "waited_ms": q.waited.as_millis() as u64 })).collect::<Vec<_>>(),
+        "running": snap.running.as_ref().map(|r| json!({ "id": r.id, "kind": r.kind, "title": r.title, "done": r.done, "total": r.total, "elapsed_ms": r.elapsed.as_millis() as u64 })),
+        "totals": { "jobs": snap.totals.jobs, "completed": snap.totals.completed, "failed": snap.totals.failed, "cancelled": snap.totals.cancelled, "calls": snap.totals.calls, "retries": snap.totals.retries, "prompt_bytes": snap.totals.prompt_bytes, "response_bytes": snap.totals.response_bytes, "est_tokens_in": snap.totals.est_tokens_in(), "est_tokens_out": snap.totals.est_tokens_out(), "duration_ms": snap.totals.duration_ms },
+        "history": snap.history.iter().take(10).map(|r| record(r)).collect::<Vec<_>>(),
+    })
 }
 
 fn configure(args: &ZcArgs) -> CommandResult {
@@ -365,5 +466,63 @@ mod tests {
     #[test]
     fn the_ping_prompt_names_the_tool_the_catalog_exposes() {
         assert!(PING_PROMPT.contains("aimedia__util_ping"));
+    }
+
+    #[test]
+    fn the_job_ops_parse_and_need_their_arguments() {
+        assert!(matches!(parse(r#"{"cmd":"zc","op":"jobs"}"#), AppCommand::Zc { op: ZcOp::Jobs, .. }));
+        match parse(r#"{"cmd":"zc","op":"job_cancel","job":3}"#) {
+            AppCommand::Zc { op: ZcOp::JobCancel, args } => assert_eq!(args.job, Some(3)),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(run(ZcOp::JobSubmit, ZcArgs::default()).unwrap_err().kind, crate::command::ErrorKind::Invalid);
+        let unavailable = run(ZcOp::JobSubmit, ZcArgs { prompt: Some("hi".into()), ..Default::default() }).unwrap_err();
+        assert_eq!(unavailable.kind, crate::command::ErrorKind::Invalid);
+        assert!(unavailable.message.contains("not set up"), "{}", unavailable.message);
+        assert_eq!(run(ZcOp::JobCancel, ZcArgs { job: Some(987_654), ..Default::default() }).unwrap_err().kind, crate::command::ErrorKind::NotFound);
+        let v: Value = serde_json::from_str(&run(ZcOp::Jobs, ZcArgs::default()).unwrap()).unwrap();
+        assert_eq!((v["available"].as_bool(), v["queue_limit"].as_u64(), v["hint"].as_str()), (Some(false), Some(8), Some("quick")));
+        assert!(v["reason"].as_str().unwrap().contains("not set up") && v["queue"].is_array() && v["history"].is_array());
+    }
+
+    #[test]
+    fn refine_and_suggest_need_their_files_and_suggest_needs_the_gateway() {
+        let _lock = crate::ui::inspector::suggest::env_lock();
+        assert_eq!(run(ZcOp::Refine, ZcArgs::default()).unwrap_err().kind, crate::command::ErrorKind::Invalid);
+        assert_eq!(run(ZcOp::Refine, ZcArgs { paths: Some(vec!["  ".into()]), ..Default::default() }).unwrap_err().kind, crate::command::ErrorKind::Invalid);
+        assert_eq!(run(ZcOp::Suggest, ZcArgs::default()).unwrap_err().kind, crate::command::ErrorKind::Invalid);
+        let err = run(ZcOp::Suggest, ZcArgs { path: Some("/a.jpg".into()), ..Default::default() }).unwrap_err();
+        assert!(err.message.contains("not set up"), "{}", err.message);
+        let _serial = crate::command::bus::testing::serial();
+        crate::command::bus::testing::take_matching(|c| matches!(c, AppCommand::Refine { .. }));
+        crate::ui::refine::REFINE_ZC_REQUESTS.lock().unwrap().clear();
+        let done = run(ZcOp::Refine, ZcArgs { paths: Some(vec!["/a.jpg".into(), "/b.jpg".into()]), hint: Some("slow".into()), ..Default::default() }).unwrap();
+        assert!(done.contains("2 files"), "{done}");
+        let queued = std::mem::take(&mut *crate::ui::refine::REFINE_ZC_REQUESTS.lock().unwrap());
+        assert_eq!(queued, vec![crate::ui::refine::ZcRunRequest { paths: vec!["/a.jpg".into(), "/b.jpg".into()], hint: "slow".into() }]);
+        let sent = crate::command::bus::testing::take_matching(|c| matches!(c, AppCommand::Refine { .. }));
+        assert!(matches!(&sent[..], [AppCommand::Refine { paths }] if paths.len() == 2), "{sent:?}");
+        assert!(matches!(parse(r#"{"cmd":"zc","op":"refine","paths":["/a.jpg"]}"#), AppCommand::Zc { op: ZcOp::Refine, .. }));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_jobs_report_lists_finished_jobs_with_sizes_and_the_reply_but_not_the_prompt() {
+        use super::super::jobs::{JobKind, JobSpec, JobsConfig, Step, ZcJobs};
+        use super::super::runtime_tests::{runtime_for, until};
+        let mock = zeroclaw_client::mock::MockGateway::start().await;
+        let rt = runtime_for(&mock, "default", "cmd-jobs");
+        until("online", || rt.health().is_online().then_some(())).await;
+        let jobs = ZcJobs::new(rt, JobsConfig::quick());
+        mock.script_complete_reply("the reply text");
+        let handle = jobs.submit(JobSpec::new(JobKind::Manual, "cmd-jobs job").step(Step::new("manual", "secret prompt text").system("sys"))).unwrap();
+        handle.wait().await;
+        let v = jobs_json(&jobs.snapshot());
+        assert_eq!(v["available"], true);
+        assert_eq!(v["totals"]["jobs"], 1);
+        let job = &v["history"][0];
+        assert_eq!((job["title"].as_str(), job["outcome"].as_str(), job["requests"].as_u64()), (Some("cmd-jobs job"), Some("completed"), Some(1)));
+        assert_eq!((job["prompt_bytes"].as_u64(), job["response_bytes"].as_u64()), (Some(21), Some(14)));
+        assert_eq!(job["steps"][0]["response"], "the reply text");
+        assert!(!v.to_string().contains("secret prompt text"), "requests are not part of the report");
     }
 }
