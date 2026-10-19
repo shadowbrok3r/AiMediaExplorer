@@ -2,7 +2,7 @@ use crate::ai::candle_llava::{
     clip_image_processor::CLIPImageProcessor, config::LLaVAConfig, conversation::Conversation,
     llama::Cache, model::LLaVA,
 };
-use crate::ui::status::GlobalStatusIndicator;
+use crate::status::GlobalStatusIndicator;
 use candle_core::Device;
 use std::path::PathBuf;
 use tokenizers::Tokenizer;
@@ -315,7 +315,7 @@ pub async fn ensure_worker_started() -> anyhow::Result<&'static WorkerHandle> {
             .unwrap_or_else(|| crate::app::DEFAULT_JOYCAPTION_PATH.to_string());
         log::info!("[joycap] model dir: {candidate}");
         // Surface the selected model path in the status hover UI
-        crate::ui::status::VISION_STATUS.set_model(&candidate);
+        crate::status::VISION_STATUS.set_model(&candidate);
         let model_dir = PathBuf::from(candidate);
         let (tx, mut rx) = mpsc::unbounded_channel::<WorkMsg>();
         std::thread::spawn(move || {
@@ -367,7 +367,7 @@ pub async fn ensure_worker_started() -> anyhow::Result<&'static WorkerHandle> {
 pub async fn stop_worker() {
     if let Some(h) = WORKER.get() {
         let _ = h.tx.send(WorkMsg::Shutdown);
-        crate::ui::status::VISION_STATUS.set_state(crate::ui::status::StatusState::Idle, "Unloaded");
+        crate::status::VISION_STATUS.set_state(crate::status::StatusState::Idle, "Unloaded");
     }
 }
 
@@ -404,10 +404,10 @@ pub async fn stream_describe_bytes(bytes: Vec<u8>, instruction: &str) -> anyhow:
                 Ok(collected)
             } else {
                 // Try fallback Moondream if available
-                crate::ui::status::VISION_STATUS.set_state(crate::ui::status::StatusState::Initializing, "Fallback: Moondream");
+                crate::status::VISION_STATUS.set_state(crate::status::StatusState::Initializing, "Fallback: Moondream");
                 match moondream_fallback(&bytes, instruction) {
                     Ok(text) => {
-                        crate::ui::status::VISION_STATUS.set_state(crate::ui::status::StatusState::Idle, "Fallback done");
+                        crate::status::VISION_STATUS.set_state(crate::status::StatusState::Idle, "Fallback done");
                         Ok(text)
                     },
                     Err(_fe) => Err(e),
@@ -416,10 +416,10 @@ pub async fn stream_describe_bytes(bytes: Vec<u8>, instruction: &str) -> anyhow:
         }
         Err(e) => {
             // Worker channel closed: attempt fallback
-            crate::ui::status::VISION_STATUS.set_state(crate::ui::status::StatusState::Initializing, "Fallback: Moondream");
+            crate::status::VISION_STATUS.set_state(crate::status::StatusState::Initializing, "Fallback: Moondream");
             match moondream_fallback(&bytes, instruction) {
                 Ok(text) => {
-                    crate::ui::status::VISION_STATUS.set_state(crate::ui::status::StatusState::Idle, "Fallback done");
+                    crate::status::VISION_STATUS.set_state(crate::status::StatusState::Idle, "Fallback done");
                     Ok(text)
                 },
                 Err(_fe) => Err(anyhow::anyhow!("worker dropped: {e}")),
@@ -484,9 +484,9 @@ where
         Err(e) => {
             if collected.is_empty() {
                 // Attempt fallback and emit as a single chunk
-                crate::ui::status::VISION_STATUS.set_state(crate::ui::status::StatusState::Initializing, "Fallback: Moondream");
+                crate::status::VISION_STATUS.set_state(crate::status::StatusState::Initializing, "Fallback: Moondream");
                 match moondream_fallback(&bytes, instruction) {
-                    Ok(text) => { crate::ui::status::VISION_STATUS.set_state(crate::ui::status::StatusState::Idle, "Fallback done"); on_token(&text); Ok(text) }
+                    Ok(text) => { crate::status::VISION_STATUS.set_state(crate::status::StatusState::Idle, "Fallback done"); on_token(&text); Ok(text) }
                     Err(_fe) => Err(e),
                 }
             } else {

@@ -1,7 +1,6 @@
 use crate::{icons::{self, svg}, theme::{chrome, controls::MenuButton}, ui::{dialogs, status::{self, GlobalStatusIndicator}, tabs::TABS}};
 use eframe::egui::*;
 use egui_dock::SurfaceIndex;
-use egui_toast::ToastKind;
 
 impl crate::app::SmartMediaApp {
     /// File menu button for the title strip.
@@ -63,10 +62,8 @@ impl crate::app::SmartMediaApp {
                     let description = format!("Export database to {}?", file.display());
                     dialogs::confirm(&confirm_ctx, "Export Database", &description, rfd::MessageLevel::Info, move || {
                         tokio::spawn(async move {
-                            match crate::database::export_to(&file).await {
-                                Ok(_) => dialogs::toast(ToastKind::Success, format!("Exported DB to {}", file.display())),
-                                Err(e) => dialogs::toast(ToastKind::Error, format!("DB export failed: {e}")),
-                            }
+                            let spec = crate::tasks::TaskSpec::new(crate::tasks::TaskKind::Database, format!("Export database to {}", file.display())).user_initiated();
+                            let _ = crate::tasks::track(spec, |_| crate::database::export_to(&file)).await;
                         });
                     });
                 });
@@ -79,10 +76,8 @@ impl crate::app::SmartMediaApp {
                     let description = format!("Import from {}? This may overwrite existing data.", file.display());
                     dialogs::confirm(&confirm_ctx, "Import Database", &description, rfd::MessageLevel::Warning, move || {
                         tokio::spawn(async move {
-                            match crate::database::import_from(&file).await {
-                                Ok(_) => dialogs::toast(ToastKind::Success, format!("Imported DB from {}", file.display())),
-                                Err(e) => dialogs::toast(ToastKind::Error, format!("DB import failed: {e}")),
-                            }
+                            let spec = crate::tasks::TaskSpec::new(crate::tasks::TaskKind::Database, format!("Import database from {}", file.display())).user_initiated();
+                            let _ = crate::tasks::track(spec, |_| crate::database::import_from(&file)).await;
                         });
                     });
                 });
@@ -225,6 +220,18 @@ impl crate::app::SmartMediaApp {
                 crate::ui::devtools::thumb_cache::toggle(ui.ctx());
                 ui.close();
             }
+            if icons::button(ui, svg::LIST_CHECKS, "Tasks").clicked() {
+                crate::ui::devtools::toggle_tasks(ui.ctx());
+                ui.close();
+            }
+            if icons::button(ui, svg::TERMINAL_WINDOW, "Command log").clicked() {
+                crate::ui::devtools::toggle_command_log(ui.ctx());
+                ui.close();
+            }
+            if icons::button(ui, svg::GAUGE, "Perf").clicked() {
+                crate::ui::devtools::toggle_perf(ui.ctx());
+                ui.close();
+            }
         });
 
         ui.separator();
@@ -240,7 +247,7 @@ impl crate::app::SmartMediaApp {
             .active_tab_title
             .clone()
             .unwrap_or_else(|| crate::app::MAIN_EXPLORER_TAB.to_string());
-        crate::ui::statusbar::show(ui, self.context.active_explorer(), &owner);
+        crate::ui::taskbar::show(ui, self.context.active_explorer(), &owner);
     }
 }
 

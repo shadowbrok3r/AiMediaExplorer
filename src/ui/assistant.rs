@@ -12,7 +12,7 @@ use std::sync::Mutex;
 use eframe::egui::*;
 use chrono::Local;
 
-// Global queue to request attaching file paths to the chat window from other UI modules
+// Paths the command dispatcher hands to the chat window until it is shown
 pub static ATTACH_REQUESTS: Lazy<Mutex<Vec<Vec<String>>>> = Lazy::new(|| Mutex::new(Vec::new()));
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -120,7 +120,7 @@ pub fn request_attach_to_chat(paths: Vec<String>) {
     if paths.is_empty() {
         return;
     }
-    ATTACH_REQUESTS.lock().unwrap().push(paths);
+    crate::command::send(crate::command::AppCommand::AttachToAssistant { paths });
 }
 
 impl AssistantPanel {

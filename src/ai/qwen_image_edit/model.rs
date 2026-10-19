@@ -18,7 +18,7 @@ use safetensors::SafeTensors;
 use std::path::{Path, PathBuf};
 use std::collections::HashSet;
 use tokenizers::Tokenizer;
-use crate::ui::status::{QWEN_EDIT_STATUS, GlobalStatusIndicator, StatusState};
+use crate::status::{QWEN_EDIT_STATUS, GlobalStatusIndicator, StatusState};
 #[derive(Debug, Clone)]
 pub enum TransformerClass {
     UNet2DConditionModel,

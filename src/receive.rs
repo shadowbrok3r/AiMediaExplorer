@@ -137,11 +137,6 @@ impl crate::app::SmartMediaContext {
             });
         }
 
-        // Global request to open settings (e.g., from navbar)
-        if crate::app::OPEN_SETTINGS_REQUEST.swap(false, std::sync::atomic::Ordering::Relaxed) {
-            self.open_settings_modal = true;
-        }
-
         // Drain refinement proposal updates
         while let Ok(batch) = self.refine_rx.try_recv() {
             let n = batch.len();

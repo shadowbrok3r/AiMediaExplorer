@@ -120,6 +120,11 @@ fn note(ok: bool, text: impl Into<String>) {
     repaint();
 }
 
+/// The job of the import running or last run from the window.
+pub fn current_job() -> Option<Arc<Job>> {
+    with(|p| p.job.clone())
+}
+
 fn new_job() -> Arc<Job> {
     let job = Job::new();
     if let Some(ctx) = ui_ctx() {

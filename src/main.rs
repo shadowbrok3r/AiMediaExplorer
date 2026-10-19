@@ -1,5 +1,8 @@
 #![recursion_limit = "512"]
 pub mod utilities;
+pub mod status;
+pub mod command;
+pub mod tasks;
 pub mod database;
 pub mod ai;
 pub mod app;
@@ -22,13 +25,14 @@ impl eframe::App for app::SmartMediaApp {
         let started = std::time::Instant::now();
         let ctx = ui.ctx().clone();
         theme::glass::frost_open_windows(&ctx);
+        self.pump_commands(&ctx);
         self.context.receive(&ctx);
         self.sync_focused_explorer();
+        self.poll_tasks();
         self.title_strip(ui);
         settings::banner::show(ui);
         self.status_bar(ui);
-        self.drain_open_tab_requests();
-        self.open_refine_tab_if_requested();
+        self.pump_commands(&ctx);
 
         CentralPanel::default()
         .frame(Frame::central_panel(&ctx.global_style()).inner_margin(0.))
@@ -106,14 +110,6 @@ impl app::SmartMediaApp {
         ui::tabs::open_tab(&mut self.tree, &mut self.context.open_tabs, title, background);
     }
 
-    /// Shows the AI Refinements tab when a refine selection is waiting for it.
-    fn open_refine_tab_if_requested(&mut self) {
-        let waiting = !ui::refine::REFINE_SELECTION_REQUESTS.lock().unwrap().is_empty();
-        if waiting {
-            self.focus_or_open_tab("AI Refinements");
-        }
-    }
-
     /// Turns dock add-button presses into new explorer tabs.
     fn process_tab_adds(&mut self) {
         for path in std::mem::take(&mut self.context.pending_tab_adds) {
@@ -125,56 +121,24 @@ impl app::SmartMediaApp {
         }
     }
 
-    /// Creates the tabs requested through `OPEN_TAB_REQUESTS`.
-    fn drain_open_tab_requests(&mut self) {
-        let requests: Vec<_> = app::OPEN_TAB_REQUESTS.lock().unwrap().drain(..).collect();
-        for req in requests {
-            match req {
-                ui::file_table::FilterRequest::NewTab { title, rows, showing_similarity, similar_scores, origin_path, background } => {
-                    if title.starts_with("Image Edit") {
-                        if let Some(origin) = origin_path.as_ref() {
-                            self.context.image_edit.open_with_path(origin);
-                        }
-                        if self.context.open_tabs.contains(IMAGE_EDIT_TAB) {
-                            if !background { self.focus_or_open_tab(IMAGE_EDIT_TAB); }
-                        } else {
-                            self.open_tab(IMAGE_EDIT_TAB, background);
-                        }
-                        continue;
-                    }
-                    let title = ui::tabs::uniquify_title(&self.context.open_tabs, &title);
-                    self.open_tab(&title, background);
-                    let mut ex = ui::file_table::FileExplorer::new(true);
-                    ex.set_rows(rows);
-                    if showing_similarity {
-                        ex.viewer.showing_similarity = true;
-                        if let Some(scores) = similar_scores { ex.viewer.similar_scores = scores; }
-                        if let Some(origin) = origin_path { ex.current_path = origin; }
-                    }
-                    self.context.filtered_tabs.insert(title, ex);
-                }
-                ui::file_table::FilterRequest::OpenDatabaseAll { title, background } => {
-                    let title = ui::tabs::uniquify_title(&self.context.open_tabs, &title);
-                    self.open_tab(&title, background);
-                    let mut ex = ui::file_table::FileExplorer::new(true);
-                    ex.viewer.mode = ui::file_table::table::ExplorerMode::Database;
-                    ex.load_all_database_rows();
-                    self.context.filtered_tabs.insert(title, ex);
-                }
-                ui::file_table::FilterRequest::OpenPath { title, path, recursive, background } => {
-                    let title = ui::tabs::uniquify_title(&self.context.open_tabs, &title);
-                    self.open_tab(&title, background);
-                    let mut ex = ui::file_table::FileExplorer::new(true);
-                    ex.init_open_path(&path, recursive);
-                    self.context.filtered_tabs.insert(title, ex);
-                }
-            }
+    /// Runs the commands queued on the bus since the last frame.
+    fn pump_commands(&mut self, ctx: &egui::Context) {
+        command::pump_global(self);
+        if !command::global().is_empty() {
+            ctx.request_repaint();
+        }
+    }
+
+    /// Feeds the task registry from its sources and turns finished user tasks into toasts.
+    fn poll_tasks(&mut self) {
+        self.egui_ctx.request_repaint_after(tasks::IDLE_POLL);
+        let probe = ui::taskbar::adapter::app_probe(&mut self.context);
+        tasks::poll(&mut self.context.task_poller, &probe);
+        for notice in tasks::with(|r| r.take_notices()) {
+            let _ = self.context.toast_tx.try_send((notice.level.kind(), notice.text));
         }
     }
 }
-
-/// Title of the single Image Edit tool tab.
-const IMAGE_EDIT_TAB: &str = "Image Edit";
 
 #[tokio::main]
 async fn main() -> eframe::Result<()> {
@@ -216,6 +180,14 @@ async fn main() -> eframe::Result<()> {
         .init()
         .unwrap();
     theme::cli::install(theme_options);
+
+    match command::cli::startup_commands(&db_cli_args) {
+        Ok(commands) => commands.into_iter().for_each(command::send),
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(2);
+        }
+    }
 
     let chrome = ui::titlebar::resolve_chrome();
     let _ = eframe::run_native(

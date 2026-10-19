@@ -7,7 +7,7 @@ pub mod refine;
 pub mod image_edit;
 pub mod devtools;
 pub mod dialogs;
-pub mod statusbar;
+pub mod taskbar;
 pub mod titlebar;
 #[cfg(test)]
 pub(crate) mod test_support;

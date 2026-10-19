@@ -25,14 +25,14 @@ pub use refine::*;
 pub use reranker::*;
 
 use crate::database::Thumbnail;
-use crate::ui::status::{CLIP_STATUS, GlobalStatusIndicator, StatusState, VISION_STATUS};
+use crate::status::{CLIP_STATUS, GlobalStatusIndicator, StatusState, VISION_STATUS};
 use once_cell::sync::Lazy;
 // Global lazy AI engine accessor. Initialized on first use.
 pub static GLOBAL_AI_ENGINE: Lazy<AISearchEngine> = Lazy::new(|| AISearchEngine::new());
 
 pub async fn init_global_ai_engine_async() {
     VISION_STATUS.set_state(StatusState::Initializing, "Starting workers");
-    use crate::ui::status::DeviceKind;
+    use crate::status::DeviceKind;
     VISION_STATUS.set_device(if candle_core::Device::new_cuda(0).is_ok() { DeviceKind::GPU } else { DeviceKind::CPU });
     GLOBAL_AI_ENGINE.ensure_index_worker().await;
     VISION_STATUS.set_state(StatusState::Initializing, "Loading vision model");

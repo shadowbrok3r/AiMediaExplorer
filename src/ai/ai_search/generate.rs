@@ -1,4 +1,4 @@
-use crate::ui::status::{CLIP_STATUS, GlobalStatusIndicator, StatusState};
+use crate::status::{CLIP_STATUS, GlobalStatusIndicator, StatusState};
 
 impl crate::ai::AISearchEngine {
     pub async fn ensure_clip_engine(&self) -> anyhow::Result<()> {

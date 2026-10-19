@@ -92,6 +92,11 @@ impl ImageEditPanel {
         self.current_path = Some(path.to_string());
     }
 
+    /// Stops the edit that was started last; `None` before the first edit.
+    pub fn cancel_handle(&self) -> Option<crate::tasks::CancelHandle> {
+        self.cancel_flag.clone().map(crate::tasks::CancelHandle::from_flag)
+    }
+
     pub fn ui(&mut self, ui: &mut Ui) {
         if let Some(path) = &self.current_path {
             // If we have a generated result, show it side-by-side or below

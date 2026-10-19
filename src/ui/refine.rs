@@ -38,12 +38,12 @@ impl RefinementsPanel {
     }
 }
 
-// Global queue to accept refine selection requests from other UI modules
+// Paths the command dispatcher hands to the refinements panel until it is shown
 pub static REFINE_SELECTION_REQUESTS: Lazy<Mutex<Vec<Vec<String>>>> = Lazy::new(|| Mutex::new(Vec::new()));
 
 pub fn request_refine_for_paths(paths: Vec<String>) {
     if paths.is_empty() { return; }
-    REFINE_SELECTION_REQUESTS.lock().unwrap().push(paths);
+    crate::command::send(crate::command::AppCommand::Refine { paths });
 }
 
 #[derive(Clone, Debug)]

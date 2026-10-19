@@ -1,4 +1,4 @@
-use crate::ui::status::{GlobalStatusIndicator, StatusState, DB_STATUS};
+use crate::status::{GlobalStatusIndicator, StatusState, DB_STATUS};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use surrealdb::{Surreal, engine::local::Db};
 use std::{fs, path::{Path, PathBuf}};

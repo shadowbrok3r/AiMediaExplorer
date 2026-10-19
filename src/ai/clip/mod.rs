@@ -1,6 +1,6 @@
 
 use fastembed::{ImageEmbedding, ImageInitOptions, ImageEmbeddingModel, TextEmbedding, TextInitOptions, EmbeddingModel};
-use crate::ui::status::{CLIP_STATUS, StatusState, GlobalStatusIndicator};
+use crate::status::{CLIP_STATUS, StatusState, GlobalStatusIndicator};
 pub mod embed;
 
 pub struct ClipEngine { 
@@ -72,11 +72,11 @@ pub(crate) async fn ensure_clip_engine(engine_slot: &std::sync::Arc<tokio::sync:
             Ok(c) => {
                 let dev = match &c.backend {
                     ClipBackend::Siglip(sig) => {
-                        if sig.is_cuda() { crate::ui::status::DeviceKind::GPU } else { crate::ui::status::DeviceKind::CPU }
+                        if sig.is_cuda() { crate::status::DeviceKind::GPU } else { crate::status::DeviceKind::CPU }
                     }
                     ClipBackend::FastEmbed { .. } => {
                         // FastEmbed runs on CPU
-                        crate::ui::status::DeviceKind::CPU
+                        crate::status::DeviceKind::CPU
                     }
                 };
                 CLIP_STATUS.set_device(dev);

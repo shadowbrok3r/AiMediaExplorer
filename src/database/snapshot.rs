@@ -10,7 +10,7 @@ use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
-use crate::ui::status::{DB_STATUS, GlobalStatusIndicator, StatusState};
+use crate::status::{DB_STATUS, GlobalStatusIndicator, StatusState};
 
 pub const LOCK_FILE: &str = "LOCK";
 pub const STAMP_FILE: &str = "engine-stamp.json";

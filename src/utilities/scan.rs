@@ -37,6 +37,25 @@ fn clear_cancel(id: u64) {
     if let Ok(mut set) = CANCELLED_SCANS.lock() { let _ = set.remove(&id); }
 }
 
+/// A scan whose walk or queued thumbnail jobs have not finished.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ActiveScan {
+    pub id: u64,
+    pub queued_thumbs: usize,
+    pub walk_done: bool,
+    pub cancelled: bool,
+}
+
+/// Scans that still have a delivery route, oldest first.
+pub fn active_scans() -> Vec<ActiveScan> {
+    let mut scans: Vec<ActiveScan> = SCAN_ROUTERS
+        .lock()
+        .map(|m| m.iter().map(|(id, r)| ActiveScan { id: *id, queued_thumbs: r.pending, walk_done: r.walk_done, cancelled: is_cancelled(*id) }).collect())
+        .unwrap_or_default();
+    scans.sort_by_key(|s| s.id);
+    scans
+}
+
 // --- Thumbnail pipeline: unbounded job queue drained by a rayon worker pool ---
 #[derive(Clone, Debug)]
 pub struct ThumbJob {

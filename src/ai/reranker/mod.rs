@@ -1,6 +1,6 @@
 use super::jina_m0::engine::JinaM0Engine;
 use super::model::HFAiModel;
-use crate::ui::status::GlobalStatusIndicator;
+use crate::status::GlobalStatusIndicator;
 use anyhow::Result;
 use candle_core::Device;
 use once_cell::sync::Lazy;
@@ -117,9 +117,9 @@ pub async fn ensure_reranker_from_settings() -> anyhow::Result<()> {
     };
     log::info!("[Reranker] Loading model: {model_key}");
     // Update status indicator
-    crate::ui::status::RERANK_STATUS.set_model(&model_key);
-    crate::ui::status::RERANK_STATUS.set_state(
-        crate::ui::status::StatusState::Initializing,
+    crate::status::RERANK_STATUS.set_model(&model_key);
+    crate::status::RERANK_STATUS.set_state(
+        crate::status::StatusState::Initializing,
         "Loading reranker",
     );
     let res = JinaRerankerEngine::new(&model_key);
@@ -127,12 +127,12 @@ pub async fn ensure_reranker_from_settings() -> anyhow::Result<()> {
         Ok(engine) => {
             let mut guard = GLOBAL_RERANKER.lock().await;
             *guard = Some(engine);
-            crate::ui::status::RERANK_STATUS
-                .set_state(crate::ui::status::StatusState::Running, "Ready");
+            crate::status::RERANK_STATUS
+                .set_state(crate::status::StatusState::Running, "Ready");
             Ok(())
         }
         Err(e) => {
-            crate::ui::status::RERANK_STATUS.set_error(format!("Init failed: {e}"));
+            crate::status::RERANK_STATUS.set_error(format!("Init failed: {e}"));
             Err(e)
         }
     }
@@ -160,11 +160,11 @@ pub async fn jina_score_text_pairs(pairs: &[(String, String)]) -> anyhow::Result
         1024
     };
     if let Some(j) = &engine.engine {
-        crate::ui::status::RERANK_STATUS.set_state(
-            crate::ui::status::StatusState::Running,
+        crate::status::RERANK_STATUS.set_state(
+            crate::status::StatusState::Running,
             format!("Scoring {} pairs", pairs.len()),
         );
-        crate::ui::status::RERANK_STATUS.set_detail(format!(
+        crate::status::RERANK_STATUS.set_detail(format!(
             "Batch {} len {}",
             pairs.len(),
             max_len
@@ -172,12 +172,12 @@ pub async fn jina_score_text_pairs(pairs: &[(String, String)]) -> anyhow::Result
         let res = j.compute_score_text(pairs, max_len);
         match res {
             Ok(v) => {
-                crate::ui::status::RERANK_STATUS
-                    .set_state(crate::ui::status::StatusState::Idle, "Ready");
+                crate::status::RERANK_STATUS
+                    .set_state(crate::status::StatusState::Idle, "Ready");
                 Ok(v)
             }
             Err(e) => {
-                crate::ui::status::RERANK_STATUS.set_error(format!("Scoring failed: {e}"));
+                crate::status::RERANK_STATUS.set_error(format!("Scoring failed: {e}"));
                 Err(e)
             }
         }

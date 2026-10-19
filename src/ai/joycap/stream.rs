@@ -19,7 +19,7 @@ impl super::JoyCaptionModel {
         img: image::DynamicImage,
         mut on_token: impl FnMut(&str),
     ) -> anyhow::Result<String, anyhow::Error> {
-        use crate::ui::status::{
+        use crate::status::{
             GlobalStatusIndicator, VISION_STATUS, StatusState, VISION_MAX_TOKENS, VISION_TOKENS,
         };
         let requested_dtype_str = self.llava_config.torch_dtype.clone();

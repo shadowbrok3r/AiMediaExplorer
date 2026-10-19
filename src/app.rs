@@ -3,16 +3,14 @@ use crossbeam::channel::{Receiver, Sender};
 use egui_dock::{DockState, NodePath, SurfaceIndex};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use once_cell::sync::Lazy;
-use std::sync::Mutex;
 use crate::{ui::{file_table::FileExplorer, refine::RefinementsPanel}, UiSettings};
 use egui_toast::Toasts;
 use crate::theme::chrome::Chrome;
 
-// Global atomic flag to request opening the settings modal from anywhere (e.g., navbar without direct &mut SmartMediaApp access)
-pub static OPEN_SETTINGS_REQUEST: Lazy<std::sync::atomic::AtomicBool> = Lazy::new(|| std::sync::atomic::AtomicBool::new(false));
-// Global queue for dynamic tab open requests
-pub static OPEN_TAB_REQUESTS: Lazy<Mutex<Vec<crate::ui::file_table::FilterRequest>>> = Lazy::new(|| Mutex::new(Vec::new()));
+/// Requests the settings window from anywhere by queueing a command.
+pub static OPEN_SETTINGS_REQUEST: crate::command::legacy::SettingsRequest = crate::command::legacy::SettingsRequest;
+/// Requests tabs from anywhere by queueing commands.
+pub static OPEN_TAB_REQUESTS: crate::command::legacy::TabRequests = crate::command::legacy::TabRequests;
 pub const DEFAULT_JOYCAPTION_PATH: &str = r#"G:\Users\Owner\Documents\1-MyStuff\TechStuff\GitHub\smart-media\llama-joycaption-beta-one-hf-llava"#;
 pub const MAX_NEW_TOKENS: usize = 200;
 pub const TEMPERATURE: f32 = 0.5;
@@ -62,6 +60,8 @@ pub struct SmartMediaContext {
     pub assistant: crate::ui::assistant::AssistantPanel,
     pub refinements: crate::ui::refine::RefinementsPanel,
     pub image_edit: crate::ui::image_edit::ImageEditPanel,
+    // Watchers that feed the task registry
+    pub task_poller: crate::tasks::Poller,
     pub open_ui_settings: bool,
     // Toggle for showing the AI Assistant as a separate viewport window
     pub assistant_window_open: bool,
@@ -101,7 +101,10 @@ impl SmartMediaApp {
     pub fn new(cc: &eframe::CreationContext<'_>, chrome: Chrome) -> Self {
         let appearance = crate::theme::setup(cc);
         restore_egui_preferences(&cc.egui_ctx, cc.storage);
-        Self::assemble(cc.egui_ctx.clone(), appearance, chrome, FileExplorer::new(false))
+        crate::command::install_repaint(&cc.egui_ctx);
+        let mut app = Self::assemble(cc.egui_ctx.clone(), appearance, chrome, FileExplorer::new(false));
+        app.context.task_poller = crate::tasks::Poller::standard();
+        app
     }
 
     /// The app over an installed theme: dock layout, panels and the main explorer.
@@ -152,6 +155,7 @@ impl SmartMediaApp {
             assistant: crate::ui::assistant::AssistantPanel::new(),
             refinements: RefinementsPanel::new(refine_tx.clone(), toast_tx.clone()),
             image_edit: Default::default(),
+            task_poller: crate::tasks::Poller::new(),
             open_ui_settings: false,
             assistant_window_open: false,
             new_excluded_dir: String::new(),

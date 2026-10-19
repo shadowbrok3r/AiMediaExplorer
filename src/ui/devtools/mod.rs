@@ -1,12 +1,17 @@
 //! Debug windows for subsystems, opened from the View menu.
 
+pub mod command_log;
 pub mod db_maintenance;
 pub mod legacy_import;
+pub mod perf;
 pub mod settings_store;
+pub mod tasks;
 pub mod thumb_cache;
 pub mod thumb_storage;
 
 use eframe::egui::Context;
+
+use crate::command::DevtoolsWindow;
 
 pub fn open_settings_store(ctx: &Context) {
     settings_store::set_open(ctx, true);
@@ -32,6 +37,34 @@ pub fn toggle_thumb_storage(ctx: &Context) {
     thumb_storage::set_open(ctx, !thumb_storage::is_open(ctx));
 }
 
+pub fn toggle_tasks(ctx: &Context) {
+    tasks::set_open(ctx, !tasks::is_open(ctx));
+}
+
+pub fn toggle_command_log(ctx: &Context) {
+    command_log::set_open(ctx, !command_log::is_open(ctx));
+}
+
+pub fn toggle_perf(ctx: &Context) {
+    perf::set_open(ctx, !perf::is_open(ctx));
+}
+
+/// Opens `window`, whichever debug window it names.
+pub fn open(ctx: &Context, window: DevtoolsWindow) {
+    match window {
+        DevtoolsWindow::ThemePanel => crate::theme::debug_panel::set_open(ctx, true),
+        DevtoolsWindow::SettingsStore => settings_store::set_open(ctx, true),
+        DevtoolsWindow::DbMaintenance => db_maintenance::set_open(ctx, true),
+        DevtoolsWindow::LegacyImport => legacy_import::set_open(ctx, true),
+        DevtoolsWindow::ThumbStorage => thumb_storage::set_open(ctx, true),
+        DevtoolsWindow::ThumbCache => thumb_cache::set_open(ctx, true),
+        DevtoolsWindow::Tasks => tasks::set_open(ctx, true),
+        DevtoolsWindow::CommandLog => command_log::set_open(ctx, true),
+        DevtoolsWindow::Perf => perf::set_open(ctx, true),
+    }
+    ctx.request_repaint();
+}
+
 /// Draws every open devtools window.
 pub fn show(ctx: &Context) {
     settings_store::show(ctx);
@@ -39,4 +72,58 @@ pub fn show(ctx: &Context) {
     legacy_import::show(ctx);
     thumb_cache::show(ctx);
     thumb_storage::show(ctx);
+    tasks::show(ctx);
+    command_log::show(ctx);
+    perf::show(ctx);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn is_open(ctx: &Context, w: DevtoolsWindow) -> bool {
+        match w {
+            DevtoolsWindow::SettingsStore => settings_store::is_open(ctx),
+            DevtoolsWindow::DbMaintenance => db_maintenance::is_open(ctx),
+            DevtoolsWindow::LegacyImport => legacy_import::is_open(ctx),
+            DevtoolsWindow::ThumbStorage => thumb_storage::is_open(ctx),
+            DevtoolsWindow::ThumbCache => thumb_cache::is_open(ctx),
+            DevtoolsWindow::Tasks => tasks::is_open(ctx),
+            DevtoolsWindow::CommandLog => command_log::is_open(ctx),
+            DevtoolsWindow::Perf => perf::is_open(ctx),
+            DevtoolsWindow::ThemePanel => crate::theme::debug_panel::is_open(ctx),
+        }
+    }
+
+    #[test]
+    fn every_window_name_opens_its_window() {
+        let ctx = crate::ui::test_support::test_ctx();
+        let windows = [
+            DevtoolsWindow::ThemePanel,
+            DevtoolsWindow::SettingsStore,
+            DevtoolsWindow::DbMaintenance,
+            DevtoolsWindow::LegacyImport,
+            DevtoolsWindow::ThumbStorage,
+            DevtoolsWindow::ThumbCache,
+            DevtoolsWindow::Tasks,
+            DevtoolsWindow::CommandLog,
+            DevtoolsWindow::Perf,
+        ];
+        for w in windows {
+            assert!(!is_open(&ctx, w), "{w:?} starts closed");
+            open(&ctx, w);
+            assert!(is_open(&ctx, w), "{w:?} opens");
+        }
+    }
+
+    #[test]
+    fn the_toggles_flip_the_new_windows() {
+        let ctx = crate::ui::test_support::test_ctx();
+        toggle_tasks(&ctx);
+        toggle_command_log(&ctx);
+        toggle_perf(&ctx);
+        assert!(tasks::is_open(&ctx) && command_log::is_open(&ctx) && perf::is_open(&ctx));
+        toggle_tasks(&ctx);
+        assert!(!tasks::is_open(&ctx));
+    }
 }

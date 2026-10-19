@@ -16,7 +16,7 @@ use crate::ai::candle_llava::{
 
 impl super::JoyCaptionModel {
     pub fn load_from_dir(dir: &Path) -> Result<Self> {
-        use crate::ui::status::{VISION_STATUS, StatusState, GlobalStatusIndicator};
+        use crate::status::{VISION_STATUS, StatusState, GlobalStatusIndicator};
         VISION_STATUS.set_state(StatusState::Initializing, "Reading config");
         log::info!("[joycaption] loading model from dir: {}", dir.display());
         let config_path = dir.join("config.json");
