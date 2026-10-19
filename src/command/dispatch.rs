@@ -92,6 +92,7 @@ pub trait CommandSink {
     fn clear_filters(&mut self) -> CommandResult;
     fn apply_saved_view(&mut self, name: &str) -> CommandResult;
     fn set_view_mode(&mut self, mode: ViewMode, size: Option<f32>, fit: Option<TileFit>, captions: Option<bool>, stress: Option<f32>) -> CommandResult;
+    fn inspector_toggle(&mut self, open: Option<bool>) -> CommandResult;
 }
 
 /// Runs one command; an action on an empty set of files is an error, never "all files".
@@ -125,6 +126,7 @@ pub fn dispatch(sink: &mut dyn CommandSink, cmd: AppCommand) -> CommandResult {
         AppCommand::ApplySavedView { name } if name.trim().is_empty() => Err(CommandError::invalid("no view name")),
         AppCommand::ApplySavedView { name } => sink.apply_saved_view(&name),
         AppCommand::SetViewMode { mode, size, fit, captions, stress } => sink.set_view_mode(mode, size, fit, captions, stress),
+        AppCommand::InspectorToggle { open } => sink.inspector_toggle(open),
     }
 }
 
@@ -241,6 +243,9 @@ pub(crate) mod fake {
         fn set_view_mode(&mut self, mode: ViewMode, size: Option<f32>, fit: Option<TileFit>, captions: Option<bool>, stress: Option<f32>) -> CommandResult {
             self.done(format!("view {mode:?} {size:?} {fit:?} {captions:?} {stress:?}"))
         }
+        fn inspector_toggle(&mut self, open: Option<bool>) -> CommandResult {
+            self.done(format!("inspector {open:?}"))
+        }
     }
 }
 
@@ -271,6 +276,7 @@ mod tests {
             AppCommand::ClearFilters,
             AppCommand::ApplySavedView { name: "Holidays".into() },
             AppCommand::SetViewMode { mode: ViewMode::Details, size: Some(96.0), fit: None, captions: Some(false), stress: None },
+            AppCommand::InspectorToggle { open: Some(false) },
         ];
         for cmd in cmds {
             assert!(dispatch(&mut sink, cmd).is_ok());
@@ -296,6 +302,7 @@ mod tests {
                 "clear_filters",
                 "apply_saved_view Holidays",
                 "view Details Some(96.0) None Some(false) None",
+                "inspector Some(false)",
             ]
         );
     }

@@ -6,6 +6,7 @@ pub mod assistant;
 pub mod refine;
 pub mod image_edit;
 pub mod devtools;
+pub mod inspector;
 pub mod dialogs;
 pub mod taskbar;
 pub mod titlebar;

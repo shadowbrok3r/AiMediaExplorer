@@ -22,6 +22,14 @@ impl crate::ui::file_table::FileExplorer {
         find_row_loose(self.table.rows(), path).cloned()
     }
 
+    /// Selects the followed row unless the filters hide it.
+    fn select_followed(&mut self, path: &str) {
+        let key = self.table.key_for(path);
+        if self.view_ref().pos_of(&key).is_some() {
+            self.select_paths([path]);
+        }
+    }
+
     pub fn receive_ai_update(&mut self, ctx: &Context) {
         // Process AI streaming updates
         while let Ok(update) = self.ai_update_rx.try_recv() {
@@ -33,6 +41,7 @@ impl crate::ui::file_table::FileExplorer {
                         let need_follow = !paths_equivalent(&self.current_thumb.path, &path, KeyPolicy::NATIVE);
                         if need_follow {
                             if let Some(row) = self.follow_row(&path) {
+                                self.select_followed(&row.path);
                                 self.current_thumb = row;
                                 self.open_preview_pane = true; // ensure visible
                             }
@@ -51,6 +60,7 @@ impl crate::ui::file_table::FileExplorer {
                         let need_follow = !paths_equivalent(&self.current_thumb.path, &path, KeyPolicy::NATIVE);
                         if need_follow {
                             if let Some(row) = self.follow_row(&path) {
+                                self.select_followed(&row.path);
                                 self.current_thumb = row;
                                 self.open_preview_pane = true;
                             }

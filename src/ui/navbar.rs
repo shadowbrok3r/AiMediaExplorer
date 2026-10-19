@@ -179,6 +179,10 @@ impl crate::app::SmartMediaApp {
         }
 
         ui.separator();
+        let mut inspector_open = self.context.inspector.is_open();
+        if icons::checkbox(ui, &mut inspector_open, svg::SIDEBAR_SIMPLE, "Inspector").on_hover_text("Preview and details of the selection (Ctrl+I)").changed() {
+            self.context.inspector.set_open(inspector_open);
+        }
         // Toggle for Assistant Viewport window
         let mut was_open = self.context.assistant_window_open;
         if icons::checkbox(ui, &mut was_open, svg::AME_ASSISTANT, "AI Assistant Window").clicked() {
@@ -248,6 +252,10 @@ impl crate::app::SmartMediaApp {
             }
             if icons::button(ui, svg::SQUARES_FOUR, "Grid").clicked() {
                 crate::ui::devtools::toggle_grid(ui.ctx());
+                ui.close();
+            }
+            if icons::button(ui, svg::SIDEBAR_SIMPLE, "Inspector").clicked() {
+                crate::ui::devtools::toggle_inspector(ui.ctx());
                 ui.close();
             }
         });

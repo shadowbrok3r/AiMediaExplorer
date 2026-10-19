@@ -204,6 +204,7 @@ impl CommandSink for SmartMediaApp {
         if ex.selection_count() == 0 {
             return Err(CommandError::not_found(format!("{path} is hidden by the filters of the focused tab")));
         }
+        self.context.inspector.set_open(true);
         Ok(format!("focused {path}"))
     }
 
@@ -280,6 +281,19 @@ impl CommandSink for SmartMediaApp {
             ex.browse.grid.set_stress(Some(rate));
         }
         Ok(format!("{} view with {:.0} px tiles", mode.label(), ex.browse.tile))
+    }
+
+    fn inspector_toggle(&mut self, open: Option<bool>) -> CommandResult {
+        let inspector = &mut self.context.inspector;
+        let now_open = match open {
+            Some(open) => {
+                inspector.set_open(open);
+                open
+            }
+            None => inspector.toggle(),
+        };
+        self.egui_ctx.request_repaint();
+        Ok(format!("inspector {}", if now_open { "shown" } else { "hidden" }))
     }
 }
 

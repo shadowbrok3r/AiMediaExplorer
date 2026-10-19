@@ -60,6 +60,8 @@ pub struct SmartMediaContext {
     pub assistant: crate::ui::assistant::AssistantPanel,
     pub refinements: crate::ui::refine::RefinementsPanel,
     pub image_edit: crate::ui::image_edit::ImageEditPanel,
+    // Right rail bound to the focused browser
+    pub inspector: crate::ui::inspector::Inspector,
     // Watchers that feed the task registry
     pub task_poller: crate::tasks::Poller,
     pub open_ui_settings: bool,
@@ -104,6 +106,7 @@ impl SmartMediaApp {
         crate::command::install_repaint(&cc.egui_ctx);
         let mut app = Self::assemble(cc.egui_ctx.clone(), appearance, chrome, FileExplorer::new(false));
         app.context.task_poller = crate::tasks::Poller::standard();
+        app.context.inspector.load_prefs();
         app
     }
 
@@ -152,6 +155,7 @@ impl SmartMediaApp {
             assistant: crate::ui::assistant::AssistantPanel::new(),
             refinements: RefinementsPanel::new(refine_tx.clone(), toast_tx.clone()),
             image_edit: Default::default(),
+            inspector: Default::default(),
             task_poller: crate::tasks::Poller::new(),
             open_ui_settings: false,
             assistant_window_open: false,

@@ -13,6 +13,7 @@ pub mod logical_groups;
 pub mod collections;
 pub mod collections_migration;
 pub mod scope_queries;
+pub mod metadata_edit;
 pub mod filter_groups;
 pub mod cached_scans;
 pub mod assistant_chat;
@@ -39,7 +40,13 @@ pub use cached_scans::*;
 pub static DB: LazyLock<Surreal<Db>> = LazyLock::new(Surreal::init);
 
 static DB_CONNECTED: AtomicBool = AtomicBool::new(false);
+static DB_READY: AtomicBool = AtomicBool::new(false);
 static OPEN_TX: Mutex<Option<Sender<()>>> = Mutex::new(None);
+
+/// Whether the connection, schema and default records are set up.
+pub fn is_ready() -> bool {
+    DB_READY.load(Ordering::SeqCst)
+}
 
 /// True once the global DB handle is connected to a store (it cannot be re-pointed afterwards).
 pub fn is_connected() -> bool {
@@ -245,6 +252,7 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
     if let Err(e) = crate::database::LogicalGroup::ensure_default().await {
         log::warn!("[collections] cannot ensure the Default group: {e:#}");
     }
+    DB_READY.store(true, Ordering::SeqCst);
     let _ = tx.send(());
     DB_STATUS.set_progress(0, 0);
     DB_STATUS.set_detail("");

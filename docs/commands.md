@@ -190,7 +190,7 @@ Clears the selection of the focused tab.
 
 ### focus_path
 
-Selects and previews the row of a path in the focused tab; `not_found` when the tab has no such row.
+Selects the row of a path in the focused tab, which the inspector rail previews and opens when it was hidden; `not_found` when the tab has no such row or the filters hide it.
 
 ```json
 {"cmd": "focus_path", "path": "/home/u/Pictures/a.jpg"}
@@ -198,7 +198,7 @@ Selects and previews the row of a path in the focused tab; `not_found` when the 
 
 ### open_devtools
 
-Opens a debug window: `theme_panel`, `settings_store`, `db_maintenance`, `legacy_import`, `thumb_storage`, `thumb_cache`, `tasks`, `command_log`, `perf`, `row_store`, `collections`, `video`, `scope`, `filters`, `grid`.
+Opens a debug window: `theme_panel`, `settings_store`, `db_maintenance`, `legacy_import`, `thumb_storage`, `thumb_cache`, `tasks`, `command_log`, `perf`, `row_store`, `collections`, `video`, `scope`, `filters`, `grid`, `inspector`.
 
 The `scope` window takes a scope string and shows how it parses (kind, title, parent, whether a folder exists), opens it in the focused tab or a new one, steps back and forward, lists the history stack of the focused tab with the scroll row and selection saved in each entry, and shows the timing of its recent loads: rows, batches, time to the first batch and total time.
 
@@ -222,13 +222,6 @@ Opens the task list popover of the status bar.
 {"cmd": "show_task_center"}
 ```
 
-## Navigation
-
-Every browser tab keeps a history: the scopes it showed, with the first row on screen and the selected row when the user left each. Back and Forward bring the scope back with that view; the rows are read again, and the position returns once they have arrived. A scope that cannot be opened any more (a folder that was deleted) leaves the tab where it is and the reason shows in the footer.
-
-A tab is named after its scope (a folder's name, `Tag: sunset`, `Search: red car`); a title given with a command lasts until the tab navigates. The address box of the toolbar takes a scope string or a plain path.
-
-Loads run as Database tasks in the status bar and can be cancelled there; a failed load keeps the rows already read, shows the reason in the footer with a Retry, and the task list offers the same retry.
 ### set_filter
 
 Changes the filters of the focused tab. Filters never remove rows: a row that is not listed stays in the tab and comes back when the filter is removed. `filter` is a JSON object that is merged into the tab's current filters (nested objects merge, lists and plain values replace, `null` turns that part off). With `"replace": true` it is merged into the defaults instead (everything listed except files under 10 KiB). Unknown fields and malformed dates or lists are an `invalid` error.
@@ -236,14 +229,6 @@ Changes the filters of the focused tab. Filters never remove rows: a row that is
 ```json
 {"cmd": "set_filter", "filter": {"size": {"min": null, "max": 5242880}, "types": {"videos": false}}}
 {"cmd": "set_filter", "filter": {"tags": ["sunset"], "clip": "yes"}, "replace": true}
-### set_view_mode
-
-Switches the focused tab between the thumbnail grid and the details table, and sets how the grid looks. The choice is remembered for new tabs and the next session (`<config>/smart-media/view_prefs.json`). A tab opens in the grid by default.
-
-```json
-{"cmd": "set_view_mode", "mode": "grid", "size": 160, "fit": "crop", "captions": true}
-{"cmd": "set_view_mode", "mode": "details"}
-{"cmd": "set_view_mode", "mode": "grid", "stress": 40}
 ```
 
 | Field | Meaning |
@@ -278,6 +263,19 @@ Applies a saved filter view (Views in the filter strip) to the focused tab by na
 ```json
 {"cmd": "apply_saved_view", "name": "Holidays"}
 ```
+
+### set_view_mode
+
+Switches the focused tab between the thumbnail grid and the details table, and sets how the grid looks. The choice is remembered for new tabs and the next session (`<config>/smart-media/view_prefs.json`). A tab opens in the grid by default.
+
+```json
+{"cmd": "set_view_mode", "mode": "grid", "size": 160, "fit": "crop", "captions": true}
+{"cmd": "set_view_mode", "mode": "details"}
+{"cmd": "set_view_mode", "mode": "grid", "stress": 40}
+```
+
+| Field | Meaning |
+|---|---|
 | `mode` | `grid` or `details` |
 | `size` | Optional tile size in points, 64 to 320 (values outside are clamped); the presets are S 96, M 160 and L 256 |
 | `fit` | Optional: `crop` fills each square tile, `fit` shows the whole image |
@@ -287,6 +285,23 @@ Applies a saved filter view (Views in the filter strip) to the focused tab by na
 The command acts on the focused tab; in a `--run` list the tab opened by an earlier entry takes focus only after its first frame, so the main explorer is the one that changes. Devtools > Grid drives the same settings for the tab it shows.
 
 Keys in the grid: arrows move by tile and row, Page Up and Page Down by a screen, Home and End to the ends, Shift extends, Ctrl+A selects all, Enter opens, Space toggles the preview, Esc clears, plus and minus resize the tiles, Ctrl+wheel zooms, F9 switches Grid and Details, Ctrl+1 and Ctrl+2 pick one. Dragging over empty space selects with a band (hold Ctrl to add).
+
+### inspector_toggle
+
+Shows or hides the inspector rail. With `open` the rail is set to that state, without it the state flips. The rail follows the selection of the focused tab; `focus_path` selects a file and shows the rail, and Devtools > Inspector shows its state and can drive it without the mouse. The rail width, tabs and fit mode are kept in `<config dir>/smart-media/inspector_prefs.json`.
+
+```json
+{"cmd": "inspector_toggle", "open": true}
+{"cmd": "inspector_toggle"}
+```
+
+## Navigation
+
+Every browser tab keeps a history: the scopes it showed, with the first row on screen and the selected row when the user left each. Back and Forward bring the scope back with that view; the rows are read again, and the position returns once they have arrived. A scope that cannot be opened any more (a folder that was deleted) leaves the tab where it is and the reason shows in the footer.
+
+A tab is named after its scope (a folder's name, `Tag: sunset`, `Search: red car`); a title given with a command lasts until the tab navigates. The address box of the toolbar takes a scope string or a plain path.
+
+Loads run as Database tasks in the status bar and can be cancelled there; a failed load keeps the rows already read, shows the reason in the footer with a Retry, and the task list offers the same retry.
 
 ## Results
 

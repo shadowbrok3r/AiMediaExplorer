@@ -5,6 +5,7 @@ pub mod command_log;
 pub mod db_maintenance;
 pub mod filters;
 pub mod grid;
+pub mod inspector;
 pub mod legacy_import;
 pub mod perf;
 pub mod row_store;
@@ -63,6 +64,10 @@ pub fn toggle_filters(ctx: &Context) {
     filters::toggle(ctx);
 }
 
+pub fn toggle_inspector(ctx: &Context) {
+    inspector::toggle(ctx);
+}
+
 pub fn toggle_tasks(ctx: &Context) {
     tasks::set_open(ctx, !tasks::is_open(ctx));
 }
@@ -97,6 +102,7 @@ pub fn open(ctx: &Context, window: DevtoolsWindow) {
         DevtoolsWindow::Scope => scope::set_open(ctx, true),
         DevtoolsWindow::Filters => filters::set_open(ctx, true),
         DevtoolsWindow::Grid => grid::set_open(ctx, true),
+        DevtoolsWindow::Inspector => inspector::set_open(ctx, true),
     }
     ctx.request_repaint();
 }
@@ -117,6 +123,7 @@ pub fn show(ctx: &Context) {
     scope::show(ctx);
     filters::show(ctx);
     grid::show(ctx);
+    inspector::show(ctx);
 }
 
 #[cfg(test)]
@@ -139,6 +146,7 @@ mod tests {
             DevtoolsWindow::Scope => scope::is_open(ctx),
             DevtoolsWindow::Filters => filters::is_open(ctx),
             DevtoolsWindow::Grid => grid::is_open(ctx),
+            DevtoolsWindow::Inspector => inspector::is_open(ctx),
             DevtoolsWindow::ThemePanel => crate::theme::debug_panel::is_open(ctx),
         }
     }
@@ -162,6 +170,7 @@ mod tests {
             DevtoolsWindow::Scope,
             DevtoolsWindow::Filters,
             DevtoolsWindow::Grid,
+            DevtoolsWindow::Inspector,
         ];
         for w in windows {
             assert!(!is_open(&ctx, w), "{w:?} starts closed");

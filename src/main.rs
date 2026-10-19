@@ -37,6 +37,7 @@ impl eframe::App for app::SmartMediaApp {
         self.title_strip(ui);
         settings::banner::show(ui);
         self.status_bar(ui);
+        self.inspector_rail(ui);
         self.pump_commands(&ctx);
 
         CentralPanel::default()
