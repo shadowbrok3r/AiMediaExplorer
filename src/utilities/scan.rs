@@ -227,12 +227,7 @@ pub fn request_priority_thumb(path: &Path, kind: MediaKind) -> bool {
 fn generate_thumb(path: &Path, kind: &MediaKind) -> Result<EncodedThumb, String> {
     match kind {
         MediaKind::Image => crate::utilities::thumbs::generate_image_thumb(path),
-        MediaKind::Video => {
-            #[cfg(windows)]
-            { crate::utilities::thumbs::generate_video_thumb(path) }
-            #[cfg(not(windows))]
-            { Err("video thumbs unsupported on this platform".to_string()) }
-        }
+        MediaKind::Video => crate::utilities::thumbs::generate_video_thumb(path),
         _ => Err("unsupported kind".to_string()),
     }
 }

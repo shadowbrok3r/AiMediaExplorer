@@ -1,106 +1,7 @@
 use eframe::egui::*;
 use humansize::DECIMAL;
-#[cfg(feature = "ffmpeg")]
-use {
-    std::sync::atomic::Ordering,
-    crossbeam::channel::TryRecvError,
-};
 
 impl super::FileExplorer {
-    #[cfg(feature = "ffmpeg")]
-    fn spawn_video_decode_thread(path: std::path::PathBuf, tx: crossbeam::channel::Sender<super::VideoFrame>, stop_flag: StdArc<std::sync::atomic::AtomicBool>) -> std::thread::JoinHandle<()> {
-        std::thread::spawn(move || {
-            // Try to init ffmpeg; if it fails, exit quietly
-            if let Err(e) = ffmpeg_next::init() {
-                log::error!("ffmpeg init failed: {:?}", e);
-                return;
-            }
-            // Open input
-            match ffmpeg_next::format::input(&path) {
-                Ok(mut ictx) => {
-                    // Find best video stream
-                    if let Some(stream) = ictx.streams().best(ffmpeg_next::media::Type::Video) {
-                        let stream_index = stream.index();
-                        // Setup decoder
-                        let context_decoder = ffmpeg_next::codec::context::Context::from_parameters(stream.parameters()).and_then(|c| c.decoder()).and_then(|d| d.video()).map_err(|e| e.to_string());
-                        if let Ok(mut decoder) = context_decoder {
-                            // Prepare scaler to RGBA
-                            let mut scaler = ffmpeg_next::software::scaling::Context::get(
-                                decoder.format(),
-                                decoder.width(),
-                                decoder.height(),
-                                ffmpeg_next::format::Pixel::RGBA,
-                                decoder.width(),
-                                decoder.height(),
-                                ffmpeg_next::software::scaling::flag::Flags::BILINEAR,
-                            ).ok();
-
-                            // Frame buffer
-                            let mut frame_index: usize = 0;
-                            let mut packet = ffmpeg_next::codec::packet::Packet::empty();
-                            // Try estimate duration/fps from stream
-                            let time_base = stream.time_base();
-                            let avg_frame_rate = stream.avg_frame_rate();
-                            let fps = if avg_frame_rate.denominator() != 0 && avg_frame_rate.numerator() != 0 {
-                                avg_frame_rate.numerator() as f64 / avg_frame_rate.denominator() as f64
-                            } else { 30.0 };
-
-                            while !stop_flag.load(Ordering::SeqCst) {
-                                match ictx.read_packet() {
-                                    Ok(pkt) => {
-                                        if pkt.stream() == stream_index {
-                                            if let Err(e) = decoder.send_packet(&pkt) {
-                                                log::warn!("decoder send_packet error: {:?}", e);
-                                            }
-                                            // Drain decoded frames
-                                            let mut decoded = ffmpeg_next::frame::Video::empty();
-                                            while decoder.receive_frame(&mut decoded).is_ok() {
-                                                // Convert to RGBA
-                                                if let Some(s) = scaler.as_mut() {
-                                                    let mut rgb_frame = ffmpeg_next::frame::Video::empty();
-                                                    if s.run(&decoded, &mut rgb_frame).is_ok() {
-                                                        let (w, h) = (rgb_frame.width() as usize, rgb_frame.height() as usize);
-                                                        // Extract RGBA bytes
-                                                        let data = rgb_frame.data(0);
-                                                        if !data.is_empty() {
-                                                            // ffmpeg-next stores planar/pitched lines; copy per-line into Vec<u8>
-                                                            let stride = rgb_frame.stride(0) as usize;
-                                                            let mut rgba = Vec::with_capacity(w * h * 4);
-                                                            for row in 0..h {
-                                                                let start = row * stride;
-                                                                let end = start + w * 4;
-                                                                rgba.extend_from_slice(&data[start..end.min(data.len())]);
-                                                            }
-                                                            let pts = decoded.pts().map(|p| p as f64 * f64::from(time_base.num()) / f64::from(time_base.den())).unwrap_or_else(|| (frame_index as f64)/fps);
-                                                            frame_index += 1;
-                                                            let _ = tx.send(super::VideoFrame { rgba: StdArc::from(rgba.into_boxed_slice()), width: w, height: h, pts });
-                                                            // Pace according to fps
-                                                            std::thread::sleep(std::time::Duration::from_secs_f64(1.0 / fps));
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        // End of file or error
-                                        log::debug!("ffmpeg read_packet error/end: {:?}", e);
-                                        break;
-                                    }
-                                }
-                            }
-                            // Flush decoder
-                            let _ = decoder.send_eof();
-                        }
-                    }
-                }
-                Err(e) => {
-                    log::error!("ffmpeg open input failed: {:?}", e);
-                }
-            }
-        })
-    }
-
     /// Draws the selected row's picture: the cached thumbnail at once, replaced by the larger preview when it is ready.
     fn preview_image(&self, ui: &mut Ui) {
         let (thumbs, scope, path) = (&self.viewer.thumbs, self.viewer.scope, self.current_thumb.path.as_str());
@@ -129,6 +30,23 @@ impl super::FileExplorer {
             super::thumbs::ThumbView::Missing => {
                 ui.label("No Image");
             }
+        }
+    }
+
+    /// Plays the selected video in place, or draws the still picture for any other file.
+    #[cfg(ame_ffmpeg)]
+    fn video_or_image(&self, ui: &mut Ui) {
+        let is_video = self.current_thumb.file_type != "<DIR>"
+            && self.current_thumb.file_type != "<ARCHIVE>"
+            && std::path::Path::new(&self.current_thumb.path).extension().and_then(|e| e.to_str()).is_some_and(|ext| crate::is_video(&ext.to_ascii_lowercase()));
+        let slot = crate::video::view::slot(ui.ctx(), ("preview", self.viewer.scope));
+        let mut view = slot.lock().unwrap_or_else(|e| e.into_inner());
+        if is_video {
+            let max = ui.available_size() / 1.3;
+            view.ui(ui, std::path::Path::new(&self.current_thumb.path), max, |ui| self.preview_image(ui));
+        } else {
+            view.reset();
+            self.preview_image(ui);
         }
     }
 
@@ -177,77 +95,10 @@ impl super::FileExplorer {
                         });
                     });
                     ui.separator();
-                    // Compute video flag only when ffmpeg is enabled; otherwise always render image
-                    #[cfg(feature = "ffmpeg")]
-                    let is_video = {
-                        if self.current_thumb.file_type == "<DIR>" || self.current_thumb.file_type == "<ARCHIVE>" { false } else {
-                            if let Some(ext) = std::path::Path::new(&self.current_thumb.path).extension().and_then(|e| e.to_str()) { crate::is_video(&ext.to_ascii_lowercase()) } else { false }
-                        }
-                    };
-
-                    #[cfg(feature = "ffmpeg")]
-                    if is_video {
-                        // Video player area: check for new frames from decoder channel
-                        // Consume all available frames and update texture
-                        let mut updated = false;
-                        loop {
-                            match self.video_frame_rx.try_recv() {
-                                Ok(frame) => {
-                                    let color = egui::ColorImage::from_rgba_unmultiplied([frame.width, frame.height], &frame.rgba);
-                                    if let Some(tex) = &self.video_texture {
-                                        tex.set(color, egui::TextureOptions::LINEAR);
-                                    } else {
-                                        // Create a new texture handle and store it
-                                        let name = format!("video_preview:{}", self.current_thumb.path);
-                                        let tex = ui.ctx().load_texture(name, color, egui::TextureOptions::LINEAR);
-                                        self.video_texture = Some(tex);
-                                    }
-                                    // Update position (approx)
-                                    self.video_position_secs = frame.pts as f32;
-                                    updated = true;
-                                }
-                                Err(TryRecvError::Empty) => break,
-                                Err(TryRecvError::Disconnected) => break,
-                            }
-                        }
-                        // Decide which UI element to render: texture if available, otherwise fallback image
-                        if let Some(tex) = &self.video_texture {
-                            ui.image((tex.id(), ui.available_size()/1.3));
-                        } else {
-                            self.preview_image(ui);
-                        }
-
-                        // Controls below the image
-
-                        ui.horizontal(|ui| {
-                            let play_text = if self.video_playing { "Pause" } else { "Play" };
-                            if ui.button(play_text).clicked() {
-                                if self.video_playing {
-                                    // Request stop
-                                    self.video_stop_flag.store(true, Ordering::SeqCst);
-                                    self.video_playing = false;
-                                } else {
-                                    // Clear any previous stop flag and spawn decoder thread
-                                    self.video_stop_flag.store(false, Ordering::SeqCst);
-                                    let path = std::path::PathBuf::from(&self.current_thumb.path);
-                                    let tx = self.video_frame_tx.clone();
-                                    let stop = self.video_stop_flag.clone();
-                                    // Start decoder thread; it will stream frames into tx until stopped
-                                    let _ = super::FileExplorer::spawn_video_decode_thread(path, tx, stop);
-                                    self.video_playing = true;
-                                }
-                            }
-                            if let Some(dur) = self.video_duration_secs { ui.label(format!("{:.1}s", self.video_position_secs)); ui.add(egui::Slider::new(&mut self.video_position_secs, 0.0..=dur)); }
-                            if updated { ui.ctx().request_repaint(); }
-                        });
-                    } else {
-                        self.preview_image(ui);
-                    }
-                    #[cfg(not(feature = "ffmpeg"))]
-                    {
-                        // Without ffmpeg feature, always render image preview
-                        self.preview_image(ui);
-                    }
+                    #[cfg(ame_ffmpeg)]
+                    self.video_or_image(ui);
+                    #[cfg(not(ame_ffmpeg))]
+                    self.preview_image(ui);
 
                      ui.separator();
 
@@ -524,5 +375,92 @@ impl super::FileExplorer {
                 });
             });
         self.open_preview_pane = open && !close;
+    }
+}
+
+#[cfg(all(test, ame_ffmpeg))]
+mod tests {
+    use super::super::FileExplorer;
+    use crate::video::fixtures as fx;
+    use crate::video::player::PlayerOptions;
+    use eframe::egui;
+    use std::path::Path;
+    use std::time::{Duration, Instant};
+
+    fn frame(ctx: &egui::Context, ex: &mut FileExplorer) {
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1100.0, 800.0))), ..Default::default() };
+        ctx.run_ui(input, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| ex.preview_pane(ui));
+        })
+        .drop_without_applying_deltas();
+    }
+
+    fn select(ex: &mut FileExplorer, path: &Path, file_type: &str) {
+        ex.current_thumb.path = path.display().to_string();
+        ex.current_thumb.filename = path.file_name().unwrap().to_string_lossy().to_string();
+        ex.current_thumb.file_type = file_type.to_string();
+    }
+
+    fn wait_frames(ctx: &egui::Context, ex: &mut FileExplorer, timeout: Duration, mut done: impl FnMut() -> bool) -> bool {
+        let end = Instant::now() + timeout;
+        while Instant::now() < end {
+            frame(ctx, ex);
+            if done() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_pane_plays_the_selected_video_and_stops_when_the_selection_or_pane_changes() {
+        if !fx::available() {
+            return fx::skip("the_pane_plays_the_selected_video");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (Some(a), Some(b)) = (fx::h264_mp4(dir.path(), "a.mp4", 3), fx::h264_mp4(dir.path(), "b.mp4", 3)) else { return fx::skip("pane clips") };
+        let png = dir.path().join("still.png");
+        image::RgbImage::from_pixel(32, 32, image::Rgb([9, 9, 9])).save(&png).unwrap();
+        let ctx = crate::ui::test_support::test_ctx();
+        let mut ex = FileExplorer::new(true);
+        ex.open_preview_pane = true;
+        select(&mut ex, &a, "mp4");
+        frame(&ctx, &mut ex);
+        let slot = crate::video::view::slot(&ctx, ("preview", ex.viewer.scope));
+        assert!(!slot.lock().unwrap().is_active(), "playback waits for the play button");
+
+        slot.lock().unwrap().start_with(&a, PlayerOptions { ctx: Some(ctx.clone()), idle_timeout: Duration::from_millis(500), ..Default::default() });
+        let shown = wait_frames(&ctx, &mut ex, Duration::from_secs(15), || slot.lock().unwrap().frame_size().is_some());
+        assert!(shown, "the decoded frame reaches the pane");
+        assert_eq!(slot.lock().unwrap().frame_size(), Some([320, 180]));
+        let first_done = slot.lock().unwrap().watcher().unwrap();
+        assert!(!first_done());
+
+        select(&mut ex, &b, "mp4");
+        frame(&ctx, &mut ex);
+        assert!(!slot.lock().unwrap().is_active() && slot.lock().unwrap().frame_size().is_none(), "another video resets the player");
+        assert!(wait_frames(&ctx, &mut ex, Duration::from_secs(3), first_done), "the old decode thread ends");
+
+        slot.lock().unwrap().start_with(&b, PlayerOptions { ctx: Some(ctx.clone()), idle_timeout: Duration::from_millis(500), ..Default::default() });
+        assert!(wait_frames(&ctx, &mut ex, Duration::from_secs(15), || slot.lock().unwrap().frame_size().is_some()));
+        let second_done = slot.lock().unwrap().watcher().unwrap();
+        select(&mut ex, &png, "png");
+        frame(&ctx, &mut ex);
+        assert!(!slot.lock().unwrap().is_active(), "a non-video selection stops playback");
+        assert!(wait_frames(&ctx, &mut ex, Duration::from_secs(3), second_done));
+
+        select(&mut ex, &a, "mp4");
+        frame(&ctx, &mut ex);
+        slot.lock().unwrap().start_with(&a, PlayerOptions { ctx: Some(ctx.clone()), idle_timeout: Duration::from_millis(500), ..Default::default() });
+        assert!(wait_frames(&ctx, &mut ex, Duration::from_secs(15), || slot.lock().unwrap().frame_size().is_some()));
+        let third_done = slot.lock().unwrap().watcher().unwrap();
+        ex.open_preview_pane = false;
+        let end = Instant::now() + Duration::from_secs(4);
+        while !third_done() && Instant::now() < end {
+            frame(&ctx, &mut ex);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(third_done(), "a closed pane stops the decode thread");
     }
 }

@@ -175,20 +175,71 @@ fn generate_image_thumb_inner(path: &Path) -> Result<EncodedThumb, String> {
     Ok(data)
 }
 
+/// How a video thumbnail was produced.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VideoThumbReport {
+    pub backend: Option<crate::video::Backend>,
+    pub attempts: u32,
+    pub position_secs: Option<f64>,
+    pub blank: bool,
+    pub placeholder: Option<crate::video::placeholder::PlaceholderKind>,
+    pub elapsed: std::time::Duration,
+    pub source: (u32, u32),
+    pub rotation: u32,
+}
+
 pub fn generate_video_thumb(path: &Path) -> Result<EncodedThumb, String> {
-    generate_video_thumb_data(path).and_then(|s| EncodedThumb::from_legacy_string(&s))
+    generate_video_thumb_with(path, &crate::video::PosterOptions { max_dim: THUMB_MAX_DIM, ..Default::default() }).map(|(thumb, _)| thumb)
 }
 
-#[cfg(windows)]
 pub fn generate_video_thumb_data(path: &Path) -> Result<String, String> {
-    generate_shell_thumb_data(path)
+    generate_video_thumb(path).map(|t| t.to_legacy_string())
 }
 
-/// On non-Windows platforms, video thumbnail generation is not supported via shell.
-/// Returns an error indicating the feature is unavailable.
-#[cfg(not(windows))]
-pub fn generate_video_thumb_data(path: &Path) -> Result<String, String> {
-    Err(format!("Video thumbnail generation not supported on this platform for: {}", path.display()))
+// Poster frame as an encoded thumbnail, or a typed placeholder when the file has no frame to decode.
+pub fn generate_video_thumb_with(path: &Path, opts: &crate::video::PosterOptions) -> Result<(EncodedThumb, VideoThumbReport), String> {
+    guarded(|| generate_video_thumb_inner(path, opts), |msg| format!("video thumbnail panicked: {msg}"))
+}
+
+fn generate_video_thumb_inner(path: &Path, opts: &crate::video::PosterOptions) -> Result<(EncodedThumb, VideoThumbReport), String> {
+    use crate::video::ThumbImage;
+    let started = std::time::Instant::now();
+    #[cfg(windows)]
+    {
+        if let Ok(thumb) = generate_shell_thumb_data(path).and_then(|s| EncodedThumb::from_legacy_string(&s)) {
+            let report = VideoThumbReport { backend: None, attempts: 0, position_secs: None, blank: false, placeholder: None, elapsed: started.elapsed(), source: (0, 0), rotation: 0 };
+            return Ok((thumb, report));
+        }
+    }
+    match crate::video::thumb_image(path, opts) {
+        Ok(ThumbImage::Frame(poster)) => {
+            let report = VideoThumbReport {
+                backend: Some(poster.backend),
+                attempts: poster.attempts,
+                position_secs: poster.position_secs,
+                blank: poster.blank,
+                placeholder: None,
+                elapsed: started.elapsed(),
+                source: poster.source,
+                rotation: poster.rotation,
+            };
+            let thumb = encode_thumb_bytes(&DynamicImage::ImageRgb8(poster.image))?;
+            log::debug!("[thumb] video thumb success: {} ({} bytes, {:?})", path.display(), thumb.bytes.len(), report.backend);
+            Ok((thumb, report))
+        }
+        Ok(ThumbImage::Placeholder { kind, reason }) => {
+            static NOTICE: std::sync::Once = std::sync::Once::new();
+            NOTICE.call_once(|| log::info!("[thumb] video frames unavailable ({reason}); using placeholder thumbnails"));
+            log::debug!("[thumb] video placeholder for {}: {reason}", path.display());
+            let report = VideoThumbReport { backend: None, attempts: 0, position_secs: None, blank: false, placeholder: Some(kind), elapsed: started.elapsed(), source: (0, 0), rotation: 0 };
+            let thumb = encode_thumb_bytes(&DynamicImage::ImageRgb8(crate::video::placeholder::placeholder(kind)))?;
+            Ok((thumb, report))
+        }
+        Err(e) => {
+            log::debug!("[thumb] video thumb failed {}: {e}", path.display());
+            Err(format!("video: {e}"))
+        }
+    }
 }
 
 // Windows Shell generic thumbnail generator to cover formats not handled by the image crate (e.g., RAW like .arw)

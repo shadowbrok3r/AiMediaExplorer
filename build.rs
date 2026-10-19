@@ -2,6 +2,7 @@
 extern crate winres;
 
 fn main() {
+    emit_ffmpeg_cfg();
     generate_icon_table().expect("icon table generation failed");
     #[cfg(windows)]
     {
@@ -24,6 +25,17 @@ fn main() {
             "#);
             res.compile().unwrap();
         }
+    }
+}
+
+/// Sets `ame_ffmpeg` when ffmpeg-next is used: always on Linux, elsewhere only with the `ffmpeg` feature; `AME_NO_NATIVE_VIDEO` turns it off.
+fn emit_ffmpeg_cfg() {
+    println!("cargo:rustc-check-cfg=cfg(ame_ffmpeg)");
+    println!("cargo:rerun-if-env-changed=AME_NO_NATIVE_VIDEO");
+    let linux = std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "linux");
+    let wanted = linux || std::env::var_os("CARGO_FEATURE_FFMPEG").is_some();
+    if wanted && std::env::var_os("AME_NO_NATIVE_VIDEO").is_none() {
+        println!("cargo:rustc-cfg=ame_ffmpeg");
     }
 }
 

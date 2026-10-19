@@ -8,8 +8,22 @@ or
 - setx ORT_LIB_LOCATION "C:\path\to\onnx\runtime"
 
 ## FFMPEG
+- Linux: the in-process video decoder (`ffmpeg-next` 9) is always built, so FFmpeg 7 or newer development files, `clang` and `pkg-config` are required to compile.
+    - Arch/Manjaro: `sudo pacman -S ffmpeg clang pkgconf`
+    - Debian/Ubuntu: `sudo apt install libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev libavfilter-dev libavdevice-dev clang pkg-config`
 - Windows: https://www.gyan.dev/ffmpeg/builds/
     - setx FFMPEG_DIR "C:\path\to\ffmpeg"
+    - the decoder is optional there: `cargo build --features ffmpeg`. Without it the Windows shell thumbnail is used, and the `ffmpeg` and `ffprobe` commands when they are on `PATH`.
+
+# Video
+`src/video` decodes video for thumbnails, the probe API and the preview player. The build script sets `cfg(ame_ffmpeg)` on Linux and with `--features ffmpeg`; that enables the in-process backend (`AME_NO_NATIVE_VIDEO=1` at build time turns it off). Everywhere else the `ffmpeg`/`ffprobe` commands are used when they are on `PATH` (override with `AME_FFMPEG` and `AME_FFPROBE`), and files without a decodable frame get a generated placeholder tile instead of an error.
+
+- Thumbnails: a frame at about 10% of the duration (up to four positions are tried when a frame is blank or near black), upright after the rotation metadata and the pixel aspect ratio, scaled to 256 px, stored like image thumbnails. Placeholders are stored like any other thumbnail and stay until the file changes or its stored thumbnail is deleted.
+- Limits: at most `AME_VIDEO_JOBS` decodes at once (default a quarter of the cores, 2 to 4), 20 s per file, cancellable. Damaged, empty, audio-only and 8K files return typed errors or placeholders without panics.
+- Probe: `video::probe(path)` returns duration, size, frame rate, codecs, audio tracks, rotation, bitrate and creation time.
+- Preview: the right pane plays the selected video muted (play, pause, seek). Audio is not played.
+- View > Devtools > Video probes a file, generates its thumbnail with timings and plays it.
+- Tests build their clips with the `ffmpeg` command and skip when it is missing.
 
 # Theme and icons
 The styling system is the `egui-theme-kit` and `egui-icon-pack` crates (https://github.com/shadowbrok3r/egui-theme-kit), pinned by `rev` in `Cargo.toml`.

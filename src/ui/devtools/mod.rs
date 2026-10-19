@@ -10,6 +10,7 @@ pub mod settings_store;
 pub mod tasks;
 pub mod thumb_cache;
 pub mod thumb_storage;
+pub mod video;
 
 use eframe::egui::Context;
 
@@ -47,6 +48,10 @@ pub fn toggle_thumb_storage(ctx: &Context) {
     thumb_storage::set_open(ctx, !thumb_storage::is_open(ctx));
 }
 
+pub fn toggle_video(ctx: &Context) {
+    video::toggle(ctx);
+}
+
 pub fn toggle_tasks(ctx: &Context) {
     tasks::set_open(ctx, !tasks::is_open(ctx));
 }
@@ -73,6 +78,7 @@ pub fn open(ctx: &Context, window: DevtoolsWindow) {
         DevtoolsWindow::Perf => perf::set_open(ctx, true),
         DevtoolsWindow::RowStore => row_store::set_open(ctx, true),
         DevtoolsWindow::Collections => collections::set_open(ctx, true),
+        DevtoolsWindow::Video => video::set_open(ctx, true),
     }
     ctx.request_repaint();
 }
@@ -89,6 +95,7 @@ pub fn show(ctx: &Context) {
     command_log::show(ctx);
     perf::show(ctx);
     collections::show(ctx);
+    video::show(ctx);
 }
 
 #[cfg(test)]
@@ -107,6 +114,7 @@ mod tests {
             DevtoolsWindow::Perf => perf::is_open(ctx),
             DevtoolsWindow::RowStore => row_store::is_open(ctx),
             DevtoolsWindow::Collections => collections::is_open(ctx),
+            DevtoolsWindow::Video => video::is_open(ctx),
             DevtoolsWindow::ThemePanel => crate::theme::debug_panel::is_open(ctx),
         }
     }
@@ -126,6 +134,7 @@ mod tests {
             DevtoolsWindow::Perf,
             DevtoolsWindow::RowStore,
             DevtoolsWindow::Collections,
+            DevtoolsWindow::Video,
         ];
         for w in windows {
             assert!(!is_open(&ctx, w), "{w:?} starts closed");

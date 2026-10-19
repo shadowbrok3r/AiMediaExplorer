@@ -240,6 +240,10 @@ impl crate::app::SmartMediaApp {
                 crate::ui::devtools::toggle_collections(ui.ctx());
                 ui.close();
             }
+            if icons::button(ui, svg::VIDEO_CAMERA, "Video").clicked() {
+                crate::ui::devtools::toggle_video(ui.ctx());
+                ui.close();
+            }
         });
 
         ui.separator();

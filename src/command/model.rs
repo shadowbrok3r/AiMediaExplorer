@@ -143,6 +143,7 @@ pub enum DevtoolsWindow {
     Perf,
     RowStore,
     Collections,
+    Video,
 }
 
 /// Rows that already exist in memory, shown in a new tab.
