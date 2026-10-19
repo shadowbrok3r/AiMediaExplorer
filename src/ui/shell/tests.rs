@@ -43,7 +43,7 @@ impl Out {
 fn text_rects(shapes: &[ClippedShape]) -> Vec<(String, Rect)> {
     fn walk(shape: &Shape, clip: Rect, out: &mut Vec<(String, Rect)>) {
         match shape {
-            Shape::Text(t) if clip.width() > 0.0 && clip.height() > 0.0 => out.push((t.galley.text().to_string(), Rect::from_min_size(t.pos, t.galley.size()))),
+            Shape::Text(t) if clip.width() > 0.0 && clip.height() > 0.0 => out.push((t.galley.text().to_string(), t.galley.rect.translate(t.pos.to_vec2()))),
             Shape::Vec(v) => v.iter().for_each(|s| walk(s, clip, out)),
             _ => {}
         }
@@ -119,8 +119,8 @@ fn key(key: Key, modifiers: Modifiers) -> Event {
 
 /* ---------------------------------------------- pure -------------------------------------------- */
 
-#[test]
-fn a_browser_stands_for_the_scope_it_shows() {
+#[tokio::test]
+async fn a_browser_stands_for_the_scope_it_shows() {
     let ex = FileExplorer::new(false);
     assert_eq!(focused_scope(&ex), Some(ex.scope().clone()));
 }
