@@ -74,7 +74,7 @@ There is no tool that deletes, moves, renames or overwrites files, runs a shell 
 
 ### Metadata proposals
 
-`metadata_propose` stores a row in the `mcp_proposals` table (created on first use). The user reviews proposals in Devtools > MCP server (Accept writes the changes to the library row, Reject keeps it as it was) or with `{"cmd": "mcp", "op": "accept", "id": "..."}`. Accepting adds and removes tags case-insensitively and leaves fields that already hold the proposed value alone. The Refinements tab does not list proposals yet.
+`metadata_propose` stores a row in the `mcp_proposals` table (created on first use). The user reviews proposals in Devtools > MCP server (Accept writes the changes to the library row, Reject keeps it as it was) or with `{"cmd": "mcp", "op": "accept", "id": "..."}`. Accepting adds and removes tags case-insensitively and leaves fields that already hold the proposed value alone. The Refinements tab lists the pending proposals next to the ones it generates itself: each shows its client as the source, the reason, the current and the proposed value per field and a checkbox per field, and Accept writes only the checked fields (`ProposalStore::accept_fields`); several accepts at once are one journal batch. Every accept is recorded in the metadata journal and Ctrl+Z reverts it (see `tools.md`).
 
 ### Model jobs
 

@@ -191,6 +191,8 @@ pub enum DevtoolsWindow {
     Filters,
     Grid,
     Inspector,
+    Journal,
+    Refine,
     Sidebar,
     Actions,
     McpServer,
@@ -282,6 +284,10 @@ pub enum AppCommand {
     },
     AttachToAssistant { paths: Vec<String> },
     Refine { paths: Vec<String> },
+    /// Revert the newest metadata change batch of the journal.
+    Undo,
+    /// Re-apply the metadata change batch that was undone last.
+    Redo,
     Toast { kind: ToastLevel, text: String },
     /// Report progress of a task, or start one with `begin`.
     TaskUpdate { id: TaskId, event: TaskEvent },
@@ -366,6 +372,8 @@ impl AppCommand {
             Self::ShowSettings { .. } => "show_settings",
             Self::AttachToAssistant { .. } => "attach_to_assistant",
             Self::Refine { .. } => "refine",
+            Self::Undo => "undo",
+            Self::Redo => "redo",
             Self::Toast { .. } => "toast",
             Self::TaskUpdate { .. } => "task_update",
             Self::ClearSelection => "clear_selection",
@@ -470,6 +478,8 @@ mod tests {
             AppCommand::ShowSettings { section: None },
             AppCommand::AttachToAssistant { paths: vec!["/a".into()] },
             AppCommand::Refine { paths: vec!["/a".into()] },
+            AppCommand::Undo,
+            AppCommand::Redo,
             AppCommand::Toast { kind: ToastLevel::Warning, text: "careful".into() },
             AppCommand::TaskUpdate { id: 3, event: TaskEvent::Progress { done: 1, total: 4 } },
             AppCommand::TaskUpdate { id: 0, event: TaskEvent::Begin { kind: TaskKind::Debug, title: "x".into(), total: 10 } },
@@ -544,7 +554,7 @@ mod tests {
                 parsed.insert(cmd.name());
             }
         }
-        for name in ["open_scope", "open_rows", "open_tool", "run", "show_settings", "attach_to_assistant", "refine", "toast", "task_update", "clear_selection", "query", "dialog", "focus_path", "open_devtools", "show_task_center", "navigate", "connect_database", "set_filter", "clear_filters", "apply_saved_view", "set_view_mode", "inspector_toggle", "open_palette", "mcp"] {
+        for name in ["open_scope", "open_rows", "open_tool", "run", "show_settings", "attach_to_assistant", "refine", "undo", "redo", "toast", "task_update", "clear_selection", "query", "dialog", "focus_path", "open_devtools", "show_task_center", "navigate", "connect_database", "set_filter", "clear_filters", "apply_saved_view", "set_view_mode", "inspector_toggle", "open_palette", "mcp"] {
             assert!(parsed.contains(name), "the docs have no example for {name}");
         }
     }

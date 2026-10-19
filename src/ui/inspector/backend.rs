@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use surrealdb::types::RecordId;
 use surrealdb::{Connection, Surreal};
 
-use crate::database::collections;
+use crate::database::{collections, journal};
 use crate::database::metadata_edit::{self, BatchReport, LibraryFacts, MetaPatch, RowSeed, SaveOutcome, TagChange};
 
 /// What the library knows about one file.
@@ -141,7 +141,7 @@ impl<C: Connection> Backend for DbBackend<C> {
         match op {
             CollectionOp::Add { name, paths } => {
                 let (collection, created) = collections::get_or_create(db, &name).await.map_err(text)?;
-                let report = collections::add_paths(db, &collection.id, &paths).await.map_err(text)?;
+                let report = journal::add_to_collection_with(db, &collection.id, &paths, &format!("Add to \"{}\"", collection.name)).await.map_err(text)?;
                 let new = if created { " (new collection)" } else { "" };
                 Ok(if report.already > 0 {
                     format!("Added {} to \"{}\"{new}; {} were already in it", report.added, collection.name, report.already)
@@ -151,7 +151,7 @@ impl<C: Connection> Backend for DbBackend<C> {
             }
             CollectionOp::Remove { name, paths } => {
                 let collection = collections::get_by_name(db, &name).await.map_err(text)?.ok_or_else(|| format!("There is no collection \"{name}\""))?;
-                let removed = collections::remove_paths(db, &collection.id, &paths).await.map_err(text)?;
+                let removed = journal::remove_from_collection_with(db, &collection.id, &paths, &format!("Remove from \"{}\"", collection.name)).await.map_err(text)?;
                 Ok(format!("Removed {removed} from \"{}\"; {} were not in it", collection.name, paths.len().saturating_sub(removed)))
             }
         }

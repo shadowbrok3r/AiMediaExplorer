@@ -191,6 +191,14 @@ impl CommandSink for SmartMediaApp {
         Ok(format!("refining {count} files"))
     }
 
+    fn undo(&mut self) -> CommandResult {
+        crate::ui::journal_ui::start(crate::database::journal::Direction::Undo)
+    }
+
+    fn redo(&mut self) -> CommandResult {
+        crate::ui::journal_ui::start(crate::database::journal::Direction::Redo)
+    }
+
     fn toast(&mut self, level: ToastLevel, text: String) -> CommandResult {
         self.context.toast_tx.try_send((level.kind(), text)).map_err(|e| CommandError::failed(e.to_string()))?;
         Ok("toast queued".to_string())

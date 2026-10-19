@@ -32,7 +32,7 @@ pub struct Sources<'a> {
 }
 
 /// Windows of the Devtools menu the palette lists.
-pub const DEVTOOLS: [DevtoolsWindow; 21] = [
+pub const DEVTOOLS: [DevtoolsWindow; 23] = [
     DevtoolsWindow::ThemePanel,
     DevtoolsWindow::SettingsStore,
     DevtoolsWindow::DbMaintenance,
@@ -51,6 +51,8 @@ pub const DEVTOOLS: [DevtoolsWindow; 21] = [
     DevtoolsWindow::Filters,
     DevtoolsWindow::Grid,
     DevtoolsWindow::Inspector,
+    DevtoolsWindow::Journal,
+    DevtoolsWindow::Refine,
     DevtoolsWindow::Sidebar,
     DevtoolsWindow::Actions,
     DevtoolsWindow::McpServer,
@@ -195,6 +197,8 @@ pub fn registry(cx: &ActionContext) -> Vec<Entry> {
         all.push(command(format!("run.{}", action_slug(action)), title, action_icon(action), run).needs(cx.selected > 0, NO_SELECTION));
     }
     all.push(command("clear_selection", "Clear selection", svg::X, AppCommand::ClearSelection).needs(cx.selected > 0, NO_SELECTION));
+    all.push(library(command("undo", "Undo metadata change", svg::ARROW_COUNTER_CLOCKWISE, AppCommand::Undo).shortcut("Ctrl+Z").keywords("revert journal")));
+    all.push(library(command("redo", "Redo metadata change", svg::ARROW_CLOCKWISE, AppCommand::Redo).shortcut("Ctrl+Shift+Z").keywords("reapply")));
 
     for (tool, icon, words) in [(Tool::ImageEdit, svg::AME_IMAGE_EDIT, "qwen edit"), (Tool::Refinements, svg::AME_REFINE, "refine proposals"), (Tool::Logs, svg::TERMINAL_WINDOW, "log console")] {
         let name = format!("{:?}", tool).to_lowercase();

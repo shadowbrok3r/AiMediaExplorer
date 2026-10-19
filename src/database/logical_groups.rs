@@ -109,7 +109,7 @@ impl LogicalGroup {
             return Ok(());
         }
         let paths = paths_for_thumbnail_ids(thumbs).await?;
-        collections::add_paths(&DB, id, &paths).await.map(|_| ()).inspect_err(|e| db_set_error(format!("Add thumbnails failed: {e}")))
+        super::journal::add_to_collection_with(&DB, id, &paths, "Add to collection").await.map(|_| ()).inspect_err(|e| db_set_error(format!("Add thumbnails failed: {e}")))
     }
 
     /// Removes the file of one thumbnail row from a collection.
@@ -120,7 +120,7 @@ impl LogicalGroup {
             return Ok(());
         }
         let paths = paths_for_thumbnail_ids(std::slice::from_ref(thumb_id)).await?;
-        collections::remove_paths(&DB, id, &paths).await.map(|_| ()).inspect_err(|e| db_set_error(format!("Remove thumbnail failed: {e}")))
+        super::journal::remove_from_collection_with(&DB, id, &paths, "Remove from collection").await.map(|_| ()).inspect_err(|e| db_set_error(format!("Remove thumbnail failed: {e}")))
     }
 
     pub async fn rename(id: &RecordId, new_name: &str) -> anyhow::Result<(), anyhow::Error> {

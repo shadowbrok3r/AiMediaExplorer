@@ -84,6 +84,40 @@ async fn accepting_writes_the_changes_and_closes_the_proposal() {
 }
 
 #[tokio::test]
+async fn an_accept_is_journaled_and_undo_restores_the_row() {
+    let f = fixture().await;
+    let before = row(&f, "photos/beach1.png").await;
+    let out = f.call("metadata_propose", json!({"path": f.path("photos/beach1.png"), "caption": "Golden beach", "tags_add": ["gold"], "category": "coast"})).await.unwrap();
+    let id = out.data["id"].as_str().unwrap().to_string();
+    f.ctx.proposals.accept(&id).await.unwrap();
+    let entries = crate::database::journal::recent_with(&f.db, 10).await.unwrap();
+    assert_eq!(entries.len(), 3, "caption, tags and category");
+    assert!(entries.iter().all(|e| e.source == "Accepted proposal from tester"), "{entries:?}");
+    let report = crate::database::journal::undo_last_with(&f.db).await.unwrap();
+    assert_eq!((report.applied.len(), report.conflicts.len()), (3, 0));
+    assert_eq!(row(&f, "photos/beach1.png").await, before);
+}
+
+#[tokio::test]
+async fn accepting_some_fields_leaves_the_others_out_and_names_them_in_the_note() {
+    use crate::ai::mcp::proposals::FieldMask;
+    let f = fixture().await;
+    let before = row(&f, "photos/beach1.png").await;
+    let out = f.call("metadata_propose", json!({"path": f.path("photos/beach1.png"), "caption": "Golden beach", "tags_add": ["gold"], "category": "coast"})).await.unwrap();
+    let id = out.data["id"].as_str().unwrap().to_string();
+    let none = f.ctx.proposals.accept_fields(&id, FieldMask { caption: false, description: false, category: false, tags: false }).await.unwrap_err();
+    assert_eq!(none.kind(), "invalid_arguments");
+    assert_eq!(f.ctx.proposals.get(&id).await.unwrap().unwrap().status, Status::Pending, "a refused accept leaves the proposal pending");
+    let accepted = f.ctx.proposals.accept_fields(&id, FieldMask { caption: true, description: false, category: false, tags: false }).await.unwrap();
+    assert_eq!(accepted.status, Status::Accepted);
+    assert_eq!(accepted.note.as_deref(), Some("applied caption"));
+    let (caption, tags, category) = row(&f, "photos/beach1.png").await;
+    assert_eq!(caption.as_deref(), Some("Golden beach"));
+    assert_eq!((tags, category), (before.1.clone(), before.2.clone()), "only the chosen field changed");
+    assert_eq!(crate::database::journal::recent_with(&f.db, 10).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn rejecting_keeps_the_library_as_it_was() {
     let f = fixture().await;
     let before = row(&f, "photos/city1.png").await;

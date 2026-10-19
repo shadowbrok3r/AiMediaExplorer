@@ -8,6 +8,7 @@ use surrealdb::types::{Datetime, RecordId, SurrealValue};
 use surrealdb::{Connection, Surreal};
 
 use super::files::Thumbnail;
+use super::journal::{self, Recorder};
 use super::thumb_blobs::retry_conflicts;
 use super::{LogicalGroup, THUMBNAILS};
 
@@ -37,6 +38,20 @@ impl RowSeed {
             parent_dir: if row.parent_dir.is_empty() { parent } else { row.parent_dir.clone() },
             hash: row.hash.clone(),
             modified: row.modified.clone(),
+        }
+    }
+
+    /// A seed built from the path alone, for rows that already exist or whose facts are not needed.
+    pub fn from_path(path: &str) -> Self {
+        let p = std::path::Path::new(path);
+        Self {
+            path: path.to_string(),
+            filename: p.file_name().and_then(|n| n.to_str()).unwrap_or(path).to_string(),
+            file_type: p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase(),
+            size: std::fs::metadata(p).map(|m| m.len()).unwrap_or(0),
+            parent_dir: p.parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default(),
+            hash: None,
+            modified: None,
         }
     }
 
@@ -193,14 +208,39 @@ pub async fn ensure_rows<C: Connection>(db: &Surreal<C>, seeds: &[RowSeed]) -> a
     Ok(created)
 }
 
-/// Writes the fields of `patch` to the row of `seed.path`, creating the row first when the file is not in the library.
+/// Writes the fields of `patch` to the row of `seed.path`, creating the row first when the file is not in the library; the change is journaled as an edit.
 pub async fn save_patch<C: Connection>(db: &Surreal<C>, seed: &RowSeed, patch: &MetaPatch) -> anyhow::Result<SaveOutcome> {
+    save_patch_as(db, seed, patch, "Edit metadata").await
+}
+
+/// Like [`save_patch`] with the journal label `source`.
+pub async fn save_patch_as<C: Connection>(db: &Surreal<C>, seed: &RowSeed, patch: &MetaPatch, source: &str) -> anyhow::Result<SaveOutcome> {
+    let rec = Recorder::new(source);
+    let written = write_patch(db, seed, patch, &rec).await;
+    rec.commit_with(db).await;
+    written
+}
+
+/// Writes several patches as one journal batch, so one undo reverts them all; returns the outcome of each file in order.
+pub async fn save_patches_as<C: Connection>(db: &Surreal<C>, items: &[(RowSeed, MetaPatch)], source: &str) -> Vec<anyhow::Result<SaveOutcome>> {
+    let rec = Recorder::new(source);
+    let mut outcomes = Vec::with_capacity(items.len());
+    for (seed, patch) in items {
+        outcomes.push(write_patch(db, seed, patch, &rec).await);
+    }
+    rec.commit_with(db).await;
+    outcomes
+}
+
+/// Creates the row when missing, writes the patch and records the changed fields in `rec`.
+async fn write_patch<C: Connection>(db: &Surreal<C>, seed: &RowSeed, patch: &MetaPatch, rec: &Recorder) -> anyhow::Result<SaveOutcome> {
     anyhow::ensure!(!seed.path.is_empty(), "the file has no path");
     let created = ensure_rows(db, std::slice::from_ref(seed)).await? > 0;
     let patch = patch.cleaned();
     if patch.is_empty() {
         return Ok(SaveOutcome { created });
     }
+    let before = journal::snapshots_with(db, std::slice::from_ref(&seed.path)).await.ok().and_then(|mut m| m.remove(&seed.path));
     let sets: Vec<String> = patch.fields().iter().map(|f| format!("{f} = ${f}")).collect();
     let sql = format!("UPDATE thumbnails SET {} WHERE path = $path RETURN VALUE id", sets.join(", "));
     let ids: Vec<RecordId> = retry_conflicts(|| async {
@@ -222,6 +262,9 @@ pub async fn save_patch<C: Connection>(db: &Surreal<C>, seed: &RowSeed, patch: &
     })
     .await?;
     anyhow::ensure!(!ids.is_empty(), "the library row of {} disappeared before it could be saved", seed.path);
+    if let Some(before) = before {
+        journal::record_patch(rec, &seed.path, &before, &patch);
+    }
     Ok(SaveOutcome { created })
 }
 
@@ -237,8 +280,18 @@ struct TagUpdate {
     tags: Vec<String>,
 }
 
-/// Adds and removes tags on the rows of `seeds`, creating missing rows; the report lists the tags now stored.
+/// Adds and removes tags on the rows of `seeds`, creating missing rows; the report lists the tags now stored. The change is journaled.
 pub async fn batch_tags<C: Connection>(db: &Surreal<C>, seeds: &[RowSeed], change: &TagChange) -> anyhow::Result<BatchReport> {
+    let source = match (change.add.is_empty(), change.remove.is_empty()) {
+        (false, true) => "Add tags",
+        (true, false) => "Remove tags",
+        _ => "Edit tags",
+    };
+    batch_tags_as(db, seeds, change, source).await
+}
+
+/// Like [`batch_tags`] with the journal label `source`.
+pub async fn batch_tags_as<C: Connection>(db: &Surreal<C>, seeds: &[RowSeed], change: &TagChange, source: &str) -> anyhow::Result<BatchReport> {
     let unique = distinct_seeds(seeds);
     anyhow::ensure!(!unique.is_empty(), "no files to change");
     let created = ensure_rows(db, seeds).await?;
@@ -246,15 +299,25 @@ pub async fn batch_tags<C: Connection>(db: &Surreal<C>, seeds: &[RowSeed], chang
     if change.is_empty() {
         return Ok(report);
     }
+    let rec = Recorder::new(source);
+    let outcome = write_tag_chunks(db, &unique, change, &mut report, &rec).await;
+    rec.commit_with(db).await;
+    outcome.map(|_| report)
+}
+
+async fn write_tag_chunks<C: Connection>(db: &Surreal<C>, unique: &[&RowSeed], change: &TagChange, report: &mut BatchReport, rec: &Recorder) -> anyhow::Result<()> {
     for chunk in unique.chunks(CHUNK) {
         let paths: Vec<String> = chunk.iter().map(|s| s.path.clone()).collect();
         let rows: Vec<TagRow> = db.query("SELECT path, tags FROM thumbnails WHERE path IN $paths").bind(("paths", paths)).await?.check()?.take(0)?;
+        let mut before: HashMap<String, Vec<String>> = HashMap::new();
         let updates: Vec<TagUpdate> = rows
             .into_iter()
             .filter_map(|r| {
-                let before = r.tags.unwrap_or_default();
-                let after = apply_tag_change(&before, change);
-                (after != before).then_some(TagUpdate { path: r.path, tags: after })
+                let current = r.tags.unwrap_or_default();
+                let after = apply_tag_change(&current, change);
+                let changed = after != current;
+                before.insert(r.path.clone(), current);
+                changed.then_some(TagUpdate { path: r.path, tags: after })
             })
             .collect();
         if updates.is_empty() {
@@ -269,21 +332,39 @@ pub async fn batch_tags<C: Connection>(db: &Surreal<C>, seeds: &[RowSeed], chang
             Ok(())
         })
         .await?;
+        for u in &updates {
+            rec.tags(&u.path, before.get(&u.path).map_or(&[][..], Vec::as_slice), &u.tags);
+        }
         report.updated += updates.len();
         report.tags.extend(updates.into_iter().map(|u| (u.path, u.tags)));
     }
-    Ok(report)
+    Ok(())
 }
 
-/// Sets (or with `None` clears) the category of the rows of `seeds`, creating missing rows.
+/// Sets (or with `None` clears) the category of the rows of `seeds`, creating missing rows. The change is journaled.
 pub async fn batch_category<C: Connection>(db: &Surreal<C>, seeds: &[RowSeed], category: Option<&str>) -> anyhow::Result<BatchReport> {
+    let source = if category.map(str::trim).is_some_and(|c| !c.is_empty()) { "Set category" } else { "Clear category" };
+    batch_category_as(db, seeds, category, source).await
+}
+
+/// Like [`batch_category`] with the journal label `source`.
+pub async fn batch_category_as<C: Connection>(db: &Surreal<C>, seeds: &[RowSeed], category: Option<&str>, source: &str) -> anyhow::Result<BatchReport> {
     let unique = distinct_seeds(seeds);
     anyhow::ensure!(!unique.is_empty(), "no files to change");
     let category = category.map(str::trim).filter(|c| !c.is_empty()).map(str::to_string);
     let created = ensure_rows(db, seeds).await?;
     let mut report = BatchReport { created, ..Default::default() };
+    let rec = Recorder::new(source);
+    let outcome = write_category_chunks(db, &unique, category.as_deref(), &mut report, &rec).await;
+    rec.commit_with(db).await;
+    outcome.map(|_| report)
+}
+
+async fn write_category_chunks<C: Connection>(db: &Surreal<C>, unique: &[&RowSeed], category: Option<&str>, report: &mut BatchReport, rec: &Recorder) -> anyhow::Result<()> {
+    let category = category.map(str::to_string);
     for chunk in unique.chunks(CHUNK) {
         let paths: Vec<String> = chunk.iter().map(|s| s.path.clone()).collect();
+        let before = journal::snapshots_with(db, &paths).await.ok();
         let ids: Vec<RecordId> = retry_conflicts(|| async {
             let ids: Vec<RecordId> = db
                 .query("UPDATE thumbnails SET category = $category WHERE path IN $paths RETURN VALUE id")
@@ -296,9 +377,12 @@ pub async fn batch_category<C: Connection>(db: &Surreal<C>, seeds: &[RowSeed], c
             Ok(ids)
         })
         .await?;
+        for (path, snapshot) in before.iter().flatten() {
+            rec.text(path, journal::Field::Category, snapshot.category.as_deref(), category.as_deref());
+        }
         report.updated += ids.len();
     }
-    Ok(report)
+    Ok(())
 }
 
 /// Distinct tags of all rows, for suggestions.

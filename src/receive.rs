@@ -130,19 +130,6 @@ impl crate::app::SmartMediaContext {
             });
         }
 
-        // Drain refinement proposal updates
-        while let Ok(batch) = self.refine_rx.try_recv() {
-            let n = batch.len();
-            self.refinements.proposals = batch;
-            self.refinements.generating = false;
-            if n == 0 {
-                log::warn!("[Refine/UI] Received empty proposals batch");
-                let _ = self.toast_tx.try_send((egui_toast::ToastKind::Warning, "No proposals generated".into()));
-            } else {
-                let _ = self.toast_tx.try_send((egui_toast::ToastKind::Info, format!("Proposals ready ({n})")));
-            }
-        }
-
         // Poll global AI engine readiness (cheap lock attempt)
         if !self.ai_ready && self.ai_initializing {
             use std::sync::atomic::Ordering;

@@ -62,14 +62,14 @@ pub fn collection_of_active(active: Option<&str>) -> Option<&str> {
 /// Adds `paths` to the collection called `name`, creating it when absent; returns a one-line summary.
 pub async fn add_to_named(db: &Surreal<Db>, name: &str, paths: &[String]) -> anyhow::Result<String> {
     let (c, created) = collections::get_or_create(db, name).await?;
-    let r = collections::add_paths(db, &c.id, paths).await?;
+    let r = crate::database::journal::add_to_collection_with(db, &c.id, paths, &format!("Add to \"{}\"", c.name)).await?;
     let made = if created { " (new collection)" } else { "" };
     Ok(format!("Added {} files to \"{}\"{made}; {} were already there", r.added, c.name, r.already))
 }
 
 /// Removes `paths` from a collection; returns a one-line summary.
 pub async fn remove_from(db: &Surreal<Db>, id: &RecordId, name: &str, paths: &[String]) -> anyhow::Result<String> {
-    let n = collections::remove_paths(db, id, paths).await?;
+    let n = crate::database::journal::remove_from_collection_with(db, id, paths, &format!("Remove from \"{name}\"")).await?;
     Ok(format!("Removed {n} files from \"{name}\"; {} were not in it", paths.len().saturating_sub(n)))
 }
 
@@ -78,7 +78,7 @@ pub async fn copy_between(db: &Surreal<Db>, src: &str, dst: &str) -> anyhow::Res
     let from = collections::get_by_name(db, src).await?.ok_or_else(|| collections::CollectionError::NotFound(src.to_string()))?;
     let (to, _) = collections::get_or_create(db, dst).await?;
     anyhow::ensure!(from.id != to.id, "choose two different collections");
-    let n = collections::copy_members(db, &from.id, &to.id).await?;
+    let n = crate::database::journal::copy_collection_with(db, &from.id, &to.id, &format!("Copy \"{}\" to \"{}\"", from.name, to.name)).await?;
     Ok(format!("Copied {n} files from \"{}\" to \"{}\"", from.name, to.name))
 }
 

@@ -74,9 +74,6 @@ pub struct SmartMediaContext {
     pub toasts: Toasts,
     pub toast_tx: Sender<(egui_toast::ToastKind, String)>,
     pub toast_rx: Receiver<(egui_toast::ToastKind, String)>,
-    // Channel for AI Refinements proposals
-    pub refine_tx: Sender<Vec<crate::ui::refine::RefinementProposal>>,
-    pub refine_rx: Receiver<Vec<crate::ui::refine::RefinementProposal>>,
     // The focused browser tab (updated each frame from the dock state)
     pub active_tab: Option<TabKind>,
     pub ref_old_category: String,
@@ -117,7 +114,6 @@ impl SmartMediaApp {
     pub fn assemble(egui_ctx: Context, appearance: crate::theme::Appearance, chrome: Chrome, file_explorer: FileExplorer) -> Self {
         let (db_ready_tx, db_ready_rx) = crossbeam::channel::bounded(1);
         let (toast_tx, toast_rx) = crossbeam::channel::unbounded();
-        let (refine_tx, refine_rx) = crossbeam::channel::unbounded();
         
         let mut tree = DockState::new(vec![TabKind::MAIN, TabKind::Logs]);
 
@@ -156,7 +152,7 @@ impl SmartMediaApp {
             open_tabs,
             filtered_tabs: std::collections::HashMap::new(),
             assistant: crate::ui::assistant::AssistantPanel::new(),
-            refinements: RefinementsPanel::new(refine_tx.clone(), toast_tx.clone()),
+            refinements: RefinementsPanel::new(toast_tx.clone()),
             image_edit: Default::default(),
             inspector: Default::default(),
             task_poller: crate::tasks::Poller::new(),
@@ -166,8 +162,6 @@ impl SmartMediaApp {
             toasts: crate::theme::toast::style(Toasts::new().anchor(eframe::egui::Align2::RIGHT_TOP, (-10.0, 10.0))),
             toast_tx,
             toast_rx,
-            refine_tx,
-            refine_rx,
             active_tab: None,
             ref_old_category: String::new(),
             ref_new_category: String::new(),

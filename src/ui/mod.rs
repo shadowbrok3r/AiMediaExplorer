@@ -8,6 +8,7 @@ pub mod tabs;
 pub mod assistant;
 pub mod refine;
 pub mod image_edit;
+pub mod journal_ui;
 pub mod devtools;
 pub mod inspector;
 pub mod dialogs;

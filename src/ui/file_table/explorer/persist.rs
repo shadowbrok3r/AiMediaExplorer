@@ -69,7 +69,7 @@ pub async fn persist_scanned<C: Connection>(db: &Surreal<C>, rows: Vec<Thumbnail
     }
     if let Some(name) = collection {
         match collections::get_by_name(db, name).await? {
-            Some(found) => report.filed = collections::add_paths(db, &found.id, &paths).await?.added,
+            Some(found) => report.filed = crate::database::journal::add_to_collection_with(db, &found.id, &paths, &format!("Add to \"{}\"", found.name)).await?.added,
             None => report.collection_missing = true,
         }
     }

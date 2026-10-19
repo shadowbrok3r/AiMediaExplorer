@@ -165,6 +165,15 @@ Opens the AI Refinements tab limited to the files.
 {"cmd": "refine", "paths": ["/a.jpg", "/b.jpg"]}
 ```
 
+### undo and redo
+
+`undo` reverts the newest batch of the metadata journal (`src/database/journal.rs`); `redo` re-applies the batch that was undone last. Every metadata write the application makes is one batch: an Inspector edit, a batch tag or category change, a tag or category rename or delete, adding files to a collection or removing them, accepting a Refine or MCP proposal. A row that was edited again since is left alone and counted as skipped; the toast says how many changes came back, in how many files, and how many were skipped. Ctrl+Z and Ctrl+Shift+Z send the same commands while no text field has focus. A new change clears what could be redone, and the journal keeps the newest 5000 entries (whole batches). Devtools > Journal lists the entries and batches and has Undo, Redo and Clear buttons.
+
+```json
+{"cmd": "undo"}
+{"cmd": "redo"}
+```
+
 ### toast
 
 Shows a toast. `kind`: `info`, `success`, `warning`, `error`.
@@ -232,7 +241,7 @@ Selects the row of a path in the focused tab, which the inspector rail previews 
 
 ### open_devtools
 
-Opens a debug window: `theme_panel`, `settings_store`, `db_maintenance`, `legacy_import`, `thumb_storage`, `thumb_cache`, `tasks`, `command_log`, `perf`, `row_store`, `collections`, `query`, `browser_actions`, `video`, `scope`, `filters`, `grid`, `inspector`, `sidebar`, `actions`, `mcp_server`.
+Opens a debug window: `theme_panel`, `settings_store`, `db_maintenance`, `legacy_import`, `thumb_storage`, `thumb_cache`, `tasks`, `command_log`, `perf`, `row_store`, `collections`, `query`, `browser_actions`, `video`, `scope`, `filters`, `grid`, `inspector`, `journal`, `refine`, `sidebar`, `actions`, `mcp_server`.
 
 The `scope` window takes a scope string and shows how it parses (kind, title, parent, whether a folder exists), opens it in the focused tab or a new one, steps back and forward, lists the history stack of the focused tab with the scroll row and selection saved in each entry, and shows the timing of its recent loads: rows, batches, time to the first batch and total time.
 

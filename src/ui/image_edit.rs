@@ -1,94 +1,157 @@
-use eframe::egui::*;
-use crate::icons::{self, svg};
-use crate::ui::status::GlobalStatusIndicator;
-use base64::Engine as _;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+//! The Image Edit tab: prompt presets, a tracked edit job with progress and cancel, a compare view of the source and the result, session history, and saving without touching the original unless asked.
+
+mod backend;
+mod debug;
+mod job;
+pub mod model;
+mod qwen;
+mod save;
+#[cfg(test)]
+mod tests;
+mod view;
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::SystemTime;
+
+use crossbeam::channel::{Receiver, Sender, unbounded};
+use eframe::egui::{ColorImage, Context, TextureHandle, TextureOptions};
+
+use crate::ai::mcp::ctx::DbSource;
+use crate::command::{AppCommand, ToastLevel};
+use crate::ui::file_table::thumbs::{ScopeId, ThumbService, ThumbView, Tier, can_preview};
+
+pub use backend::{EditBackend, EditRequest, RunCtl};
+pub use job::{Decoded, Msg};
+pub use model::{CompareMode, EditError, ErrorKind, ModelSettings, Params, Phase};
+
+/// Results kept for the session.
+const HISTORY_MAX: usize = 12;
+
+/// One finished edit of this session.
+pub struct EditEntry {
+    pub id: u64,
+    pub source: String,
+    pub prompt: String,
+    pub png: Arc<[u8]>,
+    /// Pixels of the saved image.
+    pub full: [u32; 2],
+    pub texture: TextureHandle,
+    pub created: SystemTime,
+    /// The file the result was written to, once saved.
+    pub saved: Option<String>,
+    pub in_library: bool,
+}
+
+/// State of the GGUF download.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GgufState {
+    pub fetching: bool,
+    pub status: Option<String>,
+}
 
 pub struct ImageEditPanel {
     pub current_path: Option<String>,
-    pub prompt: String,
-    pub negative_prompt: String,
-    pub guidance_scale: f32,
-    pub strength: f32,
-    pub steps: usize,
-    // Local preview cache for this panel
-    thumb_cache: Arc<Mutex<HashMap<String, Arc<[u8]>>>>,
-    // Model controls/state
-    pub model_repo: String,
-    pub model_loaded: bool,
-    pub loading_model: bool,
-    pub model_error: Option<String>,
-    pipeline: std::sync::Arc<tokio::sync::Mutex<Option<crate::ai::qwen_image_edit::model::QwenImageEditPipeline>>>,
-    // Loader status channel (background -> UI)
-    status_tx: crossbeam::channel::Sender<Result<(), String>>,
-    status_rx: crossbeam::channel::Receiver<Result<(), String>>,
-    // GGUF controls/state
-    gguf_repo: String,
-    gguf_file: String,
-    gguf_fetching: bool,
-    gguf_status: Option<String>,
-    gguf_resolved_path: Option<String>,
-    gguf_tx: crossbeam::channel::Sender<Result<String, String>>,
-    gguf_rx: crossbeam::channel::Receiver<Result<String, String>>,
-    gguf_prefer: bool,
-    // Precision controls
-    prefer_full_precision: bool,
-    // Live preview and cancel
-    preview_every_n: usize,
-    preview_rx: Option<crossbeam::channel::Receiver<Vec<u8>>>,
-    cancel_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    // True while an edit result for the current source is cached
-    has_result: bool,
+    pub params: Params,
+    pub settings: ModelSettings,
+    phase: Phase,
+    cancel_flag: Option<Arc<AtomicBool>>,
+    backend: Arc<dyn EditBackend>,
+    history: Vec<EditEntry>,
+    shown: Option<u64>,
+    live: Option<TextureHandle>,
+    compare: CompareMode,
+    swipe: f32,
+    flipped: bool,
+    tx: Sender<Msg>,
+    rx: Receiver<Msg>,
+    thumbs: Arc<ThumbService>,
+    thumb_scope: ScopeId,
+    db: DbSource,
+    next_id: u64,
+    notice: Option<(bool, String)>,
+    gguf: GgufState,
+    model_busy: bool,
+    model_error: Option<EditError>,
+    confirm_overwrite: Option<u64>,
+    collections: Vec<String>,
+    collection_pick: Option<String>,
+    new_collection: String,
+    collections_loaded: bool,
+    debug_backend: bool,
 }
 
 impl Default for ImageEditPanel {
     fn default() -> Self {
-        Self {
-            current_path: None,
-            prompt: String::new(),
-            negative_prompt: String::new(),
-            guidance_scale: 7.5,
-            strength: 0.7,
-            steps: 30,
-            thumb_cache: Arc::new(Mutex::new(HashMap::new())),
-            model_repo: "Qwen/Qwen-Image-Edit".to_string(),
-            model_loaded: false,
-            loading_model: false,
-            model_error: None,
-            pipeline: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
-            // initialize a channel; will be replaced in new() if needed
-            status_tx: {
-                let (tx, _rx) = crossbeam::channel::unbounded(); tx
-            },
-            status_rx: {
-                let (_tx, rx) = crossbeam::channel::unbounded(); rx
-            },
-            // GGUF defaults: QuantStack/Qwen-Image-Edit-GGUF and default file
-            gguf_repo: "QuantStack/Qwen-Image-Edit-GGUF".to_string(),
-            // Default to a GGUF build (Qwen_Image_Edit-Q6_K.gguf preferred with CUDA / quantized var builder)
-            gguf_file: "Qwen_Image_Edit-Q6_K.gguf".to_string(),
-            gguf_fetching: false,
-            gguf_status: None,
-            gguf_resolved_path: None,
-            gguf_tx: {
-                let (tx, _rx) = crossbeam::channel::unbounded(); tx
-            },
-            gguf_rx: {
-                let (_tx, rx) = crossbeam::channel::unbounded(); rx
-            },
-            gguf_prefer: true,
-            prefer_full_precision: true,
-            preview_every_n: 0,
-            preview_rx: None,
-            cancel_flag: None,
-            has_result: false,
+        let mut panel = Self::with_backend(Arc::new(qwen::QwenBackend::default()), DbSource::Global, crate::ui::file_table::thumbs::service());
+        if debug::requested_by_env() {
+            panel.use_debug_backend(true);
         }
+        panel
     }
 }
 
+fn toast(level: ToastLevel, text: impl Into<String>) {
+    crate::command::send(AppCommand::Toast { kind: level, text: text.into() });
+}
+
 impl ImageEditPanel {
+    /// A panel over a given model backend, database and thumbnail service, for tests and tools.
+    pub fn with_backend(backend: Arc<dyn EditBackend>, db: DbSource, thumbs: Arc<ThumbService>) -> Self {
+        let (tx, rx) = unbounded();
+        Self {
+            current_path: None,
+            params: Params::default(),
+            settings: ModelSettings::default(),
+            phase: Phase::Idle,
+            cancel_flag: None,
+            backend,
+            history: Vec::new(),
+            shown: None,
+            live: None,
+            compare: CompareMode::default(),
+            swipe: 0.5,
+            flipped: false,
+            tx,
+            rx,
+            thumbs,
+            thumb_scope: crate::ui::file_table::thumbs::alloc_scope(),
+            db,
+            next_id: 1,
+            notice: None,
+            gguf: GgufState::default(),
+            model_busy: false,
+            model_error: None,
+            confirm_overwrite: None,
+            collections: Vec::new(),
+            collection_pick: None,
+            new_collection: String::new(),
+            collections_loaded: false,
+            debug_backend: false,
+        }
+    }
+
+    /// Switches between the Qwen pipeline and the test backend that edits in a moment; ignored while an edit runs.
+    pub fn use_debug_backend(&mut self, on: bool) {
+        if self.phase.is_busy() || self.debug_backend == on {
+            return;
+        }
+        self.backend = if on { Arc::new(debug::DebugBackend::default()) } else { Arc::new(qwen::QwenBackend::default()) };
+        self.debug_backend = on;
+        self.model_error = None;
+    }
+
+    pub fn uses_debug_backend(&self) -> bool {
+        self.debug_backend
+    }
+
+    /// Points the tab at `path`; the results of earlier edits stay in the history.
     pub fn open_with_path(&mut self, path: &str) {
+        if self.current_path.as_deref() != Some(path) {
+            self.shown = None;
+            self.live = None;
+            self.flipped = false;
+        }
         self.current_path = Some(path.to_string());
     }
 
@@ -97,485 +160,361 @@ impl ImageEditPanel {
         self.cancel_flag.clone().map(crate::tasks::CancelHandle::from_flag)
     }
 
-    pub fn ui(&mut self, ui: &mut Ui) {
-        if let Some(path) = &self.current_path {
-            // If we have a generated result, show it side-by-side or below
-            let result_key = format!("imageedit::result::{}", path);
-            self.has_result = self.thumb_cache.lock().map(|cache| cache.contains_key(&result_key)).unwrap_or(false);
-            // Model controls
-            ui.horizontal(|ui| {
-                icons::label(ui, svg::FILE_IMAGE, RichText::new("Source:").underline().strong());
-                ui.monospace(path);
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let can_load = !self.loading_model && !self.model_repo.trim().is_empty();
-                    if self.loading_model {
-                        Spinner::new().color(crate::theme::primary(ui)).ui(ui); 
-                        ui.label("Loading model…");
-                        // Poll loader status channel for completion or error
-                        if let Ok(msg) = self.status_rx.try_recv() {
-                            self.loading_model = false;
-                            match msg {
-                                Ok(()) => { self.model_loaded = true; self.model_error = None; }
-                                Err(e) => { self.model_loaded = false; self.model_error = Some(e); }
-                            }
-                        }
-                    } else if let Some(err) = &self.model_error { ui.colored_label(crate::theme::error(ui), err); }
+    pub fn phase(&self) -> &Phase {
+        &self.phase
+    }
 
-                    if ui.add_enabled(can_load, icons::button_widget(ui, if self.model_loaded { svg::ARROWS_CLOCKWISE } else { svg::AME_MODEL }, if self.model_loaded { "Reload Model" } else { "Load Model" })).clicked() {
-                        self.loading_model = true;
-                        self.model_error = None;
-                        crate::ui::status::QWEN_EDIT_STATUS.set_state(crate::ui::status::StatusState::Initializing, "Loading model");
-                        let repo = self.model_repo.clone();
-                        let slot = self.pipeline.clone();
-                        // create a fresh channel for this load
-                        let (tx, rx) = crossbeam::channel::unbounded();
-                        self.status_tx = tx.clone();
-                        self.status_rx = rx;
-                        let gguf_override = if self.gguf_prefer { self.gguf_resolved_path.clone() } else { None };
-                        let prefer_full = self.prefer_full_precision;
-                        tokio::spawn(async move {
-                            crate::ai::unload_heavy_models_except("").await;
-                            // Choose dtype according to user preference: full precision if requested
-                            let prefer = if prefer_full {
-                                // On CUDA prefer BF16 if available else F32. We’ll let the loader handle incompatibility.
-                                if candle_core::Device::new_cuda(0).is_ok() { candle_core::DType::BF16 } else { candle_core::DType::F32 }
-                            } else {
-                                if candle_core::Device::new_cuda(0).is_ok() { candle_core::DType::F16 } else { candle_core::DType::F32 }
-                            };
-                            let res = if let Some(p) = gguf_override.filter(|s| !s.is_empty()) {
-                                crate::ai::qwen_image_edit::model::QwenImageEditPipeline::load_from_hf_with_overrides(
-                                    &repo, prefer, Some(std::path::PathBuf::from(p)), None, None)
-                            } else {
-                                crate::ai::qwen_image_edit::model::QwenImageEditPipeline::load_from_hf(&repo, prefer)
-                            }
-                                .map_err(|e| e.to_string());
-                            match res {
-                                Ok(p) => {
-                                    let dev = if matches!(p.device, candle_core::Device::Cuda(_)) { crate::ui::status::DeviceKind::GPU } else { crate::ui::status::DeviceKind::CPU };
-                                    crate::ui::status::QWEN_EDIT_STATUS.set_device(dev);
-                                    crate::ui::status::QWEN_EDIT_STATUS.set_state(crate::ui::status::StatusState::Idle, "Ready");
-                                    let mut g = slot.lock().await; *g = Some(p); let _ = tx.send(Ok(()));
-                                }
-                                Err(e) => {
-                                    log::error!("[ImageEdit] model load failed: {e}");
-                                    // If full precision requested, attempt a reduced-precision fallback load once
-                                    if prefer_full && (e.to_ascii_lowercase().contains("cuda") || e.to_ascii_lowercase().contains("oom") || e.contains("named symbol not found")) {
-                                        crate::ui::status::QWEN_EDIT_STATUS.set_error(format!("Load failed at full precision: {}. Retrying at reduced precision…", e));
-                                        let prefer_low = if candle_core::Device::new_cuda(0).is_ok() { candle_core::DType::F16 } else { candle_core::DType::F32 };
-                                        let res2 = crate::ai::qwen_image_edit::model::QwenImageEditPipeline::load_from_hf(&repo, prefer_low)
-                                            .map_err(|e2| e2.to_string());
-                                        match res2 {
-                                            Ok(p2) => {
-                                                let dev = if matches!(p2.device, candle_core::Device::Cuda(_)) { crate::ui::status::DeviceKind::GPU } else { crate::ui::status::DeviceKind::CPU };
-                                                crate::ui::status::QWEN_EDIT_STATUS.set_device(dev);
-                                                crate::ui::status::QWEN_EDIT_STATUS.set_state(crate::ui::status::StatusState::Idle, "Ready");
-                                                let mut g = slot.lock().await; *g = Some(p2); let _ = tx.send(Ok(()));
-                                            }
-                                            Err(e3) => {
-                                                crate::ui::status::QWEN_EDIT_STATUS.set_error(format!("Load failed even after reduced precision: {}", e3));
-                                                let mut g = slot.lock().await; *g = None; let _ = tx.send(Err(e3));
-                                            }
-                                        }
-                                    } else {
-                                        crate::ui::status::QWEN_EDIT_STATUS.set_error(format!("Load failed: {e}"));
-                                        let mut g = slot.lock().await; *g = None; let _ = tx.send(Err(e));
-                                    }
-                                }
-                            }
-                        });
-                    }
-                    let hint = if self.model_repo.trim().is_empty() { "e.g. Qwen/Qwen-Image-Edit" } else { "" };
-                    TextEdit::singleline(&mut self.model_repo).hint_text(hint).desired_width(250.).ui(ui);
-                    icons::label(ui, svg::AME_MODEL, "Model repo:");
-                });
-            });
-            // GGUF controls row
-            ui.horizontal(|ui| {
-                icons::label(ui, svg::CLOUD_ARROW_DOWN, RichText::new("GGUF from repo:").underline());
-                TextEdit::singleline(&mut self.gguf_repo)
-                    .hint_text("e.g. QuantStack/Qwen-Image-Edit-GGUF")
-                    .desired_width(260.)
-                    .ui(ui);
-                TextEdit::singleline(&mut self.gguf_file)
-                    .hint_text("e.g. Qwen_Image_Edit-Q2_K.gguf")
-                    .desired_width(220.)
-                    .ui(ui);
-                let can_fetch = !self.gguf_fetching && !self.gguf_repo.trim().is_empty() && !self.gguf_file.trim().is_empty();
-                if ui.add_enabled(can_fetch, icons::button_widget(ui, svg::CLOUD_ARROW_DOWN, "Fetch GGUF")).clicked() {
-                    self.gguf_fetching = true;
-                    self.gguf_status = Some("Downloading…".to_string());
-                    let repo = self.gguf_repo.clone();
-                    let fname = self.gguf_file.clone();
-                    let (tx, rx) = crossbeam::channel::unbounded();
-                    self.gguf_tx = tx.clone();
-                    self.gguf_rx = rx;
-                    tokio::spawn(async move {
-                        // Use existing HF helper to ensure the file is present locally
-                        let res: Result<std::path::PathBuf, String> = (|| {
-                            let repo = crate::ai::hf::hf_model(&repo).map_err(|e| e.to_string())?;
-                            let p = crate::ai::hf::hf_get_file(&repo, &fname).map_err(|e| e.to_string())?;
-                            Ok(p)
-                        })();
-                        let _ = tx.send(res.map(|pb| pb.to_string_lossy().to_string()));
-                    });
-                }
-                if self.gguf_fetching {
-                    if let Ok(msg) = self.gguf_rx.try_recv() {
-                        self.gguf_fetching = false;
-                        match msg {
-                            Ok(path) => {
-                                self.gguf_resolved_path = Some(path.clone());
-                                self.gguf_status = Some(format!("Ready: {}", path));
-                            }
-                            Err(e) => {
-                                self.gguf_status = Some(format!("Error: {e}"));
-                            }
-                        }
-                    }
-                }
-                if let Some(msg) = &self.gguf_status { ui.label(msg); }
-                ui.separator();
-                ui.checkbox(&mut self.gguf_prefer, "Prefer GGUF when running");
-            });
-            ui.separator();
-            ui.add_space(6.0);
+    pub fn history(&self) -> &[EditEntry] {
+        &self.history
+    }
 
-            icons::label(ui, svg::CHAT_TEXT, "Prompt:");
-            TextEdit::singleline(&mut self.prompt).desired_width(400.).ui(ui);
-            icons::label(ui, svg::PROHIBIT, "Negative:");
-            TextEdit::singleline(&mut self.negative_prompt).desired_width(400.).ui(ui);
+    pub fn is_busy(&self) -> bool {
+        self.phase.is_busy()
+    }
 
-            Slider::new(&mut self.guidance_scale, 1.0..=12.0).text("Guidance").ui(ui);
-            Slider::new(&mut self.strength, 0.0..=1.0).text("Strength").ui(ui);
-            Slider::new(&mut self.steps, 1..=75).text("Steps").ui(ui);
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut self.prefer_full_precision, "Full precision (FP32/BF16) when available");
-                ui.label(RichText::new("Fallback to lower precision automatically on error").weak());
-            });
-            ui.horizontal(|ui| {
-                ui.label("Preview every N steps (0=off):");
-                ui.add(Slider::new(&mut self.preview_every_n, 0..=10));
-            });
-            
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                if ui.add_enabled(!self.loading_model && self.current_path.is_some(), icons::button_widget(ui, svg::AME_IMAGE_EDIT, "Run Edit")).clicked() {
-                    // Lazily load the model if not loaded yet, preferring GGUF override if present
-                    if !self.model_loaded {
-                        self.loading_model = true;
-                        self.model_error = None;
-                        crate::ui::status::QWEN_EDIT_STATUS.set_state(crate::ui::status::StatusState::Initializing, "Loading model");
-                        let repo = self.model_repo.clone();
-                        let slot = self.pipeline.clone();
-                        let (tx, rx) = crossbeam::channel::unbounded();
-                        self.status_tx = tx.clone();
-                        self.status_rx = rx;
-                        let gguf_override = self.gguf_resolved_path.clone();
-                        // capture intended run params so we continue immediately after load
-                        let pth = self.current_path.clone().unwrap_or_default();
-                        let cache = self.thumb_cache.clone();
-                        let opts = crate::ai::qwen_image_edit::EditOptions {
-                            prompt: self.prompt.clone(),
-                            negative_prompt: if self.negative_prompt.trim().is_empty() { None } else { Some(self.negative_prompt.clone()) },
-                            guidance_scale: self.guidance_scale,
-                            num_inference_steps: self.steps,
-                            strength: self.strength,
-                            scheduler: Some("flow_match_euler".into()),
-                            seed: None,
-                            deterministic_vae: true,
-                            preview_every_n: if self.preview_every_n == 0 { None } else { Some(self.preview_every_n) },
-                            preview_tx: {
-                                if self.preview_every_n > 0 {
-                                    let (tx, rx) = crossbeam::channel::unbounded();
-                                    self.preview_rx = Some(rx);
-                                    Some(tx)
-                                } else { None }
-                            },
-                            cancel: {
-                                let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                                self.cancel_flag = Some(flag.clone());
-                                Some(flag)
-                            },
-                        };
-                        crate::ui::status::QWEN_EDIT_STATUS.set_state(crate::ui::status::StatusState::Running, "Editing image");
-                        tokio::spawn(async move {
-                            crate::ai::unload_heavy_models_except("").await;
-                            let prefer = if candle_core::Device::new_cuda(0).is_ok() { candle_core::DType::F16 } else { candle_core::DType::F32 };
-                            let res = if let Some(p) = gguf_override.filter(|s| !s.is_empty()) {
-                                match crate::ai::qwen_image_edit::model::QwenImageEditPipeline::load_from_hf_with_overrides(
-                                    &repo, prefer, Some(std::path::PathBuf::from(p.clone())), None, None) {
-                                    Ok(pipe) => Ok(pipe),
-                                    Err(e) => {
-                                        let es = e.to_string();
-                                        let mut hint = String::new();
-                                        if es.contains("unknown dtype") || es.contains("unsupported quant") || p.to_ascii_lowercase().contains("-q") {
-                                            hint = " Hint: This GGUF looks quantized (e.g., Q2_K/Q4_K), which isn’t supported by the current loader. Try an F16 GGUF (e.g., *-F16.gguf).".to_string();
-                                        }
-                                        log::warn!("[ImageEdit] GGUF load failed ({}), retrying with safetensors", es);
-                                        crate::ui::status::QWEN_EDIT_STATUS.set_error(format!("GGUF load failed: {}. Falling back to safetensors…{}", es, hint));
-                                        crate::ai::qwen_image_edit::model::QwenImageEditPipeline::load_from_hf(&repo, prefer)
-                                    }
-                                }
-                            } else {
-                                crate::ai::qwen_image_edit::model::QwenImageEditPipeline::load_from_hf(&repo, prefer)
-                            }.map_err(|e| e.to_string());
-                            match res {
-                                Ok(p) => {
-                                    let dev = if matches!(p.device, candle_core::Device::Cuda(_)) { crate::ui::status::DeviceKind::GPU } else { crate::ui::status::DeviceKind::CPU };
-                                    crate::ui::status::QWEN_EDIT_STATUS.set_device(dev);
-                                    crate::ui::status::QWEN_EDIT_STATUS.set_state(crate::ui::status::StatusState::Idle, "Ready");
-                                    let mut g = slot.lock().await; *g = Some(p); let _ = tx.send(Ok(()));
-                                    // Now run the edit
-                                    let out = if let Some(pipe) = slot.lock().await.as_ref() {
-                                        match pipe.run_edit(std::path::Path::new(&pth), &opts) { Ok(b) => b, Err(e) => { log::error!("[ImageEdit] run_edit failed after load: {e}"); Vec::new() } }
-                                    } else { Vec::new() };
-                                    if !out.is_empty() {
-                                        let key = format!("imageedit::result::{}", &pth);
-                                        if let Ok(mut guard) = cache.lock() { guard.insert(key, Arc::from(out.into_boxed_slice())); }
-                                    }
-                                    crate::ui::status::QWEN_EDIT_STATUS.set_state(crate::ui::status::StatusState::Idle, "Idle");
-                                }
-                                Err(e) => {
-                                    log::error!("[ImageEdit] model load failed: {e}");
-                                    crate::ui::status::QWEN_EDIT_STATUS.set_error(format!("Load failed: {e}"));
-                                    let mut g = slot.lock().await; *g = None; let _ = tx.send(Err(e));
-                                }
-                            }
-                        });
-                    } else {
-                        // Run the real edit pipeline and capture output PNG bytes
-                        let slot = self.pipeline.clone();
-                        let pth = self.current_path.clone().unwrap_or_default();
-                        let cache = self.thumb_cache.clone();
-                        let repo = self.model_repo.clone();
-                        let prefer_full = self.prefer_full_precision;
-                        crate::ui::status::QWEN_EDIT_STATUS.set_state(crate::ui::status::StatusState::Running, "Editing image");
-                        let opts = crate::ai::qwen_image_edit::EditOptions {
-                            prompt: self.prompt.clone(),
-                            negative_prompt: if self.negative_prompt.trim().is_empty() { None } else { Some(self.negative_prompt.clone()) },
-                            guidance_scale: self.guidance_scale,
-                            num_inference_steps: self.steps,
-                            strength: self.strength,
-                            scheduler: Some("flow_match_euler".into()),
-                            seed: None,
-                            deterministic_vae: true,
-                            preview_every_n: if self.preview_every_n == 0 { None } else { Some(self.preview_every_n) },
-                            preview_tx: {
-                                if self.preview_every_n > 0 {
-                                    let (tx, rx) = crossbeam::channel::unbounded();
-                                    self.preview_rx = Some(rx);
-                                    Some(tx)
-                                } else { None }
-                            },
-                            cancel: {
-                                let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                                self.cancel_flag = Some(flag.clone());
-                                Some(flag)
-                            },
-                        };
-                        tokio::spawn(async move {
-                            // Release other heavy models for headroom
-                            crate::ai::unload_heavy_models_except("").await;
-                            let mut png = Vec::new();
-                            if let Some(pipe) = slot.lock().await.as_ref() {
-                                match pipe.run_edit(std::path::Path::new(&pth), &opts) {
-                                    Ok(b) => png = b,
-                                    Err(e) => {
-                                        let es = e.to_string();
-                                        log::warn!("[ImageEdit] run_edit error: {es}");
-                                        let should_fallback = es.to_ascii_lowercase().contains("cuda")
-                                            || es.to_ascii_lowercase().contains("oom")
-                                            || es.contains("named symbol not found");
-                                        if should_fallback && prefer_full {
-                                            // Attempt auto fallback: reload pipeline with reduced precision and retry once
-                                            log::warn!("[ImageEdit] retrying with reduced precision (F16/F32)");
-                                            let current_repo = repo.clone();
-                                            let prefer = if candle_core::Device::new_cuda(0).is_ok() { candle_core::DType::F16 } else { candle_core::DType::F32 };
-                                            match crate::ai::qwen_image_edit::model::QwenImageEditPipeline::load_from_hf(&current_repo, prefer) {
-                                                Ok(lowp) => {
-                                                    let dev = if matches!(lowp.device, candle_core::Device::Cuda(_)) { crate::ui::status::DeviceKind::GPU } else { crate::ui::status::DeviceKind::CPU };
-                                                    crate::ui::status::QWEN_EDIT_STATUS.set_device(dev);
-                                                    let mut guard = slot.lock().await; *guard = Some(lowp);
-                                                    drop(guard);
-                                                    // Retry
-                                                    if let Some(pipe2) = slot.lock().await.as_ref() {
-                                                        match pipe2.run_edit(std::path::Path::new(&pth), &opts) { Ok(b) => png = b, Err(e2) => { log::error!("[ImageEdit] run_edit failed after fallback: {e2}"); } }
-                                                    }
-                                                }
-                                                Err(e2) => {
-                                                    log::error!("[ImageEdit] fallback reload failed: {e2}");
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            if !png.is_empty() {
-                                let key = format!("imageedit::result::{}", &pth);
-                                if let Ok(mut guard) = cache.lock() { guard.insert(key, Arc::from(png.into_boxed_slice())); }
-                            }
-                            crate::ui::status::QWEN_EDIT_STATUS.set_state(crate::ui::status::StatusState::Idle, "Idle");
-                        });
-                    }
-                }
-                ui.horizontal(|ui| {
-                    if icons::button(ui, svg::STOP, "Cancel Run").clicked() {
-                        if let Some(f) = &self.cancel_flag { f.store(true, std::sync::atomic::Ordering::Relaxed); }
-                    }
-                    if self.has_result && icons::button(ui, svg::FLOPPY_DISK, "Save Result As…").clicked() {
-                        let bytes = self.thumb_cache.lock().ok().and_then(|cache| cache.get(&result_key).cloned());
-                        if let Some(bytes) = bytes {
-                            crate::ui::dialogs::save_file(ui.ctx(), "Save edited image as PNG", "edited.png", Some(("PNG", &["png"])), move |file| {
-                                match std::fs::write(&file, bytes.as_ref()) {
-                                    Ok(()) => crate::ui::dialogs::toast(egui_toast::ToastKind::Success, format!("Saved {}", file.display())),
-                                    Err(e) => crate::ui::dialogs::toast(egui_toast::ToastKind::Error, format!("Save failed: {e}")),
-                                }
-                            });
-                        }
-                    }
-                });
-                if icons::button(ui, svg::AME_REVEAL_IN_EXPLORER, "Open Source Folder").clicked() {
-                    if let Some(pb) = std::path::Path::new(path).parent() { let _ = open::that(pb); }
-                }
-                if icons::button(ui, svg::ARROW_SQUARE_OUT, "Open Source File").clicked() { let _ = open::that(path); }
-            });
-            ui.separator();
-            ui.columns(2, |ui| {
-                ui[0].vertical_centered(|ui| {
-                    // Preview the source image (high-res preview)
-                    let cache_key = format!("imageedit::preview::{},{}", path, 1600);
-                    let mut has_img = false;
-                    if let Ok(cache) = self.thumb_cache.lock() {
-                        if let Some(bytes_arc) = cache.get(&cache_key) {
-                            has_img = true;
-                            let img_src = eframe::egui::ImageSource::Bytes {
-                                uri: std::borrow::Cow::from(format!("bytes://{}", cache_key)),
-                                bytes: eframe::egui::load::Bytes::Shared(bytes_arc.clone()),
-                            };
-                            eframe::egui::Image::new(img_src)
-                                .max_size(ui.available_size()/1.3)
-                                .ui(ui);
-                        }
-                    }
-                    if !has_img {
-                        if crate::utilities::thumbs::begin_preview(&cache_key) {
-                            let cache = self.thumb_cache.clone();
-                            let path_buf = std::path::PathBuf::from(path);
-                            let cache_key_task = cache_key.clone();
-                            tokio::spawn(async move {
-                                let png = match crate::utilities::thumbs::generate_image_preview_png_blocking(path_buf.clone(), 1600).await {
-                                    Ok(png) => Ok(png),
-                                    Err(e) => {
-                                        log::debug!("[ImageEdit] preview fallback: {}", e);
-                                        crate::utilities::thumbs::generate_image_thumb_data_blocking(path_buf.clone()).await.and_then(|data_url| {
-                                            base64::engine::general_purpose::STANDARD
-                                                .decode(crate::utilities::thumbs::thumb_payload(&data_url).as_bytes())
-                                                .map_err(|e| e.to_string())
-                                        })
-                                    }
-                                }
-                                .unwrap_or_default();
-                                crate::utilities::thumbs::end_preview(&cache_key_task, !png.is_empty());
-                                if !png.is_empty() {
-                                    if let Ok(mut guard) = cache.lock() {
-                                        guard.insert(cache_key_task, Arc::from(png.into_boxed_slice()));
-                                    }
-                                }
-                            });
-                        }
-                        ui.weak("Loading preview…");
-                    }
+    /// Sender that jobs report to; tests use it to feed messages.
+    #[cfg(test)]
+    pub fn sender(&self) -> Sender<Msg> {
+        self.tx.clone()
+    }
 
-                });
-                ui[1].vertical_centered(|ui| {
-                    // Live step preview if enabled
-                    if let Some(rx) = &self.preview_rx {
-                        if let Ok(png) = rx.try_recv() {
-                            let key = format!("imageedit::preview_step::{}", path);
-                            if let Ok(mut cache) = self.thumb_cache.lock() {
-                                cache.insert(key.clone(), Arc::from(png.into_boxed_slice()));
-                            }
-                        }
-                        let key = format!("imageedit::preview_step::{}", path);
-                        if let Ok(cache) = self.thumb_cache.lock() {
-                            if let Some(bytes_arc) = cache.get(&key) {
-                                icons::label(ui, svg::EYE, RichText::new("Live Preview:").underline().strong());
-                                let img_src = eframe::egui::ImageSource::Bytes {
-                                    uri: std::borrow::Cow::from(format!("bytes://{}", key)),
-                                    bytes: eframe::egui::load::Bytes::Shared(bytes_arc.clone()),
-                                };
-                                eframe::egui::Image::new(img_src)
-                                    .max_size(ui.available_size()/1.3)
-                                    .ui(ui);
-                            }
-                        }
-                    }
+    fn note(&mut self, ok: bool, text: impl Into<String>) {
+        self.notice = Some((ok, text.into()));
+    }
 
-                    if let Ok(cache) = self.thumb_cache.lock() {
-                        if let Some(bytes_arc) = cache.get(&result_key) {
-                            ui.separator();
-                            icons::label(ui, svg::IMAGE, RichText::new("Result:").underline().strong());
-                            let img_src = eframe::egui::ImageSource::Bytes {
-                                uri: std::borrow::Cow::from(format!("bytes://{}", result_key)),
-                                bytes: eframe::egui::load::Bytes::Shared(bytes_arc.clone()),
-                            };
-                            eframe::egui::Image::new(img_src)
-                                .max_size(ui.available_size()/1.3)
-                                .ui(ui);
-                        }
-                    }
-                });
-            });
-        } else {
-            ui.weak("No image selected.");
+    fn spawn<F: std::future::Future<Output = ()> + Send + 'static>(&self, fut: F) -> bool {
+        match tokio::runtime::Handle::try_current() {
+            Ok(rt) => {
+                rt.spawn(fut);
+                true
+            }
+            Err(_) => false,
         }
+    }
+
+    /// Why an edit cannot start now, if it cannot.
+    pub fn blocked(&self) -> Option<&'static str> {
+        if self.phase.is_busy() {
+            return Some("An edit is already running");
+        }
+        if self.current_path.is_none() {
+            return Some("Choose an image first");
+        }
+        self.params.problem()
+    }
+
+    /// Starts the edit of the source image; the model is loaded first when it is not.
+    pub fn start(&mut self) -> Result<(), String> {
+        if let Some(why) = self.blocked() {
+            return Err(why.to_string());
+        }
+        let source = std::path::PathBuf::from(self.current_path.clone().unwrap_or_default());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let req = EditRequest { source, params: self.params.clone(), settings: self.settings.clone() };
+        let (backend, tx, flag) = (self.backend.clone(), self.tx.clone(), cancel.clone());
+        if !self.spawn(job::run_job(backend, req, flag, tx)) {
+            return Err("no async runtime is available".to_string());
+        }
+        self.phase = if self.backend.is_loaded() { Phase::Running { done: 0, total: self.params.steps as u64, detail: "Starting".to_string() } } else { Phase::LoadingModel };
+        self.cancel_flag = Some(cancel);
+        self.model_error = None;
+        self.notice = None;
+        self.live = None;
+        Ok(())
+    }
+
+    /// Asks the running edit to stop at its next step.
+    pub fn cancel(&mut self) {
+        if let Some(flag) = &self.cancel_flag {
+            flag.store(true, Ordering::Relaxed);
+        }
+        if self.phase.is_busy() {
+            self.phase = Phase::Cancelling;
+        }
+    }
+
+    /// Runs the failed edit again with the lower precision; for out-of-memory errors.
+    pub fn retry_lower_precision(&mut self) -> Result<(), String> {
+        self.params.prefer_full_precision = false;
+        self.params.steps = self.params.steps.min(20);
+        self.phase = Phase::Idle;
+        self.start()
+    }
+
+    /// Takes in what the background jobs reported.
+    pub fn pump(&mut self, ctx: &Context) {
+        let msgs: Vec<Msg> = self.rx.try_iter().collect();
+        for msg in msgs {
+            self.ingest(msg, ctx);
+        }
+    }
+
+    /// Applies one report of a job.
+    pub fn ingest(&mut self, msg: Msg, ctx: &Context) {
+        match msg {
+            Msg::Phase(p) => {
+                if self.phase != Phase::Cancelling {
+                    self.phase = p;
+                }
+            }
+            Msg::Preview(decoded) => self.live = Some(upload(ctx, "image_edit_live", &decoded)),
+            Msg::Finished { png, decoded, source, prompt } => self.finish(png, decoded, source, prompt, ctx),
+            Msg::Failed(e) => {
+                self.live = None;
+                toast(ToastLevel::Error, format!("Image edit failed: {}", e.message));
+                self.phase = Phase::Failed(e);
+            }
+            Msg::Cancelled => {
+                self.live = None;
+                self.phase = Phase::Cancelled;
+            }
+            Msg::ModelLoaded(result) => {
+                self.model_busy = false;
+                match result {
+                    Ok(()) => {
+                        self.model_error = None;
+                        self.note(true, "The model is loaded");
+                    }
+                    Err(e) => {
+                        toast(ToastLevel::Error, format!("Model load failed: {}", e.message));
+                        self.model_error = Some(e);
+                    }
+                }
+            }
+            Msg::Gguf(result) => {
+                self.gguf.fetching = false;
+                match result {
+                    Ok(path) => {
+                        self.gguf.status = Some(format!("Ready: {path}"));
+                        self.settings.gguf_path = Some(path);
+                    }
+                    Err(e) => self.gguf.status = Some(format!("Error: {e}")),
+                }
+            }
+            Msg::Saved { id, result } => match result {
+                Ok(path) => {
+                    toast(ToastLevel::Success, format!("Saved {path}"));
+                    if let Some(e) = self.history.iter_mut().find(|e| e.id == id) {
+                        e.saved = Some(path.clone());
+                    }
+                    self.note(true, format!("Saved {path}"));
+                }
+                Err(e) => {
+                    toast(ToastLevel::Error, format!("Save failed: {e}"));
+                    self.note(false, format!("Save failed: {e}"));
+                }
+            },
+            Msg::Library { id, result } => match result {
+                Ok(text) => {
+                    if let Some(e) = self.history.iter_mut().find(|e| e.id == id) {
+                        e.in_library = true;
+                    }
+                    toast(ToastLevel::Success, text.clone());
+                    self.note(true, text);
+                    self.collections_loaded = false;
+                }
+                Err(e) => {
+                    toast(ToastLevel::Error, format!("Adding to the library failed: {e}"));
+                    self.note(false, format!("Adding to the library failed: {e}"));
+                }
+            },
+            Msg::Collections(names) => {
+                self.collections = names;
+                self.collections_loaded = true;
+            }
+        }
+    }
+
+    fn finish(&mut self, png: Arc<[u8]>, decoded: Decoded, source: String, prompt: String, ctx: &Context) {
+        let id = self.next_id;
+        self.next_id += 1;
+        let texture = upload(ctx, &format!("image_edit_result_{id}"), &decoded);
+        self.history.push(EditEntry { id, source, prompt, png, full: decoded.full, texture, created: SystemTime::now(), saved: None, in_library: false });
+        if self.history.len() > HISTORY_MAX {
+            let dropped = self.history.remove(0);
+            if self.shown == Some(dropped.id) {
+                self.shown = None;
+            }
+        }
+        self.shown = Some(id);
+        self.live = None;
+        self.flipped = false;
+        self.phase = Phase::Done;
+        toast(ToastLevel::Success, "Image edit finished");
+    }
+
+    /// The result on screen: the one picked in the history, else the newest for the source image.
+    pub fn shown_entry(&self) -> Option<&EditEntry> {
+        match self.shown {
+            Some(id) => self.history.iter().find(|e| e.id == id),
+            None => self.history.iter().rev().find(|e| Some(&e.source) == self.current_path.as_ref()),
+        }
+    }
+
+    /// Shows a result of the history, with the source image it came from.
+    pub fn show_entry(&mut self, id: u64) {
+        if let Some(e) = self.history.iter().find(|e| e.id == id) {
+            self.current_path = Some(e.source.clone());
+            self.shown = Some(id);
+            self.flipped = false;
+        }
+    }
+
+    /// Drops a result from the history.
+    pub fn remove_entry(&mut self, id: u64) {
+        self.history.retain(|e| e.id != id);
+        if self.shown == Some(id) {
+            self.shown = None;
+        }
+        if self.confirm_overwrite == Some(id) {
+            self.confirm_overwrite = None;
+        }
+    }
+
+    /// Loads the model with the current settings, without starting an edit.
+    pub fn load_model(&mut self) {
+        if self.model_busy || self.phase.is_busy() {
+            return;
+        }
+        let (backend, settings, params, tx) = (self.backend.clone(), self.settings.clone(), self.params.clone(), self.tx.clone());
+        if self.spawn(async move {
+            let result = backend.load(&settings, &params).await;
+            let _ = tx.send(Msg::ModelLoaded(result));
+            crate::command::request_repaint();
+        }) {
+            self.model_busy = true;
+            self.model_error = None;
+        }
+    }
+
+    /// Frees the memory of the model.
+    pub fn unload_model(&mut self) {
+        if self.phase.is_busy() {
+            return;
+        }
+        let backend = self.backend.clone();
+        self.spawn(async move { backend.unload().await });
+    }
+
+    /// Downloads the GGUF file named in the settings.
+    pub fn fetch_gguf(&mut self) {
+        if self.gguf.fetching || self.settings.gguf_repo.trim().is_empty() || self.settings.gguf_file.trim().is_empty() {
+            return;
+        }
+        let (repo, file, tx) = (self.settings.gguf_repo.clone(), self.settings.gguf_file.clone(), self.tx.clone());
+        if self.spawn(async move {
+            let fetched = tokio::task::spawn_blocking(move || {
+                let repo = crate::ai::hf::hf_model(&repo).map_err(|e| e.to_string())?;
+                crate::ai::hf::hf_get_file(&repo, &file).map(|p| p.to_string_lossy().to_string()).map_err(|e| e.to_string())
+            })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+            let _ = tx.send(Msg::Gguf(fetched));
+            crate::command::request_repaint();
+        }) {
+            self.gguf = GgufState { fetching: true, status: Some("Downloading...".to_string()) };
+        }
+    }
+
+    /// Writes the result next to the source under a new name.
+    pub fn save_next_to_original(&mut self, id: u64) {
+        let Some(e) = self.history.iter().find(|e| e.id == id) else { return };
+        let (png, source, tx) = (e.png.clone(), e.source.clone(), self.tx.clone());
+        self.spawn(async move {
+            let result = tokio::task::spawn_blocking(move || save::save_next_to(&png, &source)).await.unwrap_or_else(|e| Err(e.to_string()));
+            let _ = tx.send(Msg::Saved { id, result });
+            crate::command::request_repaint();
+        });
+    }
+
+    /// Writes the result to `path`, chosen by the user.
+    pub fn save_to(&mut self, id: u64, path: std::path::PathBuf) {
+        let Some(e) = self.history.iter().find(|e| e.id == id) else { return };
+        let (png, tx) = (e.png.clone(), self.tx.clone());
+        self.spawn(async move {
+            let result = tokio::task::spawn_blocking(move || save::write_result(&png, &path)).await.unwrap_or_else(|e| Err(e.to_string()));
+            let _ = tx.send(Msg::Saved { id, result });
+            crate::command::request_repaint();
+        });
+    }
+
+    /// Asks to replace the original; nothing is written until `confirm_replace`.
+    pub fn ask_replace(&mut self, id: u64) {
+        if self.history.iter().any(|e| e.id == id) {
+            self.confirm_overwrite = Some(id);
+        }
+    }
+
+    pub fn replace_target(&self) -> Option<(&EditEntry, &str)> {
+        let id = self.confirm_overwrite?;
+        self.history.iter().find(|e| e.id == id).map(|e| (e, e.source.as_str()))
+    }
+
+    /// Replaces the original file with the result that was asked about.
+    pub fn confirm_replace(&mut self) {
+        let Some(id) = self.confirm_overwrite.take() else { return };
+        let Some(e) = self.history.iter().find(|e| e.id == id) else { return };
+        let (png, source, tx) = (e.png.clone(), e.source.clone(), self.tx.clone());
+        self.spawn(async move {
+            let result = tokio::task::spawn_blocking(move || save::overwrite_original(&png, &source, &source)).await.unwrap_or_else(|e| Err(e.to_string()));
+            let _ = tx.send(Msg::Saved { id, result });
+            crate::command::request_repaint();
+        });
+    }
+
+    pub fn cancel_replace(&mut self) {
+        self.confirm_overwrite = None;
+    }
+
+    /// Adds the result to the library, saving it next to the original first when it has no file yet.
+    pub fn add_to_library(&mut self, id: u64) {
+        let Some(e) = self.history.iter().find(|e| e.id == id) else { return };
+        let (png, source, saved, tx, db) = (e.png.clone(), e.source.clone(), e.saved.clone(), self.tx.clone(), self.db.clone());
+        let collection = if self.new_collection.trim().is_empty() { self.collection_pick.clone() } else { Some(self.new_collection.trim().to_string()) };
+        self.spawn(async move {
+            let path = match saved {
+                Some(p) => Ok(p),
+                None => tokio::task::spawn_blocking(move || save::save_next_to(&png, &source)).await.unwrap_or_else(|e| Err(e.to_string())),
+            };
+            let result = match path {
+                Ok(p) => {
+                    let _ = tx.send(Msg::Saved { id, result: Ok(p.clone()) });
+                    save::add_to_library(&db, &p, collection.as_deref()).await
+                }
+                Err(e) => Err(e),
+            };
+            let _ = tx.send(Msg::Library { id, result });
+            crate::command::request_repaint();
+        });
+    }
+
+    /// Reads the collection names for the choice, once.
+    pub fn load_collections_if_needed(&mut self) {
+        if self.collections_loaded {
+            return;
+        }
+        self.collections_loaded = true;
+        let (db, tx) = (self.db.clone(), self.tx.clone());
+        self.spawn(async move {
+            let names = save::collection_names(&db).await;
+            let _ = tx.send(Msg::Collections(names));
+            crate::command::request_repaint();
+        });
+    }
+
+    /// The picture of the source image: the larger preview when it can be decoded, else the stored thumbnail.
+    pub fn source_view(&self) -> ThumbView {
+        let Some(path) = &self.current_path else { return ThumbView::Missing };
+        let preview = if can_preview(path) { self.thumbs.request(self.thumb_scope, path, Tier::Preview, 0.0) } else { ThumbView::Missing };
+        if preview.is_ready() {
+            return preview;
+        }
+        let thumb = self.thumbs.request(self.thumb_scope, path, Tier::Thumb, 0.0);
+        if thumb.is_ready() || preview == ThumbView::Missing { thumb } else { preview }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use eframe::egui::{CentralPanel, Context, Pos2, RawInput, Rect, Shape};
-
-    fn frame_text(ctx: &Context, panel: &mut ImageEditPanel) -> String {
-        let input = RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1100.0, 800.0))),
-            ..Default::default()
-        };
-        let mut out = ctx.run_ui(input, |ui| {
-            CentralPanel::default().show(ui, |ui| panel.ui(ui));
-        });
-        out.textures_delta.clear();
-        let mut text = String::new();
-        fn walk(shape: &Shape, text: &mut String) {
-            match shape {
-                Shape::Text(t) => {
-                    text.push_str(t.galley.text());
-                    text.push('\n');
-                }
-                Shape::Vec(v) => v.iter().for_each(|s| walk(s, text)),
-                _ => {}
-            }
-        }
-        out.shapes.iter().for_each(|c| walk(&c.shape, &mut text));
-        text
-    }
-
-    #[tokio::test]
-    async fn save_result_appears_once_a_result_is_cached() {
-        let ctx = Context::default();
-        ctx.set_fonts(crate::theme::fonts::definitions(crate::theme::fonts::TextScale::Normal));
-        crate::theme::bootstrap_startup_theme(&ctx);
-        let mut panel = ImageEditPanel::default();
-        panel.open_with_path("/nonexistent/source.png");
-        frame_text(&ctx, &mut panel);
-        assert!(!panel.has_result);
-        assert!(!frame_text(&ctx, &mut panel).contains("Save Result As"));
-
-        let key = "imageedit::result::/nonexistent/source.png".to_string();
-        panel.thumb_cache.lock().unwrap().insert(key, Arc::from(vec![1u8, 2, 3].into_boxed_slice()));
-        let text = frame_text(&ctx, &mut panel);
-        assert!(panel.has_result, "result state is kept on the panel");
-        assert!(text.contains("Save Result As"), "the save button is reachable:\n{text}");
-    }
+/// Uploads a decoded picture as a texture.
+fn upload(ctx: &Context, name: &str, decoded: &Decoded) -> TextureHandle {
+    ctx.load_texture(name, ColorImage::from_rgba_unmultiplied(decoded.size, &decoded.rgba), TextureOptions::LINEAR)
 }

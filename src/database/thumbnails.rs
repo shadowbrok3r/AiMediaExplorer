@@ -428,60 +428,32 @@ impl crate::Thumbnail {
         Ok(map.into_iter().collect())
     }
 
-    /// Rename/merge a category across all rows, returns number of updated rows.
+    /// Rename/merge a category across all rows, returns number of updated rows; the change is journaled.
     pub async fn rename_category(old: &str, new: &str) -> anyhow::Result<u64, anyhow::Error> {
         let _ga = db_activity("Rename category");
         db_set_detail(format!("{old} -> {new}"));
-        let updated: Vec<Self> = DB
-            .query("UPDATE thumbnails SET category = $new WHERE category = $old")
-            .bind(("old", old.to_string()))
-            .bind(("new", new.to_string()))
-            .await?
-            .take(0)?;
-        Ok(updated.len() as u64)
+        super::journal::rename_category_with(&DB, old, new).await
     }
 
-    /// Rename/merge a tag across all rows, returns number of updated rows.
+    /// Rename/merge a tag across all rows, returns number of updated rows; the change is journaled.
     pub async fn rename_tag(old: &str, new: &str) -> anyhow::Result<u64, anyhow::Error> {
         let _ga = db_activity("Rename tag");
         db_set_detail(format!("{old} -> {new}"));
-        let updated: Vec<Self> = DB
-            .query(RENAME_TAG_SQL)
-            .bind(("old", old.to_string()))
-            .bind(("new", new.to_string()))
-            .await?
-            .take(0)?;
-        Ok(updated.len() as u64)
+        super::journal::rename_tag_with(&DB, old, new).await
     }
 
-    /// Delete a tag across all rows; returns number of updated rows.
+    /// Delete a tag across all rows; returns number of updated rows; the change is journaled.
     pub async fn delete_tag(tag: &str) -> anyhow::Result<u64, anyhow::Error> {
         let _ga = db_activity("Delete tag");
         db_set_detail(format!("{tag}"));
-        let updated: Vec<Self> = DB
-            .query(DELETE_TAG_SQL)
-            .bind(("tag", tag.to_string()))
-            .await?
-            .take(0)?;
-        Ok(updated.len() as u64)
+        super::journal::delete_tag_with(&DB, tag).await
     }
 
-    /// Limit the number of tags per row (truncate beyond limit). Returns number of updated rows.
+    /// Limit the number of tags per row (truncate beyond limit). Returns number of updated rows; the change is journaled.
     pub async fn prune_tags(limit: i64) -> anyhow::Result<u64, anyhow::Error> {
         let _ga = db_activity("Prune tags per item");
         db_set_detail(format!("limit = {limit}"));
-        let updated: Vec<Self> = DB
-            .query(
-                r#"
-                UPDATE thumbnails
-                SET tags = array::slice(tags, 0, $limit)
-                WHERE array::len(tags) > $limit
-                "#,
-            )
-            .bind(("limit", limit))
-            .await?
-            .take(0)?;
-        Ok(updated.len() as u64)
+        super::journal::prune_tags_with(&DB, limit).await
     }
 
     // Save (insert) a single thumbnail row (best-effort). Does not deduplicate existing rows.

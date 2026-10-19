@@ -30,7 +30,11 @@ impl eframe::App for app::SmartMediaApp {
         if let Some(op) = ui::tabs::read_nav_keys(&ctx) {
             command::send(command::AppCommand::Navigate { op });
         }
+        if let Some(cmd) = ui::journal_ui::read_keys(&ctx) {
+            command::send(cmd);
+        }
         self.pump_commands(&ctx);
+        self.apply_journal_results();
         self.context.receive(&ctx);
         self.sync_focused_explorer();
         ui::devtools::scope::publish(&ctx, self.context.active_explorer());

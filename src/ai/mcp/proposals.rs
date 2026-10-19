@@ -129,6 +129,44 @@ impl Applied {
     }
 }
 
+/// The fields of a proposal that an accept applies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FieldMask {
+    pub caption: bool,
+    pub description: bool,
+    pub category: bool,
+    pub tags: bool,
+}
+
+impl FieldMask {
+    pub const ALL: FieldMask = FieldMask { caption: true, description: true, category: true, tags: true };
+
+    pub fn is_empty(&self) -> bool {
+        !(self.caption || self.description || self.category || self.tags)
+    }
+}
+
+impl Applied {
+    /// The writes left after dropping the fields `mask` does not name.
+    pub fn masked(self, mask: FieldMask) -> Self {
+        Self {
+            caption: self.caption.filter(|_| mask.caption),
+            description: self.description.filter(|_| mask.description),
+            category: self.category.filter(|_| mask.category),
+            tags: self.tags.filter(|_| mask.tags),
+        }
+    }
+
+    /// Names of the fields that are written.
+    pub fn fields(&self) -> Vec<&'static str> {
+        [("caption", self.caption.is_some()), ("description", self.description.is_some()), ("category", self.category.is_some()), ("tags", self.tags.is_some())]
+            .into_iter()
+            .filter(|(_, on)| *on)
+            .map(|(name, _)| name)
+            .collect()
+    }
+}
+
 /// What applying `changes` to `existing` would write.
 pub fn apply_changes(existing: &Existing, changes: &Changes) -> Applied {
     let differs = |new: &Option<String>, old: &Option<String>| new.as_ref().filter(|n| old.as_ref() != Some(*n)).cloned();
@@ -364,6 +402,33 @@ impl ProposalStore {
 
     /// Writes the proposed changes to the library row and marks the proposal accepted.
     pub async fn accept(&self, id: &str) -> Result<Proposal, ToolError> {
+        self.accept_fields(id, FieldMask::ALL).await
+    }
+
+    /// Writes the fields of the proposal that `mask` names, journals them and marks the proposal accepted.
+    pub async fn accept_fields(&self, id: &str, mask: FieldMask) -> Result<Proposal, ToolError> {
+        self.accept_inner(id, mask, None).await
+    }
+
+    /// Accepts several proposals as one journal batch, so one undo reverts them all; returns each result in order.
+    pub async fn accept_many(&self, items: &[(String, FieldMask)]) -> Vec<(String, Result<Proposal, ToolError>)> {
+        let db = match self.handle().await {
+            Ok(db) => db,
+            Err(e) => return items.iter().map(|(id, _)| (id.clone(), Err(ToolError::failed(e.message())))).collect(),
+        };
+        let rec = crate::database::journal::Recorder::new("Accepted MCP proposals");
+        let mut out = Vec::with_capacity(items.len());
+        for (id, mask) in items {
+            out.push((id.clone(), self.accept_inner(id, *mask, Some(&rec)).await));
+        }
+        rec.commit_with(db).await;
+        out
+    }
+
+    async fn accept_inner(&self, id: &str, mask: FieldMask, shared: Option<&crate::database::journal::Recorder>) -> Result<Proposal, ToolError> {
+        if mask.is_empty() {
+            return Err(ToolError::invalid("choose at least one field to apply"));
+        }
         let proposal = self.pending(id).await?;
         let db = self.handle().await?;
         let row: Option<ItemRow> = db.query("SELECT caption, description, category, tags FROM thumbnails WHERE path = $p").bind(("p", proposal.path.clone())).await?.take(0)?;
@@ -373,7 +438,7 @@ impl ProposalStore {
             return Err(ToolError::NotFound(note));
         };
         let existing = Existing { caption: row.caption, description: row.description, category: row.category, tags: row.tags.unwrap_or_default() };
-        let applied = apply_changes(&existing, &proposal.changes);
+        let applied = apply_changes(&existing, &proposal.changes).masked(mask);
         let nothing_to_write = applied.is_empty();
         if !nothing_to_write {
             let mut sets = Vec::new();
@@ -391,15 +456,48 @@ impl ProposalStore {
             }
             db.query(format!("UPDATE thumbnails SET {} WHERE path = $path RETURN NONE", sets.join(", ")))
                 .bind(("path", proposal.path.clone()))
-                .bind(("caption", applied.caption))
-                .bind(("description", applied.description))
-                .bind(("category", applied.category))
-                .bind(("tags", applied.tags))
+                .bind(("caption", applied.caption.clone()))
+                .bind(("description", applied.description.clone()))
+                .bind(("category", applied.category.clone()))
+                .bind(("tags", applied.tags.clone()))
                 .await?
                 .check()?;
+            match shared {
+                Some(rec) => record_accept(rec, &proposal, &existing, &applied),
+                None => {
+                    let client = proposal.source.trim();
+                    let rec = crate::database::journal::Recorder::new(&if client.is_empty() { "Accepted proposal".to_string() } else { format!("Accepted proposal from {client}") });
+                    record_accept(&rec, &proposal, &existing, &applied);
+                    rec.commit_with(db).await;
+                }
+            }
         }
-        let note = nothing_to_write.then(|| "the row already had these values".to_string());
+        let note = if nothing_to_write {
+            Some("the row already had these values".to_string())
+        } else if mask != FieldMask::ALL {
+            Some(format!("applied {}", applied.fields().join(", ")))
+        } else {
+            None
+        };
         self.decide(id, Status::Accepted, note).await
+    }
+}
+
+/// Records the fields an accept wrote in the metadata journal.
+fn record_accept(rec: &crate::database::journal::Recorder, proposal: &Proposal, existing: &Existing, applied: &Applied) {
+    use crate::database::journal::Field;
+    let path = proposal.path.as_str();
+    if let Some(v) = &applied.caption {
+        rec.text(path, Field::Caption, existing.caption.as_deref(), Some(v));
+    }
+    if let Some(v) = &applied.description {
+        rec.text(path, Field::Description, existing.description.as_deref(), Some(v));
+    }
+    if let Some(v) = &applied.category {
+        rec.text(path, Field::Category, existing.category.as_deref(), Some(v));
+    }
+    if let Some(v) = &applied.tags {
+        rec.tags(path, &existing.tags, v);
     }
 }
 

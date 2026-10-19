@@ -8,10 +8,12 @@ pub mod db_maintenance;
 pub mod filters;
 pub mod grid;
 pub mod inspector;
+pub mod journal;
 pub mod legacy_import;
 pub mod mcp;
 pub mod perf;
 pub mod query;
+pub mod refine;
 pub mod row_store;
 pub mod scope;
 pub mod scan_perf;
@@ -82,6 +84,14 @@ pub fn toggle_inspector(ctx: &Context) {
     inspector::toggle(ctx);
 }
 
+pub fn toggle_journal(ctx: &Context) {
+    journal::set_open(ctx, !journal::is_open(ctx));
+}
+
+pub fn toggle_refine(ctx: &Context) {
+    refine::set_open(ctx, !refine::is_open(ctx));
+}
+
 pub fn toggle_mcp(ctx: &Context) {
     mcp::toggle(ctx);
 }
@@ -131,6 +141,8 @@ pub fn open(ctx: &Context, window: DevtoolsWindow) {
         DevtoolsWindow::Filters => filters::set_open(ctx, true),
         DevtoolsWindow::Grid => grid::set_open(ctx, true),
         DevtoolsWindow::Inspector => inspector::set_open(ctx, true),
+        DevtoolsWindow::Journal => journal::set_open(ctx, true),
+        DevtoolsWindow::Refine => refine::set_open(ctx, true),
         DevtoolsWindow::Sidebar => sidebar::set_open(ctx, true),
         DevtoolsWindow::Actions => actions::set_open(ctx, true),
         DevtoolsWindow::McpServer => mcp::set_open(ctx, true),
@@ -157,6 +169,8 @@ pub fn show(ctx: &Context) {
     filters::show(ctx);
     grid::show(ctx);
     inspector::show(ctx);
+    journal::show(ctx);
+    refine::show(ctx);
     sidebar::show(ctx);
     actions::show(ctx);
     mcp::show(ctx);
@@ -185,6 +199,8 @@ mod tests {
             DevtoolsWindow::Filters => filters::is_open(ctx),
             DevtoolsWindow::Grid => grid::is_open(ctx),
             DevtoolsWindow::Inspector => inspector::is_open(ctx),
+            DevtoolsWindow::Journal => journal::is_open(ctx),
+            DevtoolsWindow::Refine => refine::is_open(ctx),
             DevtoolsWindow::Sidebar => sidebar::is_open(ctx),
             DevtoolsWindow::Actions => actions::is_open(ctx),
             DevtoolsWindow::McpServer => mcp::is_open(ctx),
@@ -214,6 +230,8 @@ mod tests {
             DevtoolsWindow::Filters,
             DevtoolsWindow::Grid,
             DevtoolsWindow::Inspector,
+            DevtoolsWindow::Journal,
+            DevtoolsWindow::Refine,
             DevtoolsWindow::Sidebar,
             DevtoolsWindow::Actions,
             DevtoolsWindow::McpServer,

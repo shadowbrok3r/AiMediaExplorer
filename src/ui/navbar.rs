@@ -188,6 +188,14 @@ impl crate::app::SmartMediaApp {
                 crate::ui::devtools::toggle_sidebar(ui.ctx());
                 ui.close();
             }
+            if icons::button(ui, svg::CLOCK_COUNTER_CLOCKWISE, "Journal").clicked() {
+                crate::ui::devtools::toggle_journal(ui.ctx());
+                ui.close();
+            }
+            if icons::button(ui, svg::AME_REFINE, "Refine and Image Edit").clicked() {
+                crate::ui::devtools::toggle_refine(ui.ctx());
+                ui.close();
+            }
             if icons::button(ui, svg::LIST_BULLETS, "Actions").clicked() {
                 crate::ui::devtools::toggle_actions(ui.ctx());
                 ui.close();
@@ -200,6 +208,15 @@ impl crate::app::SmartMediaApp {
     }
 
     fn tools_menu_items(&mut self, ui: &mut Ui) {
+        if item(ui, svg::ARROW_COUNTER_CLOCKWISE, "Undo metadata change", Some("Ctrl+Z")).clicked() {
+            command::send(AppCommand::Undo);
+            ui.close();
+        }
+        if item(ui, svg::ARROW_CLOCKWISE, "Redo metadata change", Some("Ctrl+Shift+Z")).clicked() {
+            command::send(AppCommand::Redo);
+            ui.close();
+        }
+        ui.separator();
         self.shell_item(ui, ShellAction::ScanFolder, svg::AME_SCAN, None);
         if item(ui, svg::AME_MODEL, "Process files...", None).on_hover_text("Describe or embed the selection, this view or a folder").clicked() {
             command::send(AppCommand::Dialog { dialog: command::DialogKind::Process, folder: None });

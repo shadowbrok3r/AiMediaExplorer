@@ -79,6 +79,10 @@ pub trait CommandSink {
     fn show_settings(&mut self, section: Option<Section>) -> CommandResult;
     fn attach_to_assistant(&mut self, paths: Vec<String>) -> CommandResult;
     fn refine(&mut self, paths: Vec<String>) -> CommandResult;
+    /// Reverts the newest batch of the metadata journal.
+    fn undo(&mut self) -> CommandResult;
+    /// Re-applies the batch of the metadata journal that was undone last.
+    fn redo(&mut self) -> CommandResult;
     fn toast(&mut self, level: ToastLevel, text: String) -> CommandResult;
     fn task_update(&mut self, id: TaskId, event: TaskEvent) -> CommandResult;
     fn clear_selection(&mut self) -> CommandResult;
@@ -122,6 +126,8 @@ pub fn dispatch(sink: &mut dyn CommandSink, cmd: AppCommand) -> CommandResult {
         AppCommand::AttachToAssistant { paths } => sink.attach_to_assistant(paths),
         AppCommand::Refine { paths } if paths.is_empty() => Err(CommandError::invalid("no paths to refine")),
         AppCommand::Refine { paths } => sink.refine(paths),
+        AppCommand::Undo => sink.undo(),
+        AppCommand::Redo => sink.redo(),
         AppCommand::Toast { kind, text } => sink.toast(kind, text),
         AppCommand::TaskUpdate { id, event } => sink.task_update(id, event),
         AppCommand::ClearSelection => sink.clear_selection(),
@@ -220,6 +226,12 @@ pub(crate) mod fake {
         fn refine(&mut self, paths: Vec<String>) -> CommandResult {
             self.done(format!("refine {}", paths.join(",")))
         }
+        fn undo(&mut self) -> CommandResult {
+            self.done("undo".to_string())
+        }
+        fn redo(&mut self) -> CommandResult {
+            self.done("redo".to_string())
+        }
         fn toast(&mut self, level: ToastLevel, text: String) -> CommandResult {
             self.done(format!("toast {level:?} {text}"))
         }
@@ -286,6 +298,8 @@ mod tests {
             AppCommand::ShowSettings { section: Some(Section::Library) },
             AppCommand::AttachToAssistant { paths: vec!["/a".into()] },
             AppCommand::Refine { paths: vec!["/b".into()] },
+            AppCommand::Undo,
+            AppCommand::Redo,
             AppCommand::Toast { kind: ToastLevel::Info, text: "hi".into() },
             AppCommand::TaskUpdate { id: 4, event: TaskEvent::Complete },
             AppCommand::ClearSelection,
@@ -313,6 +327,8 @@ mod tests {
                 "show_settings Some(Library)",
                 "attach /a",
                 "refine /b",
+                "undo",
+                "redo",
                 "toast Info hi",
                 "task 4 Complete",
                 "clear_selection",

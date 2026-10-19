@@ -141,10 +141,10 @@ pub async fn apply_paths(db: &Surreal<Db>, id: &RecordId, text: &str, add: bool)
     let paths = parse_paths(text);
     anyhow::ensure!(!paths.is_empty(), "no paths to use");
     if add {
-        let r = collections::add_paths(db, id, &paths).await?;
+        let r = crate::database::journal::add_to_collection_with(db, id, &paths, "Add to collection (devtools)").await?;
         Ok(format!("{} added, {} already in the collection", r.added, r.already))
     } else {
-        let n = collections::remove_paths(db, id, &paths).await?;
+        let n = crate::database::journal::remove_from_collection_with(db, id, &paths, "Remove from collection (devtools)").await?;
         Ok(format!("{n} removed, {} were not in the collection", paths.len() - n))
     }
 }
