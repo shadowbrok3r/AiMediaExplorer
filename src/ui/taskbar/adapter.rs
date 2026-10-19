@@ -8,12 +8,6 @@ use crate::tasks::{AppProbe, ExplorerProbe};
 use crate::ui::file_table::FileExplorer;
 use crate::ui::file_table::rows::{ChipKind, FilterSpec};
 
-fn hash_of(value: &(impl Hash + ?Sized)) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    value.hash(&mut h);
-    h.finish()
-}
-
 /// Cheap fingerprint of the explorer state the stats depend on; it never walks the rows.
 pub fn view_signature(ex: &FileExplorer) -> Signature {
     let mut h = std::collections::hash_map::DefaultHasher::new();

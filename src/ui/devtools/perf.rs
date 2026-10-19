@@ -12,11 +12,11 @@ use crate::ui::taskbar::SystemMetrics;
 pub const FRAME_WINDOW: usize = 240;
 
 fn open_id() -> Id {
-    Id::new("ame_devtools_perf_open")
+    Id::unique("ame_devtools_perf_open")
 }
 
 fn frames_id() -> Id {
-    Id::new("ame_devtools_perf_frames")
+    Id::unique("ame_devtools_perf_frames")
 }
 
 pub fn is_open(ctx: &Context) -> bool {

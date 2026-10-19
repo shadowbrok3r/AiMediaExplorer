@@ -209,7 +209,7 @@ impl FileExplorer {
 }
 
 fn dev_owner(ex: &FileExplorer) -> Id {
-    Id::new(("ame_query_dev_owner", ex.viewer.scope))
+    Id::unique(("ame_query_dev_owner", ex.viewer.scope))
 }
 
 impl FileExplorer {
@@ -283,7 +283,7 @@ pub struct QueryRects {
 }
 
 pub(crate) fn text_id(ex: &FileExplorer) -> Id {
-    Id::new(("ame_query_text", ex.viewer.scope))
+    Id::unique(("ame_query_text", ex.viewer.scope))
 }
 
 fn mode_control(ui: &mut Ui, mode: &mut QueryMode, style: ModeStyle) -> Response {

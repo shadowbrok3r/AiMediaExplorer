@@ -171,33 +171,38 @@ impl CLIPImageProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
-    const CLIP_ID: &str = "openai/clip-vit-large-patch14-336";
+
+    fn processor() -> CLIPImageProcessor {
+        serde_json::from_str(r#"{"size": 336, "crop_size": 336}"#).unwrap()
+    }
+
+    fn gradient(width: u32, height: u32) -> DynamicImage {
+        DynamicImage::ImageRgb8(image::RgbImage::from_fn(width, height, |x, y| image::Rgb([(x * 255 / width) as u8, (y * 255 / height) as u8, ((x + y) % 256) as u8])))
+    }
 
     #[test]
     fn test_resize() {
-        let image_path = Path::new("images/Rectangle-1.png");
-        let image = image::ImageReader::open(image_path).unwrap().decode().unwrap();
-        let clip_image_processor = CLIPImageProcessor::from_pretrained(CLIP_ID).unwrap();
-        let resized_image = clip_image_processor.resize(&image);
-        resized_image.save("tmp/Rectangle-1-resized.png").unwrap();
+        let p = processor();
+        assert_eq!(p.resize(&gradient(800, 400)).dimensions(), (672, 336), "the shorter edge becomes the size");
+        assert_eq!(p.resize(&gradient(300, 900)).dimensions(), (336, 1008));
+        assert_eq!(p.resize(&gradient(336, 336)).dimensions(), (336, 336), "a square of the size is kept");
     }
+
     #[test]
     fn test_center_crop() {
-        let image_path = Path::new("images/llava_v1_5_radar.jpg");
-        let image = image::ImageReader::open(image_path).unwrap().decode().unwrap();
-        let clip_image_processor = CLIPImageProcessor::from_pretrained(CLIP_ID).unwrap();
-        let image_cropped = clip_image_processor.center_crop(&image);
-        image_cropped
-            .save("tmp/llava_v1_5_radar_cropped.jpg")
-            .unwrap();
+        let p = processor();
+        let wide = gradient(672, 336);
+        let cropped = p.center_crop(&wide);
+        assert_eq!(cropped.dimensions(), (336, 336));
+        assert_eq!(cropped.to_rgb8().get_pixel(0, 0), wide.to_rgb8().get_pixel(168, 0), "the crop is taken from the middle");
     }
+
     #[test]
     fn test_preprocess() {
-        let image_path = Path::new("images/llava_v1_5_radar.jpg");
-        let image = image::ImageReader::open(image_path).unwrap().decode().unwrap();
-        let clip_image_processor = CLIPImageProcessor::from_pretrained(CLIP_ID).unwrap();
-        let tensor = clip_image_processor.preprocess(&image).unwrap();
-        log::info!("{:?}", tensor.shape());
+        let p = processor();
+        let tensor = p.preprocess(&gradient(640, 480)).unwrap();
+        assert_eq!(tensor.dims(), &[3, 336, 336]);
+        let values = tensor.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        assert!(values.iter().all(|v| (-1.85..=2.2).contains(v)), "values are normalised with the CLIP mean and deviation");
     }
 }

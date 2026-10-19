@@ -18,7 +18,7 @@ const LIST_SHOWN: usize = 200;
 const INTEGRITY_WINDOW: usize = 50;
 
 fn open_id() -> Id {
-    Id::new("ame_devtools_thumb_storage_open")
+    Id::unique("ame_devtools_thumb_storage_open")
 }
 
 pub fn is_open(ctx: &Context) -> bool {

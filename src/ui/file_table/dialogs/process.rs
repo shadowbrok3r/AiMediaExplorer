@@ -496,7 +496,7 @@ pub fn show(ctx: &Context, ex: &mut FileExplorer) {
     let ai = crate::ui::file_table::action_bar::ai_ready();
     let mut open = true;
     let (mut start, mut browse, mut confirm, mut back) = (false, false, false, false);
-    let id = Id::new(("ame_process_dialog", ex.viewer.scope));
+    let id = Id::unique(("ame_process_dialog", ex.viewer.scope));
     let folder_images = ex.toolbar.process.folder_images();
     Window::new("Process files").id(id).open(&mut open).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(ctx, |ui| {
         ui.set_width(430.0);

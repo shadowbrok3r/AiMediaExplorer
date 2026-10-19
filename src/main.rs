@@ -37,6 +37,7 @@ impl eframe::App for app::SmartMediaApp {
         self.apply_journal_results();
         self.context.receive(&ctx);
         self.sync_focused_explorer();
+        self.workspace_tick(&ctx);
         ui::devtools::scope::publish(&ctx, self.context.active_explorer());
         ai::mcp::snapshot::publish_frame(self);
         self.poll_tasks();
@@ -95,6 +96,7 @@ impl eframe::App for app::SmartMediaApp {
     }
 
     fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
+        self.workspace_exit(&self.egui_ctx.clone());
         settings::flush_blocking(std::time::Duration::from_millis(1500));
         self.context.appearance.flush(&self.egui_ctx);
         if let Some(gl) = gl {
@@ -215,7 +217,8 @@ async fn main() -> eframe::Result<()> {
     let _ = eframe::run_native(
         format!("Smart Media {}", env!("CARGO_PKG_VERSION")).as_str(),
         eframe::NativeOptions {
-            viewport: ui::titlebar::viewport(&chrome),
+            viewport: ui::workspace::launch_viewport(ui::titlebar::viewport(&chrome)),
+            persist_window: ui::workspace::eframe_keeps_window(),
             ..Default::default()
         },
         Box::new(move |cc| {

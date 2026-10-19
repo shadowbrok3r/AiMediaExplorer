@@ -1,4 +1,4 @@
-use crate::{next_scan_id, ui::status::GlobalStatusIndicator, DB};
+use crate::{next_scan_id, status::GlobalStatusIndicator, DB};
 use crate::utilities::archive::{ArchiveRegistry, entry_to_thumbnail};
 use std::{path::PathBuf, time::Duration};
 
@@ -144,7 +144,7 @@ impl crate::ui::file_table::FileExplorer {
                 Err(e) => {
                     log::error!("DB preload failed: {e}");
                     if e.to_string().contains("uninitialised") {
-                        crate::ui::status::DB_STATUS.set_state(crate::ui::status::StatusState::Initializing, "Database still initializing..");
+                        crate::status::DB_STATUS.set_state(crate::status::StatusState::Initializing, "Database still initializing..");
                         tokio::time::sleep(Duration::from_secs(2)).await;
                         DB.wait_for(surrealdb::opt::WaitFor::Connection).await;
                         match crate::Thumbnail::get_all_thumbnails_from_directory(prefix.as_str()).await {

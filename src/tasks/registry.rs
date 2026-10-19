@@ -79,10 +79,6 @@ impl TaskRegistry {
         self.tasks.iter().filter(|t| !t.state.is_active())
     }
 
-    pub fn has_active(&self, kind: TaskKind) -> bool {
-        self.active().any(|t| t.kind == kind)
-    }
-
     pub fn attention(&self) -> Vec<AttentionItem> {
         self.attention.values().flatten().cloned().collect()
     }

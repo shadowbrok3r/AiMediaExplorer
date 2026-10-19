@@ -7,19 +7,19 @@ use crate::ui::image_edit::ImageEditPanel;
 use crate::ui::refine::{Confirm, RefinementsPanel};
 
 fn open_id() -> Id {
-    Id::new("ame_devtools_refine_open")
+    Id::unique("ame_devtools_refine_open")
 }
 
 fn snapshot_id() -> Id {
-    Id::new("ame_devtools_refine_snapshot")
+    Id::unique("ame_devtools_refine_snapshot")
 }
 
 fn requests_id() -> Id {
-    Id::new("ame_devtools_refine_requests")
+    Id::unique("ame_devtools_refine_requests")
 }
 
 fn form_id() -> Id {
-    Id::new("ame_devtools_refine_form")
+    Id::unique("ame_devtools_refine_form")
 }
 
 pub fn is_open(ctx: &Context) -> bool {

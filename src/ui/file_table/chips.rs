@@ -68,7 +68,7 @@ fn views_button(ui: &mut Ui, ex: &mut FileExplorer) {
 
 fn views_menu(ui: &mut Ui, ex: &mut FileExplorer) {
     ui.set_width(300.0);
-    let id = Id::new(("ame_filter_views", ex.viewer.scope));
+    let id = Id::unique(("ame_filter_views", ex.viewer.scope));
     let mut state: ViewsUi = ui.data(|d| d.get_temp(id)).unwrap_or_default();
     ui.horizontal(|ui| {
         ui.label(RichText::new("Saved views").strong().color(crate::theme::primary(ui)));

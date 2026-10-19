@@ -6,6 +6,8 @@ Top strip, global sidebar, command palette and the saved window layout. Code: `s
 
 `File`, `View`, `Tools` and `Help` menus, then the palette entry (Ctrl+K), the window title and the engine chips. Below 1150 px the chips shrink to icons and the palette entry loses its hint text; at 700 px (the minimum window width) the palette entry is an icon.
 
+Each engine chip has its own icon: DB the database, VISION the vision model, CLIP the embedder, RERANK the reranker, QWEN-EDIT the image editor, ASSIST the assistant, ZEROCLAW the gateway (an engine without one of its own shows a gear). The icon is dim while the engine is idle, pulses while it loads or works, and takes the warning or error colour for a waiting or failed engine; the hover card is unchanged. When even the icons do not fit, one gear opens a list of every engine with its icon.
+
 | Menu | Entries |
 |---|---|
 | File | Open folder, Scan folder, Database (view entire database; backup and restore, export, import and choose folder open Settings > Library), Preferences (the Settings tab, see `settings.md`), Quit |
@@ -44,7 +46,7 @@ Below 900 px the sidebar is an icon rail: one icon per section opens its rows in
 }
 ```
 
-Missing fields take defaults, the width is clamped to 170..420, and a missing, unreadable or newer-version file gives the defaults without panicking (a newer file is not overwritten).
+Missing fields take defaults, the width is clamped to 170..420, and a missing, unreadable or newer-version file gives the defaults without panicking (a newer file is not overwritten). The tabs, the dock layout and the window are kept in `workspace.json` (see `settings.md`).
 
 ## Command palette
 
@@ -57,6 +59,7 @@ Ctrl+K, the strip entry, `Help > Command palette` or `{"cmd": "open_palette", "q
 | Sidebar | mode and width, section toggles, list cache age and refresh, the layout JSON and a disconnected-library preview |
 | Actions | every palette command with its id, shortcut, enabled state and reason, and a Run button |
 | Perf | also lists the scan batch timings of the focused tab (moved from the old Quick Access pane) |
+| Workspace | the workspace file, its last write, the live state against the file, Save now, Reload, Forget and the state dump (see `settings.md`) |
 
 Open them with `View > Devtools` or `--devtools sidebar,actions`.
 

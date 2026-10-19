@@ -9,15 +9,15 @@ use crate::icons::{self, svg};
 use crate::ui::file_table::thumbs::{self, ThumbService, service::Snapshot, stats::StageStat};
 
 fn open_id() -> Id {
-    Id::new("ame_devtools_thumb_cache_open")
+    Id::unique("ame_devtools_thumb_cache_open")
 }
 
 fn overlay_id() -> Id {
-    Id::new("ame_devtools_thumb_cache_overlay")
+    Id::unique("ame_devtools_thumb_cache_overlay")
 }
 
 fn force_n_id() -> Id {
-    Id::new("ame_devtools_thumb_cache_force_n")
+    Id::unique("ame_devtools_thumb_cache_force_n")
 }
 
 pub fn is_open(ctx: &Context) -> bool {
@@ -288,7 +288,7 @@ fn control_section(ui: &mut Ui, svc: &Arc<ThumbService>, snap: &Snapshot) {
 fn overlay(ctx: &Context, svc: &Arc<ThumbService>) {
     let snap = svc.snapshot();
     let t = &snap.timings;
-    Area::new(Id::new("ame_thumb_overlay_area")).order(Order::Foreground).anchor(Align2::RIGHT_BOTTOM, vec2(-12.0, -12.0)).interactable(false).show(ctx, |ui| {
+    Area::new(Id::unique("ame_thumb_overlay_area")).order(Order::Foreground).anchor(Align2::RIGHT_BOTTOM, vec2(-12.0, -12.0)).interactable(false).show(ctx, |ui| {
         Frame::popup(ui.style()).show(ui, |ui| {
             let fps = if t.frame.avg > 0.0 { 1000.0 / t.frame.avg } else { 0.0 };
             ui.monospace(format!("{fps:.0} fps  ui avg {} p95 {} ms", ms(t.ui.avg), ms(t.ui.p95)));

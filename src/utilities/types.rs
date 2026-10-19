@@ -116,11 +116,6 @@ impl Default for Filters {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct ScanResults {
-    pub items: Vec<FoundFile>,
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub enum MediaKind {
     Image,

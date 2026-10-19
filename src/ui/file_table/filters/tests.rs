@@ -81,7 +81,7 @@ async fn the_filter_signature_changes_with_every_input_and_only_the_inputs_in_us
     let base = ex.viewer.filter_signature();
     assert_eq!(ex.viewer.filter_signature(), base);
     let mut seen = vec![base];
-    let mut step = |ex: &mut FileExplorer, seen: &mut Vec<u64>| seen.push(ex.viewer.filter_signature());
+    let step = |ex: &mut FileExplorer, seen: &mut Vec<u64>| seen.push(ex.viewer.filter_signature());
     ex.viewer.filter = "fox".into();
     step(&mut ex, &mut seen);
     ex.viewer.types_show_images = false;

@@ -5,6 +5,7 @@ pub mod dirs;
 pub mod location;
 mod store;
 pub mod ui_prefs;
+pub mod workspace;
 #[cfg(test)]
 pub(crate) mod testing;
 

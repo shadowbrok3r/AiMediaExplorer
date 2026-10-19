@@ -73,10 +73,6 @@ pub trait ThumbSink: Send + Sync {
 
 static THUMB_SINK: OnceLock<Arc<dyn ThumbSink>> = OnceLock::new();
 
-pub fn set_thumb_sink(sink: Arc<dyn ThumbSink>) -> bool {
-    THUMB_SINK.set(sink).is_ok()
-}
-
 pub fn thumb_sink() -> Arc<dyn ThumbSink> {
     THUMB_SINK.get_or_init(crate::ui::file_table::thumbs::default_sink).clone()
 }
@@ -117,13 +113,6 @@ pub fn generate_image_thumb(path: &Path) -> Result<EncodedThumb, String> {
 
 pub fn generate_image_thumb_data(path: &Path) -> Result<String, String> {
     generate_image_thumb(path).map(|t| t.to_legacy_string())
-}
-
-// Blocking-pool variant for async callers.
-pub async fn generate_image_thumb_data_blocking(path: std::path::PathBuf) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || generate_image_thumb_data(&path))
-        .await
-        .unwrap_or_else(|e| Err(format!("thumbnail task failed: {e}")))
 }
 
 fn generate_image_thumb_inner(path: &Path) -> Result<EncodedThumb, String> {
@@ -523,63 +512,6 @@ pub fn generate_image_preview_png(path: &Path, max_dim: u32) -> Result<Vec<u8>, 
     guarded(|| generate_image_preview_png_inner(path, max_dim), |msg| format!("preview decode panicked: {msg}"))
 }
 
-// Blocking-pool variant for async callers.
-pub async fn generate_image_preview_png_blocking(path: std::path::PathBuf, max_dim: u32) -> Result<Vec<u8>, String> {
-    tokio::task::spawn_blocking(move || generate_image_preview_png(&path, max_dim))
-        .await
-        .unwrap_or_else(|e| Err(format!("preview task failed: {e}")))
-}
-
-const PREVIEW_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
-const PREVIEW_RESULT_HOLD: std::time::Duration = std::time::Duration::from_secs(5);
-const PREVIEW_GATE_MAX_ENTRIES: usize = 1024;
-
-#[derive(Clone, Copy)]
-enum PreviewGateState {
-    InFlight,
-    FailedAt(std::time::Instant),
-    DoneAt(std::time::Instant),
-}
-
-static PREVIEW_GATE: once_cell::sync::Lazy<std::sync::Mutex<std::collections::HashMap<String, PreviewGateState>>> =
-    once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-
-fn preview_state_blocks(state: PreviewGateState, now: std::time::Instant) -> bool {
-    match state {
-        PreviewGateState::InFlight => true,
-        PreviewGateState::FailedAt(at) => now.saturating_duration_since(at) < PREVIEW_RETRY_AFTER,
-        PreviewGateState::DoneAt(at) => now.saturating_duration_since(at) < PREVIEW_RESULT_HOLD,
-    }
-}
-
-fn begin_preview_at(key: &str, now: std::time::Instant) -> bool {
-    let Ok(mut gate) = PREVIEW_GATE.lock() else { return true };
-    if gate.get(key).is_some_and(|s| preview_state_blocks(*s, now)) {
-        return false;
-    }
-    if gate.len() >= PREVIEW_GATE_MAX_ENTRIES {
-        gate.retain(|_, s| preview_state_blocks(*s, now));
-    }
-    gate.insert(key.to_string(), PreviewGateState::InFlight);
-    true
-}
-
-fn end_preview_at(key: &str, succeeded: bool, now: std::time::Instant) {
-    if let Ok(mut gate) = PREVIEW_GATE.lock() {
-        gate.insert(key.to_string(), if succeeded { PreviewGateState::DoneAt(now) } else { PreviewGateState::FailedAt(now) });
-    }
-}
-
-// True when the caller should start generating the preview for `key`; false while one is in flight, just finished or recently failed.
-pub fn begin_preview(key: &str) -> bool {
-    begin_preview_at(key, std::time::Instant::now())
-}
-
-// Records the outcome so the pane does not respawn before the result is stored, nor retry a failure every frame.
-pub fn end_preview(key: &str, succeeded: bool) {
-    end_preview_at(key, succeeded, std::time::Instant::now())
-}
-
 /// Decoded preview scaled to fit `max_dim`, for callers that upload pixels directly instead of going through PNG.
 pub fn generate_image_preview_image(path: &Path, max_dim: u32) -> Result<DynamicImage, String> {
     guarded(|| generate_image_preview_image_inner(path, max_dim), |msg| format!("preview decode panicked: {msg}"))
@@ -726,24 +658,6 @@ mod tests {
         assert!(err.starts_with("raw: "), "{err}");
         let err = generate_image_preview_png(&p, 1600).unwrap_err();
         assert!(err.starts_with("raw: "), "{err}");
-    }
-
-    #[test]
-    fn preview_gate_blocks_duplicates_and_remembers_outcomes() {
-        use std::time::{Duration, Instant};
-        let t0 = Instant::now();
-        let ok_key = "preview::/gate/ok.png,1600";
-        assert!(begin_preview_at(ok_key, t0));
-        assert!(!begin_preview_at(ok_key, t0), "second request while in flight");
-        end_preview_at(ok_key, true, t0);
-        assert!(!begin_preview_at(ok_key, t0 + Duration::from_secs(1)), "held while the result is being stored");
-        assert!(begin_preview_at(ok_key, t0 + Duration::from_secs(6)), "allowed again if the cache dropped it");
-        let bad_key = "preview::/gate/bad.png,1600";
-        assert!(begin_preview_at(bad_key, t0));
-        end_preview_at(bad_key, false, t0);
-        assert!(!begin_preview_at(bad_key, t0 + Duration::from_secs(10)), "failure is negative-cached");
-        assert!(begin_preview_at(bad_key, t0 + Duration::from_secs(31)), "failure expires");
-        assert!(begin_preview_at("preview::/gate/other.png,1600", t0), "other keys are independent");
     }
 
     #[test]

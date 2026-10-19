@@ -1,6 +1,5 @@
 use crate::Thumbnail;
 use crate::command::Scope;
-use crate::ui::file_table::scope::nav::scope_for_path;
 use std::path::Path;
 
 impl crate::ui::file_table::FileExplorer {
@@ -11,18 +10,6 @@ impl crate::ui::file_table::FileExplorer {
         t.filename = name;
         t.file_type = "<DIR>".into();
         Some(t)
-    }
-
-    pub fn refresh_wsl_cache(&mut self) {
-        self.cached_wsl_distros = Some(crate::utilities::explorer::list_wsl_distros());
-        self.cached_physical_drives = Some(crate::utilities::explorer::list_physical_drives());
-    }
-
-    /// Starts a fresh tab at a path, optionally with a recursive scan; a path that cannot be opened leaves the tab as it was.
-    pub fn init_open_path(&mut self, path: &str, recursive: bool) {
-        if let Err(reason) = self.start_at(scope_for_path(path), recursive) {
-            log::warn!("[scope] {reason}");
-        }
     }
 
     /// Scans `current_path` and everything below it; the scan is recorded so it can be opened again as `Scope::Scan`.

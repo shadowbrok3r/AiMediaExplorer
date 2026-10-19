@@ -61,19 +61,19 @@ struct Editor {
 }
 
 fn open_id() -> Id {
-    Id::new("ame_devtools_filters_open")
+    Id::unique("ame_devtools_filters_open")
 }
 
 fn snapshot_id() -> Id {
-    Id::new("ame_devtools_filters_snapshot")
+    Id::unique("ame_devtools_filters_snapshot")
 }
 
 fn commands_id(owner: Id) -> Id {
-    Id::new(("ame_devtools_filters_commands", owner))
+    Id::unique(("ame_devtools_filters_commands", owner))
 }
 
 fn editor_id() -> Id {
-    Id::new("ame_devtools_filters_editor")
+    Id::unique("ame_devtools_filters_editor")
 }
 
 pub fn is_open(ctx: &Context) -> bool {
@@ -288,7 +288,7 @@ mod tests {
     #[test]
     fn commands_reach_only_their_owner_and_only_once() {
         let ctx = Context::default();
-        let (a, b) = (Id::new("a"), Id::new("b"));
+        let (a, b) = (Id::unique("a"), Id::unique("b"));
         push_command(&ctx, a, Command::Clear);
         push_command(&ctx, a, Command::Explain("/x".into()));
         push_command(&ctx, b, Command::Reset);

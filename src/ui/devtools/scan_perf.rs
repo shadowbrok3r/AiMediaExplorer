@@ -5,15 +5,15 @@ use eframe::egui::{Context, Id, Ui};
 use crate::ui::file_table::scan_perf::ScanPerf;
 
 fn data_id() -> Id {
-    Id::new("ame_devtools_scan_perf")
+    Id::unique("ame_devtools_scan_perf")
 }
 
 fn clear_id() -> Id {
-    Id::new("ame_devtools_scan_perf_clear")
+    Id::unique("ame_devtools_scan_perf_clear")
 }
 
 fn per_1k_id() -> Id {
-    Id::new("ame_devtools_scan_perf_per_1k")
+    Id::unique("ame_devtools_scan_perf_per_1k")
 }
 
 /// Records the timings the section shows.

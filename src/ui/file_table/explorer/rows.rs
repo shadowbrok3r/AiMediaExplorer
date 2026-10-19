@@ -12,7 +12,7 @@ use crate::ui::file_table::rows::{PathKey, Refresh, SelectionStats, Step, ViewIn
 use crate::ui::file_table::table::columns::Col;
 use crate::ui::file_table::table::details::{DetailsEvent, DetailsInputs};
 use crate::ui::file_table::table::keys::KeyAction;
-use crate::ui::file_table::table::{ExplorerMode, TabAction, cells};
+use crate::ui::file_table::table::{TabAction, cells};
 
 /// How long a row keeps the focus before its on-demand work (archive thumbnail, CLIP check) starts.
 const FOCUS_SETTLE: Duration = Duration::from_millis(150);
@@ -25,6 +25,8 @@ pub struct RowSync {
     stats_key: Option<(u64, u64)>,
     selection_stats: SelectionStats,
     prefs_loaded: bool,
+    /// Sort of a restored tab, which wins over the saved column preferences once.
+    pub restored_sort: Option<crate::ui::file_table::rows::SortSpec>,
     /// Bumped whenever CLIP presence changes.
     pub clip_gen: u64,
     pub last_check: Option<Result<(), String>>,
@@ -194,7 +196,8 @@ impl FileExplorer {
         if std::mem::replace(&mut self.row_sync.prefs_loaded, true) {
             return;
         }
-        if let Some(sort) = self.details.load_prefs(ctx) {
+        let saved = self.details.load_prefs(ctx);
+        if let Some(sort) = self.row_sync.restored_sort.take().or(saved) {
             self.view.set_sort(sort);
         }
     }
@@ -347,7 +350,7 @@ impl FileExplorer {
     }
 
     fn debug_id(&self) -> egui::Id {
-        egui::Id::new(("ame_row_store_owner", self.viewer.scope))
+        egui::Id::unique(("ame_row_store_owner", self.viewer.scope))
     }
 
     pub(crate) fn publish_row_debug(&self, ctx: &Context) {

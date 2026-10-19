@@ -9,16 +9,21 @@ use crate::theme::Appearance;
 use crate::theme::chrome::ChromePrefs;
 use crate::theme::title_bar::CAPTION_W;
 use crate::ui::file_table::FileExplorer;
-use crate::ui::status::StatusMeta;
+use crate::status::StatusMeta;
 use crate::ui::test_support::{press_release, test_ctx, text_pos, texts};
 
 /// Serializes the tests that save the title bar choice under the process-wide app id.
 static CHROME_PREFS: Mutex<()> = Mutex::new(());
 const MEMORY_ID: &str = "memory/ame-title-strip-tests";
 
-/// The six engines the app registers, all idle.
+/// The six core engines, all idle.
 fn engines() -> Vec<StatusMeta> {
     ["DB", "VISION", "CLIP", "RERANK", "QWEN-EDIT", "ASSIST"].into_iter().map(|name| StatusMeta { name, ..Default::default() }).collect()
+}
+
+/// Every engine the app registers, the gateway included, all idle.
+fn every_engine() -> Vec<StatusMeta> {
+    crate::status::INDICATOR_ORDER.into_iter().map(|name| StatusMeta { name, ..Default::default() }).collect()
 }
 
 struct Frame {
@@ -42,6 +47,7 @@ struct Rig {
     app: SmartMediaApp,
     ctx: Context,
     width: f32,
+    all_engines: bool,
     _fixture: Fixture,
     _runtime: tokio::runtime::EnterGuard<'static>,
 }
@@ -54,7 +60,7 @@ impl Rig {
         let appearance = Appearance::attach(&ctx, None, Arc::new(fixture.store()));
         let chrome = Chrome { frameless, available: true };
         let app = SmartMediaApp::assemble(ctx.clone(), appearance, chrome, FileExplorer::new(true));
-        Self { app, ctx, width, _fixture: fixture, _runtime: runtime }
+        Self { app, ctx, width, all_engines: false, _fixture: fixture, _runtime: runtime }
     }
 
     fn frame(&mut self, events: Vec<Event>) -> Frame {
@@ -65,7 +71,7 @@ impl Rig {
         };
         let app = &mut self.app;
         let mut layout = None;
-        let engines = engines();
+        let engines = if self.all_engines { every_engine() } else { engines() };
         let out = self.ctx.run_ui(input, |ui| layout = Some(app.title_strip_with(ui, &engines)));
         let commands = out.viewport_output.get(&ViewportId::ROOT).map(|v| v.commands.clone()).unwrap_or_default();
         let shapes = out.shapes.clone();
@@ -145,6 +151,30 @@ fn the_strip_never_overlaps_from_640_to_1600() {
         }
         assert_eq!(last_rank, 2, "every chip is labelled at 1600px");
     }
+}
+
+#[test]
+fn the_strip_with_every_engine_chip_never_overlaps_and_folds_to_icons_before_the_summary() {
+    let mut last_rank = 0;
+    for width in [640.0_f32, 700.0, 800.0, 1000.0, 1200.0, 1400.0, 1700.0, 2000.0] {
+        let mut rig = Rig::new(true, width);
+        rig.all_engines = true;
+        let l = rig.settle().layout;
+        let tag = format!("{width}px: {l:?}");
+        assert!(l.left.right() <= l.right.left() + 0.5, "menus overlap the chips: {tag}");
+        assert!(l.right.right() <= width - 3.0 * CAPTION_W + 0.5, "chips reach the caption buttons: {tag}");
+        let rank = match l.chips {
+            ChipMode::Summary => 0,
+            ChipMode::Icon => 1,
+            ChipMode::Full => 2,
+        };
+        assert!(rank >= last_rank, "a wider window showed fewer chips: {tag}");
+        last_rank = rank;
+        if l.chips == ChipMode::Icon {
+            assert!(l.right.width() >= 7.0 * 14.0, "seven icons need seven icon widths: {tag}");
+        }
+    }
+    assert_eq!(last_rank, 2, "every chip is labelled at 2000px");
 }
 
 #[test]

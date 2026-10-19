@@ -2,7 +2,7 @@
 
 use once_cell::sync::Lazy;
 use std::sync::RwLock;
-use std::sync::atomic::{AtomicU64, AtomicUsize};
+use std::sync::atomic::AtomicUsize;
 
 /// High-level lifecycle state for a backend component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,7 +194,6 @@ pub static ASSIST_STATUS: Lazy<RegisteredStatus> =
 pub static VISION_TOKENS: Lazy<AtomicUsize> = Lazy::new(|| AtomicUsize::new(0));
 pub static VISION_MAX_TOKENS: Lazy<AtomicUsize> =
     Lazy::new(|| AtomicUsize::new(crate::app::MAX_NEW_TOKENS));
-pub static LAST_ERROR_TS_MS: Lazy<AtomicU64> = Lazy::new(|| AtomicU64::new(0));
 
 /// Indicator order: the core engines first, then any others by name.
 pub const INDICATOR_ORDER: [&str; 7] = ["DB", "VISION", "CLIP", "RERANK", "QWEN-EDIT", "ASSIST", "ZEROCLAW"];

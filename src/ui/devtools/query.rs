@@ -56,19 +56,19 @@ struct Editor {
 }
 
 fn open_id() -> Id {
-    Id::new("ame_devtools_query_open")
+    Id::unique("ame_devtools_query_open")
 }
 
 fn snapshot_id() -> Id {
-    Id::new("ame_devtools_query_snapshot")
+    Id::unique("ame_devtools_query_snapshot")
 }
 
 fn commands_id(owner: Id) -> Id {
-    Id::new(("ame_devtools_query_commands", owner))
+    Id::unique(("ame_devtools_query_commands", owner))
 }
 
 fn editor_id() -> Id {
-    Id::new("ame_devtools_query_editor")
+    Id::unique("ame_devtools_query_editor")
 }
 
 pub fn is_open(ctx: &Context) -> bool {
@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn commands_reach_only_their_owner_and_only_once() {
         let ctx = Context::default();
-        let (a, b) = (Id::new("a"), Id::new("b"));
+        let (a, b) = (Id::unique("a"), Id::unique("b"));
         push_command(&ctx, a, Command::Clear);
         push_command(&ctx, a, Command::Set { mode: QueryMode::Text, text: "x".into(), run: true });
         push_command(&ctx, b, Command::FocusField);

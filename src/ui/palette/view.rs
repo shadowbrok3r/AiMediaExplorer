@@ -91,7 +91,7 @@ pub fn show(ctx: &Context, state: &mut PaletteState, entries: &[Entry], db_ready
 
     let mut chosen: Option<(usize, bool)> = (keys.enter || keys.ctrl_enter).then_some((state.selected, keys.ctrl_enter));
     let width = WIDTH.min(ctx.content_rect().width() - 32.0).max(260.0);
-    let id = Id::new("ame_command_palette");
+    let id = Id::unique("ame_command_palette");
     let area = Modal::default_area(id).anchor(Align2::CENTER_TOP, vec2(0.0, 70.0));
     let before = state.query.clone();
     let response = Modal::new(id).area(area).show(ctx, |ui| {
@@ -213,7 +213,7 @@ fn title_job(ui: &Ui, title: &str, positions: &[usize], ink: Color32, accent: Co
     let mut job = LayoutJob::default();
     let mut run = String::new();
     let mut run_hot = false;
-    let mut flush = |job: &mut LayoutJob, run: &mut String, hot: bool| {
+    let flush = |job: &mut LayoutJob, run: &mut String, hot: bool| {
         if !run.is_empty() {
             job.append(run, 0.0, TextFormat { font_id: font.clone(), color: if hot { accent } else { ink }, ..Default::default() });
             run.clear();

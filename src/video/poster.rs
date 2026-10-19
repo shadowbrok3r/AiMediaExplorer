@@ -1,7 +1,7 @@
 //! Poster frames: the request options, candidate selection and the entry points that gate and dispatch to a backend.
 
 use super::info::VideoInfo;
-use super::placeholder::{PlaceholderKind, placeholder};
+use super::placeholder::PlaceholderKind;
 use super::quality::{self, FrameStats};
 use super::{Backend, BackendChoice, Cancel, Deadline, VideoError, backends_for, check_file, gate};
 use image::RgbImage;
@@ -156,19 +156,6 @@ pub async fn poster_frame_async(path: PathBuf, opts: PosterOptions) -> Result<Po
 pub enum ThumbImage {
     Frame(Poster),
     Placeholder { kind: PlaceholderKind, reason: VideoError },
-}
-
-impl ThumbImage {
-    pub fn into_image(self) -> RgbImage {
-        match self {
-            ThumbImage::Frame(p) => p.image,
-            ThumbImage::Placeholder { kind, .. } => placeholder(kind),
-        }
-    }
-
-    pub fn is_placeholder(&self) -> bool {
-        matches!(self, ThumbImage::Placeholder { .. })
-    }
 }
 
 /// Thumbnail source for a video file: a decoded frame, or a placeholder when there is nothing to decode.

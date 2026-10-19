@@ -197,6 +197,10 @@ impl crate::app::SmartMediaApp {
                 crate::ui::devtools::toggle_journal(ui.ctx());
                 ui.close();
             }
+            if icons::button(ui, svg::TABS, "Workspace").clicked() {
+                crate::ui::devtools::toggle_workspace(ui.ctx());
+                ui.close();
+            }
             if icons::button(ui, svg::AME_REFINE, "Refine and Image Edit").clicked() {
                 crate::ui::devtools::toggle_refine(ui.ctx());
                 ui.close();

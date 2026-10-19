@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use super::*;
-use crate::database::ui_themes::tests::RT;
 use crate::ui::file_table::menus::db_delete::GLOBAL_DB_TESTS;
 use crate::ui::file_table::test_rig::{Rig, db, global_db};
 

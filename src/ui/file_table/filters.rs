@@ -164,11 +164,6 @@ impl FileTableViewer {
         PreparedFilter::new(&self.filter_spec(), self)
     }
 
-    /// Whether a row meets the current conditions.
-    pub fn row_passes_filter(&self, row: &Thumbnail) -> bool {
-        self.row_filter().matches(row)
-    }
-
     /// Changes whenever [`row_filter`](Self::row_filter) may answer differently for the same rows.
     pub fn filter_signature(&self) -> u64 {
         let st = &self.filters;
@@ -524,7 +519,7 @@ impl FileExplorer {
     }
 
     fn filter_debug_id(&self) -> egui::Id {
-        egui::Id::new(("ame_filters_owner", self.viewer.scope))
+        egui::Id::unique(("ame_filters_owner", self.viewer.scope))
     }
 
     /// Shows the tab in the Filters window when it is open.

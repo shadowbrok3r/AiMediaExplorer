@@ -115,15 +115,15 @@ pub enum Command {
 }
 
 fn open_id() -> Id {
-    Id::new("ame_devtools_inspector_open")
+    Id::unique("ame_devtools_inspector_open")
 }
 
 fn snapshot_id() -> Id {
-    Id::new("ame_devtools_inspector_snapshot")
+    Id::unique("ame_devtools_inspector_snapshot")
 }
 
 fn commands_id() -> Id {
-    Id::new("ame_devtools_inspector_commands")
+    Id::unique("ame_devtools_inspector_commands")
 }
 
 pub fn is_open(ctx: &Context) -> bool {

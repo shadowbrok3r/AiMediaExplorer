@@ -11,15 +11,15 @@ use crate::ui::file_table::scope::LoadRecord;
 use crate::ui::file_table::scope::nav::check_openable;
 
 fn open_id() -> Id {
-    Id::new("ame_devtools_scope_open")
+    Id::unique("ame_devtools_scope_open")
 }
 
 fn state_id() -> Id {
-    Id::new("ame_devtools_scope_state")
+    Id::unique("ame_devtools_scope_state")
 }
 
 fn snapshot_id() -> Id {
-    Id::new("ame_devtools_scope_snapshot")
+    Id::unique("ame_devtools_scope_snapshot")
 }
 
 pub fn is_open(ctx: &Context) -> bool {

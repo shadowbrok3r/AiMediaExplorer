@@ -151,7 +151,7 @@ pub struct SidebarLayout {
 }
 
 fn sidebar_layout_id() -> Id {
-    Id::new("ame_sidebar_layout")
+    Id::unique("ame_sidebar_layout")
 }
 
 /// The layout recorded by the last [`SmartMediaApp::side_panels`] on `ctx`.
@@ -430,7 +430,7 @@ impl SmartMediaApp {
 
 fn resize_handle(ui: &mut Ui, panel: Rect, layout: &mut UiLayout) {
     let handle = Rect::from_x_y_ranges((panel.right() - 4.0)..=(panel.right() + 2.0), panel.y_range());
-    let response = ui.interact(handle, Id::new("ame_sidebar_resize"), Sense::drag());
+    let response = ui.interact(handle, Id::unique("ame_sidebar_resize"), Sense::drag());
     let active = response.hovered() || response.dragged();
     if active {
         ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);

@@ -183,7 +183,7 @@ impl FileExplorer {
     }
 
     fn grid_owner(&self) -> Id {
-        Id::new(("ame_grid_owner", self.viewer.scope))
+        Id::unique(("ame_grid_owner", self.viewer.scope))
     }
 
     /// Runs the commands the Grid devtools window queued for this explorer.

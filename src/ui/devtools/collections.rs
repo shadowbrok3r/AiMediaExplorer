@@ -19,7 +19,7 @@ const UNINDEXED_SCAN_LIMIT: usize = 200_000;
 const LISTED: usize = 200;
 
 fn open_id() -> Id {
-    Id::new("ame_devtools_collections_open")
+    Id::unique("ame_devtools_collections_open")
 }
 
 pub fn is_open(ctx: &Context) -> bool {

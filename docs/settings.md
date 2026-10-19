@@ -62,7 +62,52 @@ General values that are not part of the settings record live in `<config>/smart-
 
 A missing, unreadable or newer-version file gives the defaults without a panic; a newer file is never overwritten. Missing fields take defaults and over-long lists are cut. Writes go through a temporary file and a rename, and only when something changed.
 
-Restore on launch: with **Restore tabs** the browser tabs saved at the last change are reopened (the first replaces the focused tab, the others open behind it); with **Restore the last scope** only the focused scope is. Searches by text or file are not restored, scopes that cannot open (a folder that is gone) are skipped, scopes that need the library wait for it (at most 20 s), and `--run` or `--scope` on the command line wins over the restore.
+The two switches of `startup` decide what a launch brings back from the workspace file (next section): **Restore tabs** the whole workspace, **Restore the last scope** only the focused scope, in the main tab. `startup.tabs` and `startup.last_scope` are what older versions recorded; they are read only while no workspace file exists.
+
+## workspace.json
+
+`<config>/smart-media/workspace.json`, versioned (`"version": 1`). It holds what is open and where: the window, the dock layout and the state of every browser tab. The sidebar and right rail are not in it, they stay in `ui_layout.json` (the file names it as `layout_file`).
+
+```json
+{
+  "version": 1,
+  "layout_file": "ui_layout.json",
+  "window": { "size": [1200.0, 800.0], "position": [40.0, 30.0], "maximized": false },
+  "dock": {
+    "node": "split", "dir": "horizontal", "fraction": 0.4,
+    "first": { "node": "leaf", "tabs": [ { "kind": "browser", "id": 0 }, { "kind": "browser", "id": 1 } ], "active": 1 },
+    "second": { "node": "leaf", "tabs": [ { "kind": "logs" } ], "active": 0 }
+  },
+  "focused": { "kind": "browser", "id": 1 },
+  "browsers": [
+    {
+      "id": 0, "scope": "fs:/home/u/Pictures",
+      "view": { "mode": "details", "tile": 200.0, "fit": "fit", "captions": false, "badges": true },
+      "sort": { "keys": [ { "column": 2, "descending": true } ] },
+      "query": { "mode": "text", "text": "beach" },
+      "filter": { "tags": [ "sun" ] },
+      "selection": [ "/home/u/Pictures/a.jpg" ]
+    },
+    { "id": 1, "scope": "lib:all", "view": { "mode": "grid", "tile": 160.0, "fit": "crop", "captions": true, "badges": true }, "query": { "mode": "name", "text": "" } }
+  ]
+}
+```
+
+| Part | Kept |
+|---|---|
+| `window` | inner size, outer position (where the system tells it) and whether it was maximized; a maximized window keeps the size and place it had before |
+| `dock` | the main surface: splits with their direction and share, the tabs of each leaf in order, the tab in front; tab kinds are `browser`, `refine`, `image_edit`, `settings`, `devtools` and `logs` |
+| `floating` | the windows tabs were dragged out into (at most 8): their tabs as a dock of their own, their position inside the application window and their size |
+| `focused` | the tab that had the focus |
+| `browsers` | per browser tab: scope, view mode, tile size, fit, captions and badges, sort, query mode and text, the filter (only when it differs from the defaults of the settings, in the form of `set_filter`) and the selected paths (only when 50 or fewer). Tabs that show rows held in memory (a selection opened in a new tab) have no scope and are left out. The `id` only names a tab inside the file; the main browser is 0 |
+
+**When it is written.** About a second after the last change (a change that is undone before that is not written), when the application closes, and by `{"cmd": "workspace", "op": "save"}`. A write goes through a temporary file and a rename, and only when something changed.
+
+**Safe reading.** A missing, unreadable or newer-version file gives the defaults without a panic, and a newer file is never overwritten or deleted; an unreadable one is kept next to the file as `workspace.json.bad` before the next write replaces it. Whatever cannot be used inside a readable file is dropped (a tab whose scope does not read, an unknown tab kind, a filter with unknown fields, a tab that no leaf shows, a leaf without tabs) and the rest is kept. Lists are cut (64 browser tabs, 50 selected paths, 512 characters of query), shares of a split are brought into 5% to 95%, splits nested deeper than 16 levels become one leaf, and the window is held to at least 700 by 400, to the monitor once it is known and to a place where 80 px of its top edge can be reached (one monitor width or height of slack lets a window on a neighbouring monitor stay there).
+
+**At launch** (the switches above; `--run` or `--scope` on the command line wins and nothing is restored). The window opens with the saved size and place (eframe's own memory of the window is switched off while Restore tabs is on, so the file is the only source; with it off eframe keeps remembering the window as before). The dock is rebuilt, the main browser is the one saved as 0 and the others get new ids. Nothing is read at that point: a tab reads its scope when it is first drawn, so tabs behind the front tab of their leaf cost nothing until they are shown. A scope that needs the library waits for it (a placeholder says so, at most 20 s); a folder that is gone, a library that does not connect, or a search (searches are never run by themselves) shows a placeholder with the reason and a **Retry** (**Run search**) button instead of rows, and never holds the start-up back. The selection is made once its rows are in.
+
+**Devtools > Workspace** shows the file, the last write, the writes of this run, whether the live state equals the file, what the launch restored, the live state and the file as JSON, and has Save now, Reload (restores the file into the running application) and Forget (deletes it). `{"cmd": "workspace", "op": "save|restore|forget"}` does the same without the mouse, and `{"cmd": "dump_state", ...}` and `--dump-state <path>` write a snapshot of the whole application for smoke checks (see `commands.md`).
 
 ## The first-run wizard
 

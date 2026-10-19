@@ -1,4 +1,4 @@
-//! Start-up commands from `--run <json|scope>`, `--scope <scope>`, `--query <mode>:<text>`, `--devtools <window>[,<window>...]` and `--wizard <step>`.
+//! Start-up commands from `--run <json|scope>`, `--scope <scope>`, `--query <mode>:<text>`, `--devtools <window>[,<window>...]`, `--wizard <step>` and `--dump-state <path>`.
 
 use super::model::{AppCommand, DevtoolsWindow, parse_input};
 use super::scope::Scope;
@@ -22,6 +22,14 @@ fn wizard_command(name: &str) -> Result<AppCommand, String> {
     crate::ui::wizard::Step::parse(name).map(|step| AppCommand::Wizard { step: Some(step) }).ok_or_else(|| format!("--wizard: unknown step '{name}' (location, folders, ai or scan)"))
 }
 
+/// The command `--dump-state <path>` stands for: the snapshot is written once the application is idle.
+fn dump_command(path: &str) -> Result<AppCommand, String> {
+    if path.trim().is_empty() {
+        return Err("--dump-state: the path is empty".to_string());
+    }
+    Ok(AppCommand::DumpState { path: path.to_string(), when_idle: true })
+}
+
 /// The commands the arguments ask for, in the order given.
 pub fn startup_commands(args: &[String]) -> Result<Vec<AppCommand>, String> {
     let mut commands = Vec::new();
@@ -31,7 +39,7 @@ pub fn startup_commands(args: &[String]) -> Result<Vec<AppCommand>, String> {
             Some((flag, value)) => (flag, Some(value.to_string())),
             None => (arg.as_str(), None),
         };
-        if flag != "--run" && flag != "--devtools" && flag != "--scope" && flag != "--query" && flag != "--wizard" {
+        if flag != "--run" && flag != "--devtools" && flag != "--scope" && flag != "--query" && flag != "--wizard" && flag != "--dump-state" {
             continue;
         }
         let value = match inline {
@@ -46,6 +54,8 @@ pub fn startup_commands(args: &[String]) -> Result<Vec<AppCommand>, String> {
             commands.push(query_command(&value).map_err(|e| format!("--query: {e}"))?);
         } else if flag == "--wizard" {
             commands.push(wizard_command(&value)?);
+        } else if flag == "--dump-state" {
+            commands.push(dump_command(&value)?);
         } else {
             for name in value.split(',').filter(|n| !n.trim().is_empty()) {
                 commands.push(devtools_command(name)?);
@@ -130,6 +140,15 @@ mod tests {
         assert!(matches!(cmds[2], AppCommand::OpenDevtools { window: DevtoolsWindow::Wizard }));
         assert!(startup_commands(&args(&["--wizard", "tour"])).unwrap_err().starts_with("--wizard:"));
         assert!(startup_commands(&args(&["--wizard"])).unwrap_err().contains("--wizard needs a value"));
+    }
+
+    #[test]
+    fn dump_state_takes_a_path_and_waits_for_the_application_to_settle() {
+        let cmds = startup_commands(&args(&["--dump-state", "/tmp/s.json", "--dump-state=/tmp/t.json"])).unwrap();
+        assert!(matches!(&cmds[0], AppCommand::DumpState { path, when_idle: true } if path == "/tmp/s.json"));
+        assert!(matches!(&cmds[1], AppCommand::DumpState { path, when_idle: true } if path == "/tmp/t.json"));
+        assert!(startup_commands(&args(&["--dump-state"])).unwrap_err().contains("--dump-state needs a value"));
+        assert!(startup_commands(&args(&["--dump-state="])).unwrap_err().starts_with("--dump-state:"));
     }
 
     #[test]

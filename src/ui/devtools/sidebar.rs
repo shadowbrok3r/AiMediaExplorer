@@ -51,15 +51,15 @@ pub struct Snapshot {
 }
 
 fn open_id() -> Id {
-    Id::new("ame_devtools_sidebar_open")
+    Id::unique("ame_devtools_sidebar_open")
 }
 
 fn snapshot_id() -> Id {
-    Id::new("ame_devtools_sidebar_snapshot")
+    Id::unique("ame_devtools_sidebar_snapshot")
 }
 
 fn requests_id() -> Id {
-    Id::new("ame_devtools_sidebar_requests")
+    Id::unique("ame_devtools_sidebar_requests")
 }
 
 pub fn is_open(ctx: &Context) -> bool {

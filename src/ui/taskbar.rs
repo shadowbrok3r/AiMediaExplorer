@@ -22,8 +22,6 @@ use crate::icons::{self, IconSize, svg};
 use crate::tasks;
 use crate::ui::file_table::FileExplorer;
 
-/// Narrowest window width the bar guarantees not to overlap at.
-pub const MIN_SUPPORTED_WIDTH: f32 = 640.0;
 /// Repaint interval while a task is visible, for progress and elapsed time.
 const ACTIVE_REPAINT: Duration = Duration::from_millis(250);
 const METER_REFRESH: Duration = Duration::from_millis(500);
@@ -31,7 +29,7 @@ const METER_REFRESH: Duration = Duration::from_millis(500);
 /* ------------------------------------------- shared state ------------------------------------------ */
 
 fn center_id() -> Id {
-    Id::new("ame_task_center_open")
+    Id::unique("ame_task_center_open")
 }
 
 pub fn is_center_open(ctx: &Context) -> bool {
@@ -45,7 +43,7 @@ pub fn set_center_open(ctx: &Context, open: bool) {
 }
 
 fn view_id() -> Id {
-    Id::new("ame_task_view")
+    Id::unique("ame_task_view")
 }
 
 /// The registry as of now, rebuilt only when its revision moved.
@@ -74,12 +72,12 @@ pub struct BarLayout {
 }
 
 pub fn last_layout(ctx: &Context, owner: &str) -> Option<BarLayout> {
-    ctx.data(|d| d.get_temp::<BarLayout>(Id::new(("ame_bar_layout", owner))))
+    ctx.data(|d| d.get_temp::<BarLayout>(Id::unique(("ame_bar_layout", owner))))
 }
 
 /// Number of times the stats of `owner` were recomputed.
 pub fn stats_computes(ctx: &Context, owner: &str) -> u64 {
-    ctx.data(|d| d.get_temp::<ViewStatsCache>(Id::new(("ame_view_stats", owner)))).map_or(0, |c| c.computes)
+    ctx.data(|d| d.get_temp::<ViewStatsCache>(Id::unique(("ame_view_stats", owner)))).map_or(0, |c| c.computes)
 }
 
 /* ------------------------------------------- platform meters ---------------------------------------- */
@@ -251,7 +249,7 @@ pub fn show_with(ui: &mut Ui, ex: &mut FileExplorer, owner: &str, view: &TaskVie
             overflowed: plan.modes.iter().filter(|m| m.is_none()).count(),
             shown: plan.modes.iter().filter(|m| m.is_some()).count(),
         };
-        ctx.data_mut(|d| d.insert_temp(Id::new(("ame_bar_layout", owner)), layout));
+        ctx.data_mut(|d| d.insert_temp(Id::unique(("ame_bar_layout", owner)), layout));
     });
 
     let mut open = is_center_open(&ctx);
@@ -276,7 +274,7 @@ pub fn show_with(ui: &mut Ui, ex: &mut FileExplorer, owner: &str, view: &TaskVie
 
 /// Stats of the explorer for the bar, recomputed only when its signature changes.
 fn cached_stats(ctx: &Context, ex: &FileExplorer, owner: &str, now: Instant) -> std::sync::Arc<ViewStats> {
-    let id = Id::new(("ame_view_stats", owner));
+    let id = Id::unique(("ame_view_stats", owner));
     let mut cache = ctx.data_mut(|d| d.remove_temp::<ViewStatsCache>(id)).unwrap_or_default();
     let answer = cache.get(now, adapter::view_signature(ex), adapter::is_streaming(ex), || adapter::compute_view_stats(ex));
     ctx.data_mut(|d| d.insert_temp(id, cache));

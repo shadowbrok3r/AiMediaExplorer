@@ -13,7 +13,7 @@ const LISTED_ENTRIES: usize = 200;
 const LISTED_BATCHES: usize = 40;
 
 fn open_id() -> Id {
-    Id::new("ame_devtools_journal_open")
+    Id::unique("ame_devtools_journal_open")
 }
 
 pub fn is_open(ctx: &Context) -> bool {

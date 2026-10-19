@@ -86,7 +86,7 @@ impl egui_dock::TabViewer for crate::app::SmartMediaContext {
     type Tab = TabKind;
 
     fn id(&mut self, tab: &mut Self::Tab) -> Id {
-        Id::new(("ame_dock_tab", *tab))
+        Id::unique(("ame_dock_tab", *tab))
     }
 
     fn title(&mut self, tab: &mut Self::Tab) -> WidgetText {

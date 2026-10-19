@@ -1,7 +1,7 @@
-use crate::icons::svg;
+use crate::icons::{Icon, svg};
 use eframe::egui::*;
 
-pub use crate::status::*;
+use crate::status::{DeviceKind, StatusMeta, StatusState, is_active, progress_of};
 
 /// Egui color of a [`StatusState`].
 pub trait StatusStateColor {
@@ -23,9 +23,9 @@ impl StatusStateColor for StatusState {
 /// How much of each engine indicator fits in the space offered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChipMode {
-    /// Gear, name and progress per engine.
+    /// Icon, name and progress per engine.
     Full,
-    /// Gear only per engine; the hover card names it.
+    /// Icon only per engine; the hover card names it.
     Icon,
     /// One gear whose menu lists every engine.
     Summary,
@@ -39,7 +39,7 @@ pub struct ChipWidths {
     pub summary: f32,
 }
 
-/// Gear size inside an indicator button.
+/// Icon size inside an indicator button.
 const CHIP_ICON: f32 = 14.0;
 
 /// Widths of the three indicator layouts for `metas`, measured in hidden passes.
@@ -80,23 +80,39 @@ pub fn status_chips(ui: &mut Ui, mode: ChipMode, metas: &[StatusMeta]) {
     }
 }
 
-/// Button text of an indicator: name and progress, padded when the spinner overlays the start.
+/// Button text of an indicator: name and progress, padded when the icon overlays the start.
 fn chip_label(meta: &StatusMeta) -> String {
     let (pct, has_prog) = progress_of(meta);
     let label = if has_prog { format!("{} {:.0}%", meta.name, pct * 100.0) } else { meta.name.to_string() };
     if is_active(meta) { format!("   {label}") } else { label }
 }
 
-/// Paints the gear of an indicator button into `rect`, spinning while the engine works.
-fn paint_gear(ui: &mut Ui, rect: Rect, meta: &StatusMeta) {
+/// Icon of the engine indicator `name`; an engine without its own icon shows a gear.
+pub fn engine_icon(name: &str) -> Icon {
+    match name {
+        "DB" => svg::AME_DATABASE,
+        "VISION" => svg::AME_VISION,
+        "CLIP" => svg::AME_CLIP_EMBED,
+        "RERANK" => svg::AME_RERANKER,
+        "QWEN-EDIT" => svg::AME_IMAGE_EDIT,
+        "ASSIST" => svg::AME_ASSISTANT,
+        "ZEROCLAW" => svg::PLUGS_CONNECTED,
+        "MCP" => svg::AME_MCP,
+        _ => svg::GEAR,
+    }
+}
+
+/// Paints the engine icon of an indicator button into `rect`, pulsing while the engine works.
+fn paint_engine_icon(ui: &mut Ui, rect: Rect, meta: &StatusMeta) {
+    let icon = engine_icon(meta.name);
     if is_active(meta) {
-        let angle = ui.input(|i| i.time) as f32 * std::f32::consts::TAU * 0.6;
+        let phase = ui.input(|i| i.time) as f32 * std::f32::consts::TAU * 0.8;
         ui.ctx().request_repaint();
-        let tint = crate::theme::primary(ui);
-        svg::GEAR.image(CHIP_ICON).rotate(angle, Vec2::splat(0.5)).tint(tint).paint_at(ui, rect);
+        let tint = crate::theme::primary(ui).gamma_multiply(0.65 + 0.35 * phase.sin());
+        icon.image(CHIP_ICON).tint(tint).paint_at(ui, rect);
     } else {
         let tint = ui.visuals().weak_text_color();
-        svg::GEAR.image(CHIP_ICON).tint(tint).paint_at(ui, rect);
+        icon.image(CHIP_ICON).tint(tint).paint_at(ui, rect);
     }
 }
 
@@ -110,14 +126,14 @@ fn indicator_small(ui: &mut Ui, meta: &StatusMeta) {
     .atom_ui(ui);
 
     if let Some(rect) = atom_layout.rect(custom_button_id) {
-        paint_gear(ui, rect, meta);
+        paint_engine_icon(ui, rect, meta);
     }
 
     atom_layout.response.on_hover_ui(|ui| hover_card(ui, meta));
     ui.add_space(5.);
 }
 
-/// Gear-only indicator; its hover card carries the name.
+/// Icon-only indicator; its hover card carries the name.
 fn indicator_icon(ui: &mut Ui, meta: &StatusMeta) {
     let custom_button_id = IdSalt::new("custom_button");
     let atom_layout = Button::new(Atom::custom(custom_button_id, Vec2::splat(CHIP_ICON))).atom_ui(ui);
@@ -125,9 +141,9 @@ fn indicator_icon(ui: &mut Ui, meta: &StatusMeta) {
         match meta.state {
             StatusState::Error | StatusState::Waiting => {
                 let tint = meta.state.color(ui.style());
-                svg::GEAR.image(CHIP_ICON).tint(tint).paint_at(ui, rect);
+                engine_icon(meta.name).image(CHIP_ICON).tint(tint).paint_at(ui, rect);
             }
-            _ => paint_gear(ui, rect, meta),
+            _ => paint_engine_icon(ui, rect, meta),
         }
     }
     atom_layout.response.on_hover_ui(|ui| hover_card(ui, meta));
@@ -223,95 +239,24 @@ fn hover_card(ui: &mut Ui, meta: &StatusMeta) {
     }
 }
 
-#[derive(Default)]
-pub struct GearSpinner {
-    pub size: Option<f32>,
-    pub color: Option<Color32>,
-}
-
-impl GearSpinner {
-    /// Create a new spinner that uses the style's `interact_size` unless changed.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Sets the spinner's size. The size sets both the height and width, as the spinner is always
-    /// square. If the size isn't set explicitly, the active style's `interact_size` is used.
-    #[inline]
-    pub fn size(mut self, size: f32) -> Self {
-        self.size = Some(size);
-        self
-    }
-
-    /// Sets the spinner's color.
-    #[inline]
-    pub fn color(mut self, color: impl Into<Color32>) -> Self {
-        self.color = Some(color.into());
-        self
-    }
-
-    /// Paint the spinner in the given rectangle.
-    pub fn paint_at(&self, ui: &Ui, button_rect: Rect) {
-        if !ui.is_rect_visible(button_rect) {
-            return;
-        }
-        ui.ctx().request_repaint(); // ensure animation
-        let h = button_rect.height();
-        // Square area for gear near left edge (after button's default padding ~4px)
-        let side = h.min(18.0); // cap size a bit so it doesn't dominate
-        let gear_rect = Rect::from_min_size(
-            pos2(
-                button_rect.left() + 4.0,
-                button_rect.center().y - side * 0.5,
-            ),
-            vec2(side, side),
-        );
-        let angle = ui.input(|i| i.time as f32) * std::f32::consts::TAU * 0.6; // rotation speed factor
-        // Build rotated text shape using egui font system.
-        let shape = ui.ctx().fonts_mut(|f| {
-            let mut s = Shape::text(
-                f,
-                gear_rect.center(),
-                Align2::CENTER_CENTER,
-                "⚙",
-                FontId::new(side * 0.9, FontFamily::Proportional),
-                if let Some(color) = self.color {
-                    color
-                } else {
-                    crate::theme::primary(ui)
-                },
-            );
-            if let Shape::Text(ts) = &mut s {
-                let rotated = ts
-                    .clone()
-                    .with_angle_and_anchor(angle, Align2::CENTER_CENTER);
-                *ts = rotated;
-            }
-            s
-        });
-        ui.painter().add(shape);
-    }
-}
-
-impl Widget for GearSpinner {
-    fn ui(self, ui: &mut Ui) -> Response {
-        let size = self
-            .size
-            .unwrap_or_else(|| ui.style().spacing.interact_size.y);
-        let (rect, response) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
-        response.widget_info(|| WidgetInfo::new(Role::ProgressIndicator));
-        self.paint_at(ui, rect);
-
-        response
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn widths() -> ChipWidths {
         ChipWidths { full: 480.0, icon: 150.0, summary: 26.0 }
+    }
+
+    #[test]
+    fn every_engine_has_its_own_icon_and_an_unknown_one_keeps_the_gear() {
+        let names = crate::status::INDICATOR_ORDER;
+        let icons: std::collections::HashSet<&str> = names.iter().map(|n| engine_icon(n).name()).collect();
+        assert_eq!(icons.len(), names.len(), "no two engines share an icon");
+        assert!(!icons.contains(svg::GEAR.name()), "none of the engines is a plain gear");
+        assert_eq!(engine_icon("SOMETHING-ELSE").name(), svg::GEAR.name());
+        assert_eq!(engine_icon("DB").name(), svg::AME_DATABASE.name());
+        assert_eq!(engine_icon("ZEROCLAW").name(), svg::PLUGS_CONNECTED.name());
+        assert_eq!(engine_icon("MCP").name(), svg::AME_MCP.name());
     }
 
     #[test]

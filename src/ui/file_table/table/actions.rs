@@ -158,10 +158,7 @@ impl FileTableViewer {
                 let count = rows.len();
                 let title = if count == 1 { format!("Selected: {}", first.filename) } else { format!("Selected ({}) - {}", count, first.filename) };
                 let rows: Vec<Thumbnail> = rows.iter().map(|r| (*r).clone()).collect();
-                crate::app::OPEN_TAB_REQUESTS
-                    .lock()
-                    .unwrap()
-                    .push(crate::ui::file_table::FilterRequest::NewTab { title, rows, showing_similarity: false, similar_scores: None, origin_path: None, background: false });
+                crate::command::send(crate::command::AppCommand::OpenRows(crate::command::RowsTab { title, rows, ..Default::default() }));
             }
             MenuAction::GenerateDescription => self.describe(rows, false),
             MenuAction::RegenerateDescription => self.describe(rows, true),

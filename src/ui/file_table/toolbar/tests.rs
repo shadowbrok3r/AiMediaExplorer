@@ -59,7 +59,7 @@ fn assert_clean(layout: &ToolbarLayout, width: f32) {
 #[test]
 fn the_row_never_overlaps_or_clips_at_700_1000_and_1600_px() {
     for width in [700.0, 1000.0, 1600.0] {
-        let mut rig = Rig::new(width, 500.0);
+        let rig = Rig::new(width, 500.0);
         let layout = rig.ex.toolbar.layout.clone().expect("the row was drawn");
         assert_clean(&layout, width);
         assert!(layout.path.width() >= 120.0, "{width}px: the path area is {} wide", layout.path.width());

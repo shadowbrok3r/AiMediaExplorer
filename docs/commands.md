@@ -11,7 +11,7 @@ The JSON form is the stable surface. Names are `snake_case`. Fields marked optio
 | Rust | `crate::command::send(AppCommand::...)` from any thread; the next frame runs it |
 | Text | `crate::command::send_text(text)`: a JSON object, a JSON array of objects, or a scope string (opens the scope in a new tab) |
 | Devtools | View > Devtools > Command log: the runner box takes the same text; Run again re-sends a logged command |
-| Command line | `--run '<json or scope>'`, `--scope '<scope>'` (both repeatable), `--devtools tasks,command-log,perf` and `--wizard <step>` queue commands for the first frame |
+| Command line | `--run '<json or scope>'`, `--scope '<scope>'` (both repeatable), `--devtools tasks,command-log,perf` and `--wizard <step>` queue commands for the first frame; `--dump-state <path>` writes the state snapshot once the application is idle |
 
 The dispatcher drains the bus once per frame (at most 256 commands), runs each against the application and records it in the command log (500 entries; Devtools > Command log). A failed command shows a warning toast naming it, at most three per frame.
 
@@ -230,6 +230,36 @@ Opens the AI Refinements tab limited to the files.
 {"cmd": "redo"}
 ```
 
+### workspace
+
+Saves, reloads or deletes the workspace file (`<config>/smart-media/workspace.json`, see `settings.md`). `save` writes the open tabs, the dock layout and the window now. `restore` reads the file and replaces the open tabs, floating windows included, with what it holds: every tab reads its scope when it is first shown, and the window and the sidebar stay as they are. `forget` deletes the file. A file written by a newer version is neither overwritten nor deleted. Devtools > Workspace has the same three buttons.
+
+```json
+{"cmd": "workspace", "op": "save"}
+{"cmd": "workspace", "op": "restore"}
+{"cmd": "workspace", "op": "forget"}
+```
+
+### dump_state
+
+Writes a JSON snapshot of the application to `path` (the folder is created), through a temporary file and a rename. With `when_idle` the command only queues the dump: it is written once at least eight frames have run and no tab that is in front of its leaf has been reading its scope or waiting for the library for three frames in a row (a tab behind another is not drawn, so it cannot move on), or after 30 seconds whatever is going on; `--dump-state <path>` is this form, and the application keeps running afterwards. Scripts and smoke checks read the file instead of the screen.
+
+```json
+{"cmd": "dump_state", "path": "/tmp/ame-state.json"}
+{"cmd": "dump_state", "path": "/tmp/ame-state.json", "when_idle": true}
+```
+
+| Part | Holds |
+|---|---|
+| `version`, `build`, `frames`, `database_ready` | layout version, program name, version, profile, OS, architecture and features, frames run, whether the library is ready |
+| `tabs` | one entry per browser tab: `id`, `title`, `scope`, `active` (the focused browser), `rows` (rows held), `filtered` (rows the filters let through, as of the last frame the tab was drawn), `selected`, `view` and `tile`, `sort`, `query` (mode and text), `filter` (the filter spec as compact JSON) and `filters_active`, `loading`, `pending` (`lazy`, `waiting`, `offline` or `search` for a restored tab that has not read its scope), `error`, `rows_only` |
+| `active_tab`, `other_tabs` | scope of the focused browser; titles of the dock tabs that are not browsers |
+| `tasks` | the newest 60 tasks: kind, title, state, progress, error |
+| `engines` | every engine chip: name, state, model, detail, progress, error |
+| `settings` | a summary: the switches, model names, counts, the endpoint without credentials or query, and which providers have a key |
+
+No key, token or password is ever written. The settings part is built from a fixed list of safe fields, and every free text in the dump (titles, errors, details, queries, paths) is masked for the stored keys and for anything that looks like a key, a bearer token, a `key=` or `password=` value or user info in a URL.
+
 ### toast
 
 Shows a toast. `kind`: `info`, `success`, `warning`, `error`.
@@ -297,7 +327,7 @@ Selects the row of a path in the focused tab, which the inspector rail previews 
 
 ### open_devtools
 
-Opens a debug window: `theme_panel`, `settings_store`, `wizard`, `db_maintenance`, `legacy_import`, `thumb_storage`, `thumb_cache`, `tasks`, `command_log`, `perf`, `zeroclaw`, `row_store`, `collections`, `query`, `browser_actions`, `video`, `scope`, `filters`, `grid`, `inspector`, `journal`, `refine`, `sidebar`, `actions`, `mcp_server`.
+Opens a debug window: `theme_panel`, `settings_store`, `wizard`, `db_maintenance`, `legacy_import`, `thumb_storage`, `thumb_cache`, `tasks`, `command_log`, `perf`, `zeroclaw`, `row_store`, `collections`, `query`, `browser_actions`, `video`, `scope`, `filters`, `grid`, `inspector`, `journal`, `workspace`, `refine`, `sidebar`, `actions`, `mcp_server`.
 
 The `scope` window takes a scope string and shows how it parses (kind, title, parent, whether a folder exists), opens it in the focused tab or a new one, steps back and forward, lists the history stack of the focused tab with the scroll row and selection saved in each entry, and shows the timing of its recent loads: rows, batches, time to the first batch and total time.
 
@@ -446,15 +476,15 @@ Each command ends with a result recorded in the log: a short text, or an error w
 
 ## The old request queues
 
-The statics that predate the bus still exist as thin wrappers, so existing call sites keep working.
+The request queues that predate the bus are gone; every caller sends a command.
 
 | Old | Now |
 |---|---|
-| `app::OPEN_TAB_REQUESTS.lock().unwrap().push(FilterRequest)` | queues `open_scope`, `open_tool` or `open_rows` |
-| `app::OPEN_SETTINGS_REQUEST.store(true, _)` | queues `show_settings` |
+| `OPEN_TAB_REQUESTS` with `FilterRequest` | `open_scope`, `open_tool` or `open_rows` |
+| `OPEN_SETTINGS_REQUEST` | `show_settings` |
 | `assistant::request_attach_to_chat(paths)` | queues `attach_to_assistant` |
 | `refine::request_refine_for_paths(paths)` | queues `refine` |
-| `file_table::ACTIVE_GROUP_NAME` | removed; `command::context::{active_collection, set_active_collection}` hold the collection scanned and selected files are added to |
-| `FilterRequest::OpenDatabaseAll` | removed; `open_scope` with `lib:all` |
+| `file_table::ACTIVE_GROUP_NAME` | `command::context::{active_collection, set_active_collection}` hold the collection scanned and selected files are added to |
+| `FilterRequest::OpenDatabaseAll` | `open_scope` with `lib:all` |
 
 `assistant::ATTACH_REQUESTS` and `refine::REFINE_SELECTION_REQUESTS` remain as the mailboxes the dispatcher fills for the panels, which read them while they are shown.

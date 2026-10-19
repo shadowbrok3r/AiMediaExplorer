@@ -34,7 +34,7 @@ fn ctrl_z_undoes_and_ctrl_shift_z_redoes() {
 fn a_focused_text_field_keeps_its_own_undo() {
     let ctx = test_ctx();
     let mut text = String::from("hello");
-    let id = Id::new("journal_keys_text");
+    let id = Id::unique("journal_keys_text");
     frame(&ctx, Vec::new(), |ui| {
         CentralPanel::default().show(ui, |ui| {
             ui.add(TextEdit::singleline(&mut text).id(id)).request_focus();

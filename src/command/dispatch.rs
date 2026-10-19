@@ -88,6 +88,10 @@ pub trait CommandSink {
     fn undo(&mut self) -> CommandResult;
     /// Re-applies the batch of the metadata journal that was undone last.
     fn redo(&mut self) -> CommandResult;
+    /// Saves the workspace file, reopens what it holds, or deletes it.
+    fn workspace(&mut self, op: crate::ui::workspace::Op) -> CommandResult;
+    /// Writes the state snapshot to `path`, at once or once the application is idle.
+    fn dump_state(&mut self, path: String, when_idle: bool) -> CommandResult;
     fn toast(&mut self, level: ToastLevel, text: String) -> CommandResult;
     fn task_update(&mut self, id: TaskId, event: TaskEvent) -> CommandResult;
     fn clear_selection(&mut self) -> CommandResult;
@@ -136,6 +140,9 @@ pub fn dispatch(sink: &mut dyn CommandSink, cmd: AppCommand) -> CommandResult {
         AppCommand::Refine { paths } => sink.refine(paths),
         AppCommand::Undo => sink.undo(),
         AppCommand::Redo => sink.redo(),
+        AppCommand::Workspace { op } => sink.workspace(op),
+        AppCommand::DumpState { path, .. } if path.trim().is_empty() => Err(CommandError::invalid("no path to write the state to")),
+        AppCommand::DumpState { path, when_idle } => sink.dump_state(path, when_idle),
         AppCommand::Toast { kind, text } => sink.toast(kind, text),
         AppCommand::TaskUpdate { id, event } => sink.task_update(id, event),
         AppCommand::ClearSelection => sink.clear_selection(),
@@ -246,6 +253,12 @@ pub(crate) mod fake {
         fn redo(&mut self) -> CommandResult {
             self.done("redo".to_string())
         }
+        fn workspace(&mut self, op: crate::ui::workspace::Op) -> CommandResult {
+            self.done(format!("workspace {op:?}"))
+        }
+        fn dump_state(&mut self, path: String, when_idle: bool) -> CommandResult {
+            self.done(format!("dump_state {path} {when_idle}"))
+        }
         fn toast(&mut self, level: ToastLevel, text: String) -> CommandResult {
             self.done(format!("toast {level:?} {text}"))
         }
@@ -316,6 +329,8 @@ mod tests {
             AppCommand::Refine { paths: vec!["/b".into()] },
             AppCommand::Undo,
             AppCommand::Redo,
+            AppCommand::Workspace { op: crate::ui::workspace::Op::Forget },
+            AppCommand::DumpState { path: "/s.json".into(), when_idle: true },
             AppCommand::Toast { kind: ToastLevel::Info, text: "hi".into() },
             AppCommand::TaskUpdate { id: 4, event: TaskEvent::Complete },
             AppCommand::ClearSelection,
@@ -347,6 +362,8 @@ mod tests {
                 "refine /b",
                 "undo",
                 "redo",
+                "workspace Forget",
+                "dump_state /s.json true",
                 "toast Info hi",
                 "task 4 Complete",
                 "clear_selection",
@@ -385,6 +402,7 @@ mod tests {
         assert!(dispatch(&mut sink, AppCommand::AttachToAssistant { paths: vec![] }).is_err());
         assert!(dispatch(&mut sink, AppCommand::Refine { paths: vec![] }).is_err());
         assert!(dispatch(&mut sink, AppCommand::ApplySavedView { name: "  ".into() }).is_err());
+        assert!(dispatch(&mut sink, AppCommand::DumpState { path: "  ".into(), when_idle: false }).is_err());
         assert!(sink.calls.is_empty());
     }
 

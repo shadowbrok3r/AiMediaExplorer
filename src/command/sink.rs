@@ -209,6 +209,14 @@ impl CommandSink for SmartMediaApp {
         crate::ui::journal_ui::start(crate::database::journal::Direction::Redo)
     }
 
+    fn workspace(&mut self, op: crate::ui::workspace::Op) -> CommandResult {
+        self.run_workspace_op(op)
+    }
+
+    fn dump_state(&mut self, path: String, when_idle: bool) -> CommandResult {
+        self.request_dump(path, when_idle)
+    }
+
     fn toast(&mut self, level: ToastLevel, text: String) -> CommandResult {
         self.context.toast_tx.try_send((level.kind(), text)).map_err(|e| CommandError::failed(e.to_string()))?;
         Ok("toast queued".to_string())

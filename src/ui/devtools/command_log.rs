@@ -9,11 +9,11 @@ use crate::icons::{self, svg};
 const LINE_CHARS: usize = 150;
 
 fn open_id() -> Id {
-    Id::new("ame_devtools_command_log_open")
+    Id::unique("ame_devtools_command_log_open")
 }
 
 fn state_id() -> Id {
-    Id::new("ame_devtools_command_log_state")
+    Id::unique("ame_devtools_command_log_state")
 }
 
 pub fn is_open(ctx: &Context) -> bool {

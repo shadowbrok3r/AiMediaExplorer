@@ -14,7 +14,7 @@ pub type Slot = std::sync::Arc<std::sync::Mutex<PlayerView>>;
 
 /// The player view stored under `key`, created on first use.
 pub fn slot(ctx: &egui::Context, key: impl std::hash::Hash + std::fmt::Debug) -> Slot {
-    let id = egui::Id::new("ame_video_view").with(key);
+    let id = egui::Id::unique("ame_video_view").with(key);
     ctx.data_mut(|d| d.get_temp_mut_or_insert_with(id, Slot::default).clone())
 }
 
@@ -63,17 +63,6 @@ impl PlayerView {
 
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
-    }
-
-    /// Size in pixels of the frame currently shown.
-    pub fn frame_size(&self) -> Option<[usize; 2]> {
-        self.texture.as_ref().map(TextureHandle::size)
-    }
-
-    /// Reports whether the decode thread has exited, usable after the view lets go of the player.
-    #[cfg(test)]
-    pub(crate) fn watcher(&self) -> Option<impl Fn() -> bool + Send + 'static> {
-        self.player.as_ref().map(Player::watcher)
     }
 
     /// Draws the video area and controls for `path`; `still` draws the picture shown before playback starts.

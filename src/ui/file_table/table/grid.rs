@@ -119,7 +119,6 @@ struct Press {
 #[derive(Clone, Debug, Default)]
 struct BandRun {
     last: Option<(Range<usize>, Range<usize>)>,
-    additive: bool,
 }
 
 #[derive(Default)]
@@ -394,7 +393,7 @@ impl GridView {
         self.content_h = content_h;
         let (content, _) = ui.allocate_exact_size(vec2(width, content_h), Sense::hover());
         let origin = content.min.to_vec2();
-        let background = ui.interact(Rect::from_min_size(content.min, vec2(width, content_h.max(viewport.height()))), ui.id().with("ame_grid_background"), Sense::click());
+        let background = ui.interact(Rect::from_min_size(content.min, vec2(width, content_h.max(viewport.height()))), ui.scope_id().with("ame_grid_background"), Sense::click());
 
         let rows = layout.visible_rows(viewport.min.y, viewport.height(), total);
         let vis = layout.positions_of_rows(rows.clone(), total);
@@ -423,7 +422,7 @@ impl GridView {
             let cell = layout.cell_rect(pos).translate(origin);
             let image = layout.image_rect(pos).translate(origin);
             let selected = input.selection.contains(key);
-            let id = ui.id().with(("ame_grid_tile", pos));
+            let id = ui.scope_id().with(("ame_grid_tile", pos));
             let resp = ui.interact(cell, id, Sense::click());
             let hover = !banding && ui.rect_contains_pointer(cell);
             if matches!(thumb, ThumbView::Pending) {
@@ -576,7 +575,7 @@ impl GridView {
             if press.on_selected || at.distance(press.origin) < BAND_START_PX {
                 return;
             }
-            self.band = Some(BandRun { last: None, additive: press.additive });
+            self.band = Some(BandRun { last: None });
         }
         let begin = self.band.as_ref().is_some_and(|b| b.last.is_none());
         let rect = Rect::from_two_pos(press.content, Pos2::ZERO + (at - origin));

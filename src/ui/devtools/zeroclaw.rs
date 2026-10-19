@@ -15,7 +15,7 @@ use crate::zc::widgets::{ago, clock, health_row};
 const ROW_HEIGHT: f32 = 18.0;
 
 fn open_id() -> Id {
-    Id::new("ame_devtools_zeroclaw_open")
+    Id::unique("ame_devtools_zeroclaw_open")
 }
 
 pub fn is_open(ctx: &Context) -> bool {

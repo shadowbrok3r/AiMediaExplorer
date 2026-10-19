@@ -174,7 +174,7 @@ pub fn show(ctx: &Context, ex: &mut FileExplorer) {
     let mut open = true;
     let (mut start, mut browse, mut current) = (false, false, false);
     let current_folder = ex.nav.scope.is_filesystem().then(|| ex.current_path.clone());
-    let id = Id::new(("ame_scan_dialog", ex.viewer.scope));
+    let id = Id::unique(("ame_scan_dialog", ex.viewer.scope));
     Window::new("Scan folder").id(id).open(&mut open).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(ctx, |ui| {
         ui.set_width(430.0);
         let dialog = &mut ex.toolbar.scan;

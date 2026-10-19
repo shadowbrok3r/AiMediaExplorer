@@ -149,7 +149,7 @@ fn parse(args: &[String]) -> Option<Result<Parsed, String>> {
     let mut no_repair = false;
     let mut legacy = LegacyArgs::default();
     let mut i = 0;
-    let mut value = |i: &mut usize, inline: Option<&str>, flag: &str| -> Result<String, String> {
+    let value = |i: &mut usize, inline: Option<&str>, flag: &str| -> Result<String, String> {
         if let Some(v) = inline {
             return Ok(v.to_string());
         }

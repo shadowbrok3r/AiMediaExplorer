@@ -489,9 +489,6 @@ impl ArchiveRegistry {
     pub fn by_scheme<'a>(&'a self, scheme: &str) -> Option<&'a dyn ArchiveHandler> {
         self.handlers.iter().map(|b| &**b).find(|h| h.scheme() == scheme)
     }
-    pub fn by_extension<'a>(&'a self, name_or_ext: &str) -> Option<&'a dyn ArchiveHandler> {
-        self.handlers.iter().map(|b| &**b).find(|h| h.handles_extension(name_or_ext))
-    }
 }
 
 #[cfg(test)]

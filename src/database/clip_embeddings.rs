@@ -54,28 +54,6 @@ fn knn_sql(search: usize, effort: usize, fetch_rows: bool) -> String {
 }
 
 impl super::ClipEmbeddingRow {
-    // Load all clip embedding rows and return mapping path -> (embedding, hash, thumb_ref)
-    pub async fn load_all_clip_embeddings()
-    -> anyhow::Result<Vec<Self>, anyhow::Error> {
-        let _ga = db_activity("Select all clip_embeddings");
-        db_set_detail("Loading clip embeddings".to_string());
-        let rows: Vec<super::ClipEmbeddingRow> = super::DB.select("clip_embeddings").await?;
-        Ok(rows)
-    }
-
-    pub async fn load_clip_embeddings_for_path(
-        path: &str,
-    ) -> anyhow::Result<Vec<Self>, anyhow::Error> {
-        let _ga = db_activity("Select clip_embeddings by path");
-        db_set_detail("Loading clip embeddings for path".to_string());
-        let rows: Vec<super::ClipEmbeddingRow> = super::DB
-            .query("SELECT * FROM clip_embeddings WHERE path = $path")
-            .bind(("path", path.to_string()))
-            .await?
-            .take(0)?;
-
-        Ok(rows)
-    }
 
     /// KNN search using the HNSW index on clip_embeddings.embedding
     /// Returns `k` nearest neighbours of `query_vec` after skipping `start`.

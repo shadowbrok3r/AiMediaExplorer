@@ -108,7 +108,7 @@ fn header_action(ui: &mut Ui, state: &mut SidebarState, section: SectionId, head
         _ => return false,
     };
     let spot = Rect::from_center_size(pos2(header.right() - HEADER_ACTION / 2.0 - 4.0, header.center().y), vec2(HEADER_ACTION, HEADER_ACTION));
-    let response = ui.interact(spot, ui.id().with(("sidebar_header_action", section.key())), Sense::click());
+    let response = ui.interact(spot, ui.scope_id().with(("sidebar_header_action", section.key())), Sense::click());
     if !(ui.rect_contains_pointer(header) || response.has_focus()) {
         return false;
     }

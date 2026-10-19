@@ -25,7 +25,7 @@ pub struct CrumbLayout {
 }
 
 fn layout_id() -> Id {
-    Id::new("ame.breadcrumbs.layout")
+    Id::unique("ame.breadcrumbs.layout")
 }
 
 /// The layout recorded by the last [`FileExplorer::path_area`](super::super::FileExplorer::path_area).
@@ -153,7 +153,7 @@ pub struct PathBar {
 }
 
 fn edit_id(ex: &FileExplorer) -> Id {
-    Id::new(("ame_path_edit", ex.viewer.scope))
+    Id::unique(("ame_path_edit", ex.viewer.scope))
 }
 
 fn with_separator(path: &str) -> String {
@@ -229,7 +229,7 @@ impl FileExplorer {
     }
 
     fn address_view(&mut self, ui: &mut Ui, rect: Rect) {
-        let background = ui.interact(rect, Id::new(("ame_path_bg", self.viewer.scope)), Sense::click());
+        let background = ui.interact(rect, Id::unique(("ame_path_bg", self.viewer.scope)), Sense::click());
         let pad = ui.spacing().item_spacing.x;
         let spinner = if self.is_loading() { 22.0 } else { 0.0 };
         let inner = Rect::from_min_max(rect.min + vec2(pad, 0.0), pos2((rect.right() - pad - spinner).max(rect.left() + pad), rect.bottom()));
@@ -345,7 +345,7 @@ impl FileExplorer {
         }
         let highlight = self.toolbar.path.highlight;
         let width = field.width().max(280.0);
-        let area = Area::new(Id::new(("ame_path_suggest", self.viewer.scope))).order(Order::Foreground).fixed_pos(field.left_bottom() + vec2(0.0, 2.0)).constrain(true).show(ui.ctx(), |ui| {
+        let area = Area::new(Id::unique(("ame_path_suggest", self.viewer.scope))).order(Order::Foreground).fixed_pos(field.left_bottom() + vec2(0.0, 2.0)).constrain(true).show(ui.ctx(), |ui| {
             Frame::popup(ui.style()).show(ui, |ui| {
                 ui.set_width(width - 12.0);
                 for (i, item) in list.iter().enumerate() {

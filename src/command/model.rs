@@ -8,7 +8,6 @@ use super::browser::{DialogKind, QueryMode};
 use super::scope::Scope;
 use crate::database::Thumbnail;
 use crate::tasks::{TaskEvent, TaskId};
-use crate::ui::file_table::FilterRequest;
 use crate::ui::file_table::table::view_mode::{TileFit, ViewMode};
 
 /// Where a newly opened scope goes.
@@ -195,6 +194,7 @@ pub enum DevtoolsWindow {
     Grid,
     Inspector,
     Journal,
+    Workspace,
     Refine,
     Sidebar,
     Actions,
@@ -323,6 +323,14 @@ pub enum AppCommand {
     Undo,
     /// Re-apply the metadata change batch that was undone last.
     Redo,
+    /// Write the workspace file now, reopen what it holds, or delete it.
+    Workspace { op: crate::ui::workspace::Op },
+    /// Write a JSON snapshot of the application state to `path`; with `when_idle` once the first frames have run and nothing is loading.
+    DumpState {
+        path: String,
+        #[serde(default, skip_serializing_if = "is_false")]
+        when_idle: bool,
+    },
     Toast { kind: ToastLevel, text: String },
     /// Report progress of a task, or start one with `begin`.
     TaskUpdate { id: TaskId, event: TaskEvent },
@@ -412,6 +420,8 @@ impl AppCommand {
             Self::Refine { .. } => "refine",
             Self::Undo => "undo",
             Self::Redo => "redo",
+            Self::Workspace { .. } => "workspace",
+            Self::DumpState { .. } => "dump_state",
             Self::Toast { .. } => "toast",
             Self::TaskUpdate { .. } => "task_update",
             Self::ClearSelection => "clear_selection",
@@ -458,23 +468,6 @@ impl AppCommand {
 impl PartialEq for AppCommand {
     fn eq(&self, other: &Self) -> bool {
         self.log_json() == other.log_json()
-    }
-}
-
-impl From<FilterRequest> for AppCommand {
-    fn from(req: FilterRequest) -> Self {
-        let target = |background| if background { Target::Background } else { Target::NewTab };
-        match req {
-            FilterRequest::OpenPath { title, path, recursive, background } => {
-                Self::OpenScope { scope: Scope::Folder(path), target: target(background), title: Some(title), recursive }
-            }
-            FilterRequest::NewTab { title, origin_path, background, .. } if title.starts_with("Image Edit") => {
-                Self::OpenTool { tool: Tool::ImageEdit, path: origin_path, target: target(background) }
-            }
-            FilterRequest::NewTab { title, rows, showing_similarity, similar_scores, origin_path, background } => {
-                Self::OpenRows(RowsTab { title, rows, showing_similarity, similar_scores, origin_path, background })
-            }
-        }
     }
 }
 
@@ -526,6 +519,10 @@ mod tests {
             AppCommand::Refine { paths: vec!["/a".into()] },
             AppCommand::Undo,
             AppCommand::Redo,
+            AppCommand::Workspace { op: crate::ui::workspace::Op::Save },
+            AppCommand::Workspace { op: crate::ui::workspace::Op::Restore },
+            AppCommand::DumpState { path: "/tmp/state.json".into(), when_idle: false },
+            AppCommand::DumpState { path: "/tmp/state.json".into(), when_idle: true },
             AppCommand::Toast { kind: ToastLevel::Warning, text: "careful".into() },
             AppCommand::TaskUpdate { id: 3, event: TaskEvent::Progress { done: 1, total: 4 } },
             AppCommand::TaskUpdate { id: 0, event: TaskEvent::Begin { kind: TaskKind::Debug, title: "x".into(), total: 10 } },
@@ -600,7 +597,7 @@ mod tests {
                 parsed.insert(cmd.name());
             }
         }
-        for name in ["open_scope", "open_rows", "open_tool", "run", "show_settings", "wizard", "backup", "attach_to_assistant", "zc", "refine", "undo", "redo", "toast", "task_update", "clear_selection", "query", "dialog", "focus_path", "open_devtools", "show_task_center", "navigate", "connect_database", "set_filter", "clear_filters", "apply_saved_view", "set_view_mode", "inspector_toggle", "open_palette", "mcp"] {
+        for name in ["open_scope", "open_rows", "open_tool", "run", "show_settings", "wizard", "backup", "attach_to_assistant", "zc", "refine", "undo", "redo", "workspace", "dump_state", "toast", "task_update", "clear_selection", "query", "dialog", "focus_path", "open_devtools", "show_task_center", "navigate", "connect_database", "set_filter", "clear_filters", "apply_saved_view", "set_view_mode", "inspector_toggle", "open_palette", "mcp"] {
             assert!(parsed.contains(name), "the docs have no example for {name}");
         }
     }
@@ -635,49 +632,6 @@ mod tests {
         assert!(json.get("rows").is_none());
         let logged: serde_json::Value = serde_json::from_str(&cmd.log_json()).unwrap();
         assert_eq!(logged["row_count"], 2);
-    }
-
-    #[test]
-    fn legacy_requests_map_onto_commands() {
-        let path = AppCommand::from(FilterRequest::OpenPath { title: "Scan: /a".into(), path: "/a".into(), recursive: true, background: true });
-        assert!(matches!(path, AppCommand::OpenScope { scope: Scope::Folder(ref p), target: Target::Background, recursive: true, title: Some(ref t) } if p == "/a" && t == "Scan: /a"));
-        let edit = AppCommand::from(FilterRequest::NewTab {
-            title: "Image Edit".into(),
-            rows: vec![],
-            showing_similarity: false,
-            similar_scores: None,
-            origin_path: Some("/a.png".into()),
-            background: false,
-        });
-        assert!(matches!(edit, AppCommand::OpenTool { tool: Tool::ImageEdit, path: Some(ref p), .. } if p == "/a.png"));
-        let rows = AppCommand::from(FilterRequest::NewTab {
-            title: "Category: x".into(),
-            rows: vec![Thumbnail::default()],
-            showing_similarity: true,
-            similar_scores: Some(HashMap::from([("/a".to_string(), 0.5)])),
-            origin_path: Some("query:cat".into()),
-            background: false,
-        });
-        match rows {
-            AppCommand::OpenRows(tab) => {
-                assert_eq!((tab.title.as_str(), tab.rows.len(), tab.showing_similarity), ("Category: x", 1, true));
-                assert_eq!(tab.similar_scores.unwrap()["/a"], 0.5);
-            }
-            other => panic!("expected rows, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn an_image_edit_tab_without_a_file_still_opens_the_tool() {
-        let cmd = AppCommand::from(FilterRequest::NewTab {
-            title: "Image Edit".into(),
-            rows: vec![],
-            showing_similarity: false,
-            similar_scores: None,
-            origin_path: None,
-            background: true,
-        });
-        assert!(matches!(cmd, AppCommand::OpenTool { tool: Tool::ImageEdit, path: None, target: Target::Background }));
     }
 
     #[test]

@@ -16,6 +16,7 @@ pub mod taskbar;
 pub mod titlebar;
 pub mod settings;
 pub mod wizard;
+pub mod workspace;
 #[cfg(test)]
 pub(crate) mod test_support;
 

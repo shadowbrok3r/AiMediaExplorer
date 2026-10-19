@@ -117,16 +117,4 @@ impl CachedScanItem {
         Ok(total)
     }
 
-    pub async fn list_paths(scan_ref: &RecordId, offset: usize, limit: usize) -> anyhow::Result<Vec<String>, anyhow::Error> {
-        let _ga = db_activity("List cached scan items");
-        db_set_detail("scan items");
-        let q = "SELECT VALUE path FROM cached_scan_items WHERE scan_ref = $r LIMIT $l START $o";
-        let rows: Vec<String> = DB.query(q)
-            .bind(("r", scan_ref.clone()))
-            .bind(("l", limit as i64))
-            .bind(("o", offset as i64))
-            .await?
-            .take(0)?;
-        Ok(rows)
-    }
 }

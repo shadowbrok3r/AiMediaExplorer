@@ -21,6 +21,10 @@ Breadcrumbs for a place on disk (a click opens that folder, Ctrl or middle click
 
 Under the field, up to eight suggestions: folders inside the folder typed so far, the recent places (the tab's history and the saved recent folders), and scope strings while the text is not a path. Up and Down choose, Tab completes (a folder gets a separator so the next level completes in turn), Enter opens the chosen one, a click opens a suggestion. The disk is read only when the text changes.
 
+## Restored tabs
+
+With Settings > General > Restore tabs on, a tab that comes back from `workspace.json` (see `settings.md`) shows its view settings at once but reads its scope when it is first drawn: a tab behind the front tab of its leaf stays empty until you bring it forward. A tab that cannot read its scope shows a placeholder instead of rows: **Waiting for the library** while the library connects (at most 20 s), **Not available right now** with the reason (a folder that is gone, a library that did not connect) and a **Retry** button, or **Search not run** with **Run search** for a saved semantic or similar-file search. Any navigation in the tab replaces the placeholder. Devtools > Workspace shows what was restored; `state.json` from `--dump-state` lists `pending` per tab.
+
 ## Query bar
 
 A text field with a mode: **Name | Text | Semantic | Similar**.

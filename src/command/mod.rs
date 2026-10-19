@@ -6,7 +6,6 @@ pub mod bus;
 pub mod cli;
 pub mod context;
 pub mod dispatch;
-pub mod legacy;
 pub mod log;
 pub mod model;
 pub mod scope;

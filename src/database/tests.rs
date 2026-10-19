@@ -10,7 +10,7 @@ use surrealdb::Surreal;
 use surrealdb::engine::local::{Db, Mem, SurrealKv};
 use surrealdb::types::{RecordId, SurrealValue};
 
-use super::snapshot::{self, *};
+use super::snapshot::*;
 use super::surql::{self, Manifest, VerifyOptions, VerifyTarget};
 use super::{DB_NAME, NS, SCHEMA_DDL, define_schema};
 

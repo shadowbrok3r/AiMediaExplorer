@@ -139,62 +139,6 @@ pub fn smoothed_cpu01() -> f32 {
     smoothed
 }
 
-// Smoothed, normalized RAM usage for progress bars (0..1). Uses process working set
-// normalized by a rolling max observed during this session.
-static SMOOTHED_RAM01: Lazy<Mutex<Option<f32>>> = Lazy::new(|| Mutex::new(None));
-static RAM_LAST_UPDATE: Lazy<Mutex<Option<Instant>>> = Lazy::new(|| Mutex::new(None));
-const RAM_MIN_PERIOD: Duration = Duration::from_millis(500);
-
-pub fn smoothed_ram01() -> f32 {
-    // Rate-limit updates to avoid recomputing on every frame
-    let now = Instant::now();
-    {
-        let mut last = RAM_LAST_UPDATE.lock().unwrap();
-        if let Some(prev) = *last {
-            if now.duration_since(prev) < RAM_MIN_PERIOD {
-                return SMOOTHED_RAM01.lock().unwrap().unwrap_or(0.0);
-            }
-        }
-        *last = Some(now);
-    }
-
-    // Use system memory ratio for a changing bar
-    let (used, total) = system_mem_mb().unwrap_or((0.0, 0.0));
-    let ratio = if total > 0.0 { (used / total).clamp(0.0, 1.0) } else { 0.0 };
-    let mut g = SMOOTHED_RAM01.lock().unwrap();
-    let alpha: f32 = 0.18;
-    let smoothed = match *g { Some(prev) => prev + alpha * (ratio - prev), None => ratio };
-    *g = Some(smoothed);
-    smoothed
-}
-
-// Smoothed, normalized VRAM usage for progress bars (0..1).
-static SMOOTHED_VRAM01: Lazy<Mutex<Option<f32>>> = Lazy::new(|| Mutex::new(None));
-static VRAM_LAST_UPDATE: Lazy<Mutex<Option<Instant>>> = Lazy::new(|| Mutex::new(None));
-const VRAM_MIN_PERIOD: Duration = Duration::from_millis(500);
-
-pub fn smoothed_vram01() -> f32 {
-    // Rate-limit updates
-    let now = Instant::now();
-    {
-        let mut last = VRAM_LAST_UPDATE.lock().unwrap();
-        if let Some(prev) = *last {
-            if now.duration_since(prev) < VRAM_MIN_PERIOD {
-                return SMOOTHED_VRAM01.lock().unwrap().unwrap_or(0.0);
-            }
-        }
-        *last = Some(now);
-    }
-    let ratio = match gpu_mem_mb() { Some((used, total)) if total > 0.0 => (used / total).clamp(0.0, 1.0), _ => 0.0 };
-    let mut g = SMOOTHED_VRAM01.lock().unwrap();
-    // VRAM can spike; keep smoothing moderate
-    let alpha: f32 = 0.16;
-    let smoothed = match *g { Some(prev) => prev + alpha * (ratio - prev), None => ratio };
-    *g = Some(smoothed);
-    smoothed
-}
-
-
 // --- System metrics helpers ---
 #[cfg(windows)]
 pub fn process_mem_mb() -> Option<f32> {

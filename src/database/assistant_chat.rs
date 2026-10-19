@@ -1,4 +1,4 @@
-use crate::{ASSISTANT_MESSAGES, ASSISTANT_SESSIONS, DB, database::{db_activity, db_set_detail, db_set_error}};
+use crate::{ASSISTANT_MESSAGES, DB, database::{db_activity, db_set_detail, db_set_error}};
 use serde::{Deserialize, Serialize};
 use surrealdb::types::{RecordId, Datetime, SurrealValue};
 
@@ -34,37 +34,6 @@ pub struct AssistantMessage {
     /// JSON text with the entry's extra data (tool name, arguments, ids).
     #[serde(default)]
     pub meta: Option<String>,
-}
-
-pub async fn create_session(title: &str) -> anyhow::Result<RecordId, anyhow::Error> {
-    let _ga = db_activity("Create chat session");
-    db_set_detail(format!("{title}"));
-    let new_row = AssistantSession { 
-        title: title.to_string(),
-        id: RecordId::new(ASSISTANT_SESSIONS, surrealdb_types::Uuid::new_v4().to_string()),
-        created: Some(chrono::Utc::now().into()),
-        updated: Some(chrono::Utc::now().into()),
-        backend: None,
-        agent: None,
-        gateway_id: None,
-    };
-    let row: Option<AssistantSession> = DB
-        .create(ASSISTANT_SESSIONS)
-        .content(new_row)
-        .await
-        .map_err(|e| { db_set_error(format!("create session failed: {e}")); e })?
-        .take();
-    Ok(row.map(|r| r.id).unwrap())
-}
-
-pub async fn list_sessions() -> anyhow::Result<Vec<(RecordId, String)>, anyhow::Error> {
-    let _ga = db_activity("List chat sessions");
-    db_set_detail("Loading sessions");
-    let rows: Vec<AssistantSession> = DB
-        .query("SELECT * FROM assistant_sessions ORDER BY updated DESC, created DESC")
-        .await?
-        .take(0)?;
-    Ok(rows.into_iter().map(|r| (r.id, r.title)).collect())
 }
 
 pub async fn load_messages(session_id: &RecordId) -> anyhow::Result<Vec<AssistantMessage>, anyhow::Error> {

@@ -15,11 +15,13 @@ pub mod failed;
 pub mod history;
 pub mod load;
 pub mod nav;
+pub mod pending;
 pub mod runner;
 
 pub use badge::{Badge, Badges};
 pub use history::{Entry, History};
 pub use load::{Outcome, Request, RowBatch};
+pub use pending::{Pending, PendingKind};
 
 #[cfg(test)]
 mod nav_tests;
@@ -118,6 +120,10 @@ pub struct Nav {
     pub hydrate: Vec<String>,
     /// When the filesystem listing of the current scope began.
     pub fs_started: Option<Instant>,
+    /// A restored scope that is not loaded yet, or cannot be.
+    pub pending: Option<Pending>,
+    /// Further paths to select once the first of the restored selection is in.
+    pub restore_select: Vec<String>,
 }
 
 impl Nav {
@@ -139,6 +145,8 @@ impl Nav {
             rx,
             hydrate: Vec::new(),
             fs_started: None,
+            pending: None,
+            restore_select: Vec::new(),
         }
     }
 

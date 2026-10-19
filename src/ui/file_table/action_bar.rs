@@ -643,7 +643,7 @@ impl FileExplorer {
     /// Runs what the Browser actions devtools window asked for and publishes what it shows while it is open.
     pub(crate) fn run_actions_dev(&mut self, ctx: &Context) {
         use crate::ui::devtools::browser_actions as dev;
-        let owner = Id::new(("ame_browser_actions_dev_owner", self.viewer.scope));
+        let owner = Id::unique(("ame_browser_actions_dev_owner", self.viewer.scope));
         for command in dev::take_commands(ctx, owner) {
             let dev::Command::Run(action) = command;
             let _ = self.run_action_ui(ctx, action, Origin::Devtools);
@@ -736,7 +736,7 @@ impl FileExplorer {
         let gap = style.spacing.item_spacing.x;
         let frame_pad = vec2(8.0, 5.0);
         let font = TextStyle::Button.resolve(&style);
-        let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("ame_action_bar_measure")));
+        let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::unique("ame_action_bar_measure")));
         let measure = |text: &str| painter.layout_no_wrap(text.to_string(), font.clone(), Color32::PLACEHOLDER).size().x;
         let button_w = |short: &str| icon_md(&style) + 5.0 + measure(short) + style.spacing.button_padding.x * 2.0 + 4.0;
         let label = count_text(facts);
@@ -754,7 +754,7 @@ impl FileExplorer {
         let mut clicked: Option<ActionId> = None;
         let mut clear = false;
         let mut layout = BarLayout { browser, hidden, ..Default::default() };
-        let id = Id::new(("ame_action_bar", self.viewer.scope));
+        let id = Id::unique(("ame_action_bar", self.viewer.scope));
         let area = Area::new(id).order(Order::Middle).fixed_pos(pos).constrain(false).show(ctx, |ui| {
             Frame::popup(ui.style()).inner_margin(Margin::symmetric(frame_pad.x as i8, frame_pad.y as i8)).show(ui, |ui| {
                 ui.set_width(bar_w - 2.0 * frame_pad.x);
@@ -823,7 +823,7 @@ impl FileExplorer {
         let popover = self.toolbar.bar.popover.clone()?;
         let mut forms = std::mem::take(&mut self.toolbar.bar.forms);
         let view = popovers::View { popover: &popover, rows: &self.toolbar.bar.target, known_tags: &self.toolbar.bar.known_tags, known_categories: &self.toolbar.bar.known_categories, collections: &self.toolbar.bar.collections };
-        let (rect, intent) = popovers::show(ctx, &mut forms, &view, pos2(bar.center().x, bar.top() - 6.0), Id::new(("ame_action_popover", self.viewer.scope)));
+        let (rect, intent) = popovers::show(ctx, &mut forms, &view, pos2(bar.center().x, bar.top() - 6.0), Id::unique(("ame_action_popover", self.viewer.scope)));
         self.toolbar.bar.forms = forms;
         if let Some(intent) = intent {
             self.apply_intent(ctx, intent);

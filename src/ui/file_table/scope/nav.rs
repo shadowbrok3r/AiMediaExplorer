@@ -248,7 +248,7 @@ impl FileExplorer {
     }
 
     /// Shows `scope`: stops what the tab was doing, empties the view and starts the load or the scan.
-    fn show_scope(&mut self, scope: Scope, recursive: bool, restore: Option<Restore>) {
+    pub(super) fn show_scope(&mut self, scope: Scope, recursive: bool, restore: Option<Restore>) {
         self.stop_work();
         self.reset_rows();
         self.viewer.mode = if scope.is_filesystem() { ExplorerMode::FileSystem } else { ExplorerMode::Database };
@@ -279,6 +279,7 @@ impl FileExplorer {
 
     /// Stops the load and the scan of the tab; whatever they still deliver is ignored.
     pub(crate) fn stop_work(&mut self) {
+        self.nav.pending = None;
         self.nav.cancel_active();
         if let Some(id) = self.current_scan_id.take() {
             crate::utilities::scan::cancel_scan(id);
@@ -287,7 +288,7 @@ impl FileExplorer {
     }
 
     /// Empties the view and every cache that belongs to the rows in it.
-    fn reset_rows(&mut self) {
+    pub(super) fn reset_rows(&mut self) {
         self.table.clear();
         self.selection.clear();
         self.viewer.thumbs.new_scope(self.viewer.scope);
@@ -456,10 +457,12 @@ impl FileExplorer {
         }
         if let Some(anchor) = restore.anchor.clone() {
             if self.table.contains_path(&anchor) {
-                self.select_paths([anchor.as_str()]);
+                let more = std::mem::take(&mut self.nav.restore_select);
+                self.select_paths(std::iter::once(anchor.as_str()).chain(more.iter().map(String::as_str)));
                 restore.anchor = None;
             } else if !loading {
                 restore.anchor = None;
+                self.nav.restore_select.clear();
             }
         }
         if restore.scroll_row.is_some() || restore.anchor.is_some() {

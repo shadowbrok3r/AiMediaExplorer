@@ -44,7 +44,7 @@ pub(super) struct Card {
 }
 
 fn state(ctx: &Context) -> Arc<Mutex<Card>> {
-    let id = Id::new("ame_zc_card_state");
+    let id = Id::unique("ame_zc_card_state");
     ctx.data_mut(|d| d.get_temp_mut_or_insert_with::<Arc<Mutex<Card>>>(id, Default::default).clone())
 }
 

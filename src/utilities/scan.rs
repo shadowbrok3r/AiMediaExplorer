@@ -175,7 +175,7 @@ fn next_thumb_job(rx: &Receiver<ThumbJob>, prio_rx: &Receiver<ThumbJob>) -> Opti
     if let Ok(job) = prio_rx.try_recv() { return Some(job); }
     let mut select = crossbeam::channel::Select::new();
     let prio_index = select.recv(prio_rx);
-    let scan_index = select.recv(rx);
+    select.recv(rx);
     let op = select.select();
     if op.index() == prio_index {
         match op.recv(prio_rx) {

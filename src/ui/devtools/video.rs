@@ -1,7 +1,6 @@
 //! Devtools window for the video subsystem: backends, probe, thumbnail generation, decode slots and a preview player.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -15,7 +14,7 @@ use crate::video::{self, BackendChoice, Cancel, PosterOptions, ProbeOptions, Vid
 const HISTORY: usize = 40;
 
 fn open_id() -> Id {
-    Id::new("ame_devtools_video_open")
+    Id::unique("ame_devtools_video_open")
 }
 
 pub fn is_open(ctx: &Context) -> bool {

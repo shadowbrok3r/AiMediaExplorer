@@ -463,7 +463,7 @@ fn the_actions_devtools_window_lists_the_registry_and_runs_enabled_entries() {
     use crate::ui::devtools::actions as dev;
     let mut rig = Rig::new(1000.0, 700.0);
     dev::set_open(&rig.ctx, true);
-    rig.ctx.data_mut(|d| d.insert_temp(eframe::egui::Id::new("ame_devtools_actions_filter"), "toggle sidebar".to_string()));
+    rig.ctx.data_mut(|d| d.insert_temp(eframe::egui::Id::unique("ame_devtools_actions_filter"), "toggle sidebar".to_string()));
     rig.settle();
     let snapshot = dev::latest(&rig.ctx).expect("the shell published the registry");
     assert!(snapshot.entries.iter().any(|e| e.id == "shell.toggle_sidebar"));

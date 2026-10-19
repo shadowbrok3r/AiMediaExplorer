@@ -119,7 +119,7 @@ impl FileExplorer {
     /// Controls for every condition of the tab's filter; changes take effect at once and rows are never removed.
     pub fn filter_editor(&mut self, ui: &mut Ui, salt: &str) {
         ui.set_width(EDITOR_WIDTH);
-        let id = Id::new(("ame_filter_editor", self.viewer.scope, salt));
+        let id = Id::unique(("ame_filter_editor", self.viewer.scope, salt));
         let before = self.filter_spec();
         let mut spec = before.clone();
         let mut err: Option<String> = None;

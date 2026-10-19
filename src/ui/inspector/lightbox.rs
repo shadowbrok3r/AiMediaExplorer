@@ -111,7 +111,7 @@ pub fn show(ctx: &Context, insp: &mut Inspector, ex: &mut FileExplorer, target: 
     let facts = insp.facts.get(&row.path).cloned();
     let (view, _) = resolve(&ex.viewer.thumbs, ex.viewer.scope, &row);
     let name = row.filename.clone();
-    Area::new(Id::new("ame_inspector_lightbox")).order(Order::Foreground).fixed_pos(content.min).constrain(false).show(ctx, |ui| {
+    Area::new(Id::unique("ame_inspector_lightbox")).order(Order::Foreground).fixed_pos(content.min).constrain(false).show(ctx, |ui| {
         ui.set_clip_rect(content);
         ui.allocate_rect(content, Sense::hover());
         ui.painter().rect_filled(content, 0.0, Color32::from_black_alpha(238));

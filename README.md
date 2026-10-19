@@ -49,3 +49,6 @@ The main window draws its own title bar (logo, File and View menus, engine statu
 
 - View > Custom title bar switches to the system title bar and back; the choice is saved to `<config dir>/smart-media/window_settings.json`.
 - `--system-titlebar` or `EGUI_THEME_KIT_SYSTEM_TITLEBAR=1` keeps the system title bar for one launch without changing the saved choice.
+
+# Workspace and smoke checks
+The open tabs, the dock layout and the window are kept in `<config dir>/smart-media/workspace.json` and come back at launch when Settings > General > Restore tabs is on (`docs/settings.md`). `smart-media --dump-state <path>` writes a JSON snapshot of the tabs, tasks, engines and a settings summary (never a key) once the application is idle, for scripts and smoke checks (`docs/commands.md`). `docs/smoke.md` has the per-OS checklist and the recipe for running the application against a scratch library under a private Xvfb.

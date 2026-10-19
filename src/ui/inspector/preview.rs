@@ -81,7 +81,7 @@ pub struct CanvasOutput {
 
 /// Draws `texture` in `rect` placed by `view` and applies wheel zoom and drag panning to it.
 pub fn canvas(ui: &mut Ui, rect: Rect, view: &mut ViewState, texture: Option<(TextureId, Vec2)>, image: Vec2) -> CanvasOutput {
-    let response: Response = ui.interact(rect, ui.id().with(("inspector_canvas", rect.min.x as i32, rect.min.y as i32)), Sense::click_and_drag());
+    let response: Response = ui.interact(rect, ui.scope_id().with(("inspector_canvas", rect.min.x as i32, rect.min.y as i32)), Sense::click_and_drag());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, CornerRadius::same(4), ui.visuals().extreme_bg_color);
     let mut out = CanvasOutput { hovered: response.hovered(), double_clicked: response.double_clicked() };

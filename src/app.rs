@@ -6,10 +6,6 @@ use crate::ui::{file_table::FileExplorer, refine::RefinementsPanel, tabs::{Brows
 use egui_toast::Toasts;
 use crate::theme::chrome::Chrome;
 
-/// Requests the settings window from anywhere by queueing a command.
-pub static OPEN_SETTINGS_REQUEST: crate::command::legacy::SettingsRequest = crate::command::legacy::SettingsRequest;
-/// Requests tabs from anywhere by queueing commands.
-pub static OPEN_TAB_REQUESTS: crate::command::legacy::TabRequests = crate::command::legacy::TabRequests;
 pub const DEFAULT_JOYCAPTION_PATH: &str = r#"G:\Users\Owner\Documents\1-MyStuff\TechStuff\GitHub\smart-media\llama-joycaption-beta-one-hf-llava"#;
 pub const MAX_NEW_TOKENS: usize = 200;
 pub const TEMPERATURE: f32 = 0.5;
@@ -29,8 +25,8 @@ pub struct SmartMediaContext {
     pub db_ready: bool,
     // First-run wizard, shown while no library is configured
     pub wizard: crate::ui::wizard::Wizard,
-    // Launch restore of the open scopes and their recording
-    pub startup: crate::ui::settings::startup::Tracker,
+    // Workspace file, launch restore and the state dump
+    pub workspace: crate::ui::workspace::Session,
     // AI init status flags
     pub ai_initializing: bool,
     pub ai_ready: bool,
@@ -68,11 +64,14 @@ impl SmartMediaApp {
         let appearance = crate::theme::setup(cc);
         restore_egui_preferences(&cc.egui_ctx, cc.storage);
         crate::command::install_repaint(&cc.egui_ctx);
-        let mut app = Self::assemble(cc.egui_ctx.clone(), appearance, chrome, FileExplorer::new(false));
+        let launch = crate::ui::workspace::launch();
+        let mut app = Self::assemble(cc.egui_ctx.clone(), appearance, chrome, FileExplorer::new(launch.restoring()));
         app.context.task_poller = crate::tasks::Poller::standard();
         app.context.inspector.load_prefs();
         app.shell = crate::ui::shell::Shell::live();
         app.context.inspector.set_open(app.shell.layout.layout.right_rail_open);
+        let applied = crate::ui::workspace::restore_launch(&mut app, launch);
+        app.context.workspace = crate::ui::workspace::Session::live(launch, applied.as_ref());
         app
     }
 
@@ -102,7 +101,7 @@ impl SmartMediaApp {
             db_ready_tx, db_ready_rx,
             db_ready: false,
             wizard: Default::default(),
-            startup: Default::default(),
+            workspace: crate::ui::workspace::Session::memory(),
             ai_initializing: false,
             ai_ready: false,
             appearance,
@@ -160,13 +159,6 @@ impl SmartMediaContext {
     /// The explorer of browser tab `id`.
     pub fn explorer_mut(&mut self, id: BrowserId) -> Option<&mut crate::ui::file_table::FileExplorer> {
         if id == BrowserId::MAIN { Some(&mut self.file_explorer) } else { self.filtered_tabs.get_mut(&id) }
-    }
-
-    /// Every browser tab with the title its scope gives, the main one first.
-    pub fn browser_titles(&self) -> Vec<(BrowserId, String)> {
-        let mut others: Vec<(BrowserId, String)> = self.filtered_tabs.iter().map(|(id, ex)| (*id, ex.tab_title())).collect();
-        others.sort_by_key(|(id, _)| *id);
-        std::iter::once((BrowserId::MAIN, self.file_explorer.tab_title())).chain(others).collect()
     }
 
     /// The browser tab titled `title`, if there is one.

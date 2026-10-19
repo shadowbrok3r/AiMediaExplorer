@@ -9,11 +9,11 @@ use crate::icons::{self, svg};
 use crate::settings::{LoadState, SettingsStore};
 
 fn open_id() -> Id {
-    Id::new("ame_devtools_settings_store_open")
+    Id::unique("ame_devtools_settings_store_open")
 }
 
 fn json_cache_id() -> Id {
-    Id::new("ame_devtools_settings_store_json")
+    Id::unique("ame_devtools_settings_store_json")
 }
 
 pub fn is_open(ctx: &Context) -> bool {

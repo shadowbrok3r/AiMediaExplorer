@@ -15,7 +15,6 @@ pub mod metadata_ops;
 pub mod models;
 pub mod sections;
 pub mod shortcuts;
-pub mod startup;
 mod widgets;
 
 #[cfg(test)]

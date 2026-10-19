@@ -16,7 +16,7 @@ const LOG_ROWS: usize = 40;
 const CLIENT_WINDOW_MS: u64 = 5 * 60 * 1000;
 
 fn open_id() -> Id {
-    Id::new("ame_devtools_mcp_open")
+    Id::unique("ame_devtools_mcp_open")
 }
 
 pub fn is_open(ctx: &Context) -> bool {

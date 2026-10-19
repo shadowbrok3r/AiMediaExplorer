@@ -72,8 +72,6 @@ pub fn reopen_with_last_tx() -> bool {
 pub const NS: &str = "file_explorer";
 pub const DB_NAME: &str = "ai_search";
 
-pub const DB_DEFAULT_TABLE: &str = "./db/default.surql";
-pub const DB_BACKUP_PATH: &str = "./db/backup.surql";
 pub const DB_PATH_FILE: &str = "./db/path.txt";
 pub const DB_DEFAULT_PATH: &str = "./db/ai_search";
 
@@ -379,14 +377,6 @@ pub fn db_set_detail(detail: impl Into<String>) {
 /// Surface an error to the DB status card.
 pub fn db_set_error(err: impl Into<String>) {
     DB_STATUS.set_error(err);
-}
-
-/// Export the current database (namespace+db) to a SurrealQL file.
-pub async fn export_to<P: AsRef<Path>>(path: P) -> anyhow::Result<(), anyhow::Error> {
-    let _ga = db_activity("EXPORT DB");
-    db_set_detail(format!("Exporting to {}", path.as_ref().display()));
-    // SurrealDB v2 exposes DB.export taking a file path or writer; use the path API.
-    DB.export(path.as_ref()).await.map_err(|e| { db_set_error(format!("DB export failed: {e}")); e.into() })
 }
 
 /// Import a SurrealQL file into the current database (namespace+db).

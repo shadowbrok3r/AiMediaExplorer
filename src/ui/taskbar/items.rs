@@ -90,10 +90,6 @@ impl Item {
         matches!(self, Self::Meter { .. })
     }
 
-    pub fn is_tasks_button(&self) -> bool {
-        matches!(self, Self::Tasks { .. })
-    }
-
     /// Items measured in both forms.
     pub fn has_compact(&self) -> bool {
         true

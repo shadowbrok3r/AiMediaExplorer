@@ -9,7 +9,8 @@ use crate::icons::{self, svg};
 use crate::theme::chrome::{self, Chrome};
 use crate::theme::controls::{Icon as KitIcon, MenuButton, StaticImage};
 use crate::theme::title_bar::{Side, TitleBar};
-use crate::ui::status::{self, ChipMode, StatusMeta};
+use crate::status::StatusMeta;
+use crate::ui::status::{self, ChipMode};
 
 /// App id naming the saved window chrome preference, `<config dir>/smart-media/window_settings.json`.
 pub const APP_ID: &str = "smart-media";
@@ -56,7 +57,7 @@ pub struct StripLayout {
 }
 
 fn layout_id() -> Id {
-    Id::new("ame.title_strip.layout")
+    Id::unique("ame.title_strip.layout")
 }
 
 /// The layout recorded by the last [`show`] on `ctx`.
@@ -224,7 +225,7 @@ pub fn show(ui: &mut Ui, frameless: bool, engines: &[StatusMeta], mut menus: imp
 impl SmartMediaApp {
     /// The window strip with the real menus and the registered engines.
     pub fn title_strip(&mut self, ui: &mut Ui) -> StripLayout {
-        self.title_strip_with(ui, &status::engine_snapshots())
+        self.title_strip_with(ui, &crate::status::engine_snapshots())
     }
 
     /// The window strip showing `engines`; reports a failed save of the title bar choice.

@@ -1,5 +1,5 @@
 use crate::ui::dialogs;
-use crate::ui::status::GlobalStatusIndicator;
+use crate::status::GlobalStatusIndicator;
 use eframe::egui::*;
 
 impl crate::app::SmartMediaContext {
@@ -50,7 +50,7 @@ impl crate::app::SmartMediaContext {
         if let Ok(_) = self.db_ready_rx.try_recv() {
             self.db_ready = true;
             log::info!("DB is ready");
-            crate::ui::status::DB_STATUS.set_state(crate::ui::status::StatusState::Idle, "Ready");
+            crate::status::DB_STATUS.set_state(crate::status::StatusState::Idle, "Ready");
             let store = std::sync::Arc::clone(crate::settings::store());
             tokio::spawn(async move {
                 if let Err(e) = store.reload().await {
@@ -67,7 +67,7 @@ impl crate::app::SmartMediaContext {
             if completed > 0 || active > 0 {
                 self.ai_ready = true;
                 self.ai_initializing = false;
-                crate::ui::status::VISION_STATUS.set_state(crate::ui::status::StatusState::Idle, "Ready");
+                crate::status::VISION_STATUS.set_state(crate::status::StatusState::Idle, "Ready");
             }
         }
 
@@ -75,7 +75,6 @@ impl crate::app::SmartMediaContext {
         self.assistant.receive(ctx);
         crate::ui::wizard::show(ctx, &mut self.wizard, crate::database::is_connected());
         self.run_wizard_devtools(ctx);
-        crate::ui::settings::startup::tick(self);
         self.show_assistant_window(ctx);
     }
 

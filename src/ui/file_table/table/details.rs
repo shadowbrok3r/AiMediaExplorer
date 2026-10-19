@@ -66,7 +66,7 @@ impl Default for DetailsView {
 
 /// Where the column and sort preferences live between sessions.
 pub fn prefs_id() -> Id {
-    Id::new("ame_details_prefs")
+    Id::unique("ame_details_prefs")
 }
 
 impl DetailsView {

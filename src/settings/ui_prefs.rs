@@ -65,13 +65,13 @@ impl AiMode {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Startup {
-    /// Reopen the browser tabs that were open when the application closed.
+    /// Restore the workspace (`workspace.json`: tabs, layout and window) at launch.
     pub restore_tabs: bool,
-    /// Open the scope the focused tab showed when the application closed.
+    /// Restore only the scope the focused tab showed, in the main tab.
     pub restore_last_scope: bool,
-    /// Scope string of the focused browser at the last change.
+    /// Scope of the focused browser as older versions recorded it; read only while no workspace file exists.
     pub last_scope: Option<String>,
-    /// Scope strings of the open browser tabs at the last change, the focused one first.
+    /// Scopes of the open browsers as older versions recorded them; read only while no workspace file exists.
     pub tabs: Vec<String>,
 }
 

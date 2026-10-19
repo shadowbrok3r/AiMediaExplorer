@@ -356,19 +356,6 @@ pub fn save_settings(s: &UiSettings) {
     crate::settings::store().merge_from("legacy:save_settings", s);
 }
 
-/// Writes the whole record; prefer [`merge_settings_in_db`], which never overwrites untouched fields.
-pub async fn save_settings_in_db(s: UiSettings) -> anyhow::Result<(), anyhow::Error> {
-    let _ga = db_activity("UPSERT user settings");
-    db_set_detail("Saving user settings".to_string());
-    let db_settings: UiSettingsDb = (&s).into();
-    super::DB
-        .upsert::<Option<UiSettingsDb>>(settings_id())
-        .content::<UiSettingsDb>(db_settings)
-        .await
-        .map_err(|e| { db_set_error(format!("Save settings failed: {e}")); e })?;
-    Ok(())
-}
-
 /// Overlays the named fields of `s` onto the stored record read fresh from the database.
 pub async fn merge_settings_in_db(fields: &[&'static str], s: &UiSettings) -> anyhow::Result<(), anyhow::Error> {
     let _ga = db_activity("MERGE user settings");

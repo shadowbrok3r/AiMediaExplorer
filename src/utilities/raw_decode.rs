@@ -9,10 +9,6 @@ const MAX_PREVIEW_BYTES: u64 = 64 << 20;
 const SCAN_WINDOW_BYTES: u64 = 8 << 20;
 const MAX_DECODE_ATTEMPTS: usize = 3;
 
-pub fn is_raw_ext(ext: &str) -> bool {
-    crate::utilities::types::is_raw(ext)
-}
-
 pub fn decode_raw_to_png_bytes(path: &Path, max_dim: u32) -> anyhow::Result<Vec<u8>> {
     let img = decode_raw_image(path, max_dim)?;
     let mut out = Vec::new();

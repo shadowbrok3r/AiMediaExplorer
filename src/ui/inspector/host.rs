@@ -147,7 +147,7 @@ fn docked(ui: &mut Ui, insp: &mut Inspector, args: &mut HostArgs, target: &Targe
     });
     let rect = shown.response.rect;
     let grip = Rect::from_min_size(rect.left_top() - vec2(HANDLE / 2.0, 0.0), vec2(HANDLE, rect.height()));
-    let response = ui.interact(grip, Id::new("ame_inspector_grip"), Sense::drag());
+    let response = ui.interact(grip, Id::unique("ame_inspector_grip"), Sense::drag());
     if response.hovered() || response.dragged() {
         ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
     }
@@ -166,7 +166,7 @@ fn drawer(ui: &mut Ui, insp: &mut Inspector, args: &mut HostArgs, target: &Targe
     let rect = Rect::from_min_size(egui::pos2(free.right() - width, free.top()), vec2(width, free.height()));
     let mut close = false;
     let style = ui.style().clone();
-    Area::new(Id::new("ame_inspector_drawer")).order(Order::Foreground).fixed_pos(rect.min).constrain(false).show(ui.ctx(), |ui| {
+    Area::new(Id::unique("ame_inspector_drawer")).order(Order::Foreground).fixed_pos(rect.min).constrain(false).show(ui.ctx(), |ui| {
         Frame::popup(&style).inner_margin(Margin::symmetric(8, 6)).show(ui, |ui| {
             ui.set_width(width - 18.0);
             ui.set_height((rect.height() - 14.0).max(60.0));

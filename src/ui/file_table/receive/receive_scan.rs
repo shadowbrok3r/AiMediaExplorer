@@ -16,7 +16,6 @@ impl crate::ui::file_table::FileExplorer {
             }
             let Ok(env) = self.scan_rx.try_recv() else { break };
             handled += 1;
-            let scan_id = env.scan_id;
             // Only process messages for scans owned by this explorer. If we don't yet
             // have an owning_scan_id, we accept only when this scan is the actively
             // initiated one (current_scan_id). This prevents cross-tab leakage.

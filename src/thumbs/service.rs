@@ -354,15 +354,6 @@ impl ThumbService {
         }
     }
 
-    /// Stored thumbnail for `path`, from the encoded cache or the store.
-    pub async fn blob_for(&self, path: &str) -> Option<Blob> {
-        let key = ThumbKey::from_path(path);
-        if let Some(b) = lock(&self.shared.recent).get(&key) {
-            return Some((*b).clone());
-        }
-        self.shared.store.get_many(&[key]).await.ok()?.remove(&key)
-    }
-
     /// Whether `path` has a pending request or a cached texture at `tier`.
     pub fn is_tracked(&self, path: &str, tier: Tier) -> bool {
         let core = lock(&self.core);

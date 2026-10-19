@@ -6,39 +6,18 @@ pub use egui_phosphor::regular as p;
 use super::pack::{self as svg, Icon};
 use crate::utilities::explorer::DriveType;
 
-pub const CHEV_OPEN: &str = p::CARET_DOWN;
-pub const CHEV_CLOSED: &str = p::CARET_RIGHT;
 pub const CARET_LEFT: &str = p::CARET_LEFT;
 pub const CARET_RIGHT: &str = p::CARET_RIGHT;
 pub const CARET_DOWN: &str = p::CARET_DOWN;
 
-pub const BACK: &str = p::ARROW_LEFT;
-pub const FORWARD: &str = p::ARROW_RIGHT;
-pub const UP: &str = p::ARROW_UP;
-pub const DOWN: &str = p::ARROW_DOWN;
 pub const REFRESH: &str = p::ARROW_CLOCKWISE;
-pub const UNDO: &str = p::ARROW_COUNTER_CLOCKWISE;
-pub const HOME: &str = p::HOUSE;
 
 pub const STOP: &str = p::STOP;
 pub const PLAY: &str = p::PLAY;
 pub const PAUSE: &str = p::PAUSE;
 
-pub const STATUS_ON: &str = p::CHECK_CIRCLE;
-pub const STATUS_READY: &str = p::CHECK;
-pub const STATUS_WARN: &str = p::WARNING;
-pub const STATUS_ERR: &str = p::X;
-pub const STATUS_OFF: &str = p::MINUS_CIRCLE;
-pub const STATUS_DISABLED: &str = p::PROHIBIT;
-pub const STATUS_IDLE: &str = p::CIRCLE;
-pub const STATUS_WAIT: &str = p::HOURGLASS;
-pub const STATUS_QUEUED: &str = p::CLOCK;
-pub const STATUS_DOT: &str = p::DOT;
-
 pub const INFO: &str = p::INFO;
-pub const CRITICAL: &str = p::SKULL;
 
-pub const CLOSE: &str = p::X;
 pub const CHECK: &str = p::CHECK;
 pub const PLUS: &str = p::PLUS;
 pub const MINUS: &str = p::MINUS;
@@ -46,31 +25,19 @@ pub const EDIT: &str = p::PENCIL_SIMPLE;
 pub const COPY: &str = p::COPY;
 pub const CLIPBOARD: &str = p::CLIPBOARD;
 pub const TRASH: &str = p::TRASH;
-pub const SAVE: &str = p::FLOPPY_DISK;
-pub const DOWNLOAD: &str = p::DOWNLOAD_SIMPLE;
-pub const UPLOAD: &str = p::UPLOAD_SIMPLE;
 pub const EXPORT: &str = p::EXPORT;
 pub const OPEN: &str = p::ARROW_SQUARE_OUT;
 pub const LINK: &str = p::LINK;
-pub const PIN: &str = p::PUSH_PIN;
 pub const TAG: &str = p::TAG;
 pub const STAR: &str = p::STAR;
 pub const FLAG: &str = p::FLAG;
 pub const SEARCH: &str = p::MAGNIFYING_GLASS;
-pub const FILTER: &str = p::FUNNEL;
-pub const SORT_ASC: &str = p::SORT_ASCENDING;
-pub const SORT_DESC: &str = p::SORT_DESCENDING;
 pub const EYE: &str = p::EYE;
 pub const GEAR: &str = p::GEAR;
 pub const SLIDERS: &str = p::SLIDERS_HORIZONTAL;
 pub const LIST: &str = p::LIST;
-pub const GRID: &str = p::SQUARES_FOUR;
 pub const TABLE: &str = p::TABLE;
-pub const SIDEBAR: &str = p::SIDEBAR_SIMPLE;
-pub const TERMINAL: &str = p::TERMINAL_WINDOW;
 pub const CHAT: &str = p::CHAT;
-pub const SEND: &str = p::PAPER_PLANE_RIGHT;
-pub const ATTACH: &str = p::PAPERCLIP;
 
 pub const FOLDER: &str = p::FOLDER;
 pub const FOLDER_OPEN: &str = p::FOLDER_OPEN;
@@ -78,8 +45,6 @@ pub const FOLDER_PLUS: &str = p::FOLDER_PLUS;
 pub const FILE: &str = p::FILE;
 pub const FILE_TEXT: &str = p::FILE_TEXT;
 pub const IMAGE: &str = p::IMAGE;
-pub const VIDEO: &str = p::VIDEO_CAMERA;
-pub const MUSIC: &str = p::MUSIC_NOTES;
 pub const ARCHIVE: &str = p::ARCHIVE;
 pub const CAMERA: &str = p::CAMERA;
 

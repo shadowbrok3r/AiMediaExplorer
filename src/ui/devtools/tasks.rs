@@ -12,11 +12,11 @@ use crate::tasks::{self, Task, TaskEvent, TaskId, TaskKind, format_elapsed};
 const SIM_TICK: Duration = Duration::from_millis(100);
 
 fn open_id() -> Id {
-    Id::new("ame_devtools_tasks_open")
+    Id::unique("ame_devtools_tasks_open")
 }
 
 fn state_id() -> Id {
-    Id::new("ame_devtools_tasks_state")
+    Id::unique("ame_devtools_tasks_state")
 }
 
 pub fn is_open(ctx: &Context) -> bool {

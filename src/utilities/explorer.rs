@@ -1,6 +1,8 @@
 use crate::utilities::types::QuickAccess;
 use directories::UserDirs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(windows)]
+use std::path::PathBuf;
 
 pub fn quick_access() -> Vec<QuickAccess> {
     let mut v = Vec::new();
@@ -47,10 +49,6 @@ pub fn quick_access() -> Vec<QuickAccess> {
         });
     }
     v
-}
-
-pub fn default_pictures_root() -> Option<PathBuf> {
-    UserDirs::new().and_then(|ud| ud.picture_dir().map(|p| p.to_path_buf()))
 }
 
 #[cfg(windows)]

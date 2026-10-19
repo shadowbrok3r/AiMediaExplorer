@@ -9,6 +9,7 @@ pub mod filters;
 pub mod grid;
 pub mod inspector;
 pub mod journal;
+pub mod workspace;
 pub mod legacy_import;
 pub mod mcp;
 pub mod perf;
@@ -94,6 +95,10 @@ pub fn toggle_journal(ctx: &Context) {
     journal::set_open(ctx, !journal::is_open(ctx));
 }
 
+pub fn toggle_workspace(ctx: &Context) {
+    workspace::toggle(ctx);
+}
+
 pub fn toggle_refine(ctx: &Context) {
     refine::set_open(ctx, !refine::is_open(ctx));
 }
@@ -154,6 +159,7 @@ pub fn open(ctx: &Context, window: DevtoolsWindow) {
         DevtoolsWindow::Grid => grid::set_open(ctx, true),
         DevtoolsWindow::Inspector => inspector::set_open(ctx, true),
         DevtoolsWindow::Journal => journal::set_open(ctx, true),
+        DevtoolsWindow::Workspace => workspace::set_open(ctx, true),
         DevtoolsWindow::Refine => refine::set_open(ctx, true),
         DevtoolsWindow::Sidebar => sidebar::set_open(ctx, true),
         DevtoolsWindow::Actions => actions::set_open(ctx, true),
@@ -184,6 +190,7 @@ pub fn show(ctx: &Context) {
     grid::show(ctx);
     inspector::show(ctx);
     journal::show(ctx);
+    workspace::show(ctx);
     refine::show(ctx);
     sidebar::show(ctx);
     actions::show(ctx);
@@ -216,6 +223,7 @@ mod tests {
             DevtoolsWindow::Grid => grid::is_open(ctx),
             DevtoolsWindow::Inspector => inspector::is_open(ctx),
             DevtoolsWindow::Journal => journal::is_open(ctx),
+            DevtoolsWindow::Workspace => workspace::is_open(ctx),
             DevtoolsWindow::Refine => refine::is_open(ctx),
             DevtoolsWindow::Sidebar => sidebar::is_open(ctx),
             DevtoolsWindow::Actions => actions::is_open(ctx),
@@ -249,6 +257,7 @@ mod tests {
             DevtoolsWindow::Grid,
             DevtoolsWindow::Inspector,
             DevtoolsWindow::Journal,
+            DevtoolsWindow::Workspace,
             DevtoolsWindow::Refine,
             DevtoolsWindow::Sidebar,
             DevtoolsWindow::Actions,

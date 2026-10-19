@@ -47,19 +47,19 @@ pub enum Command {
 }
 
 fn open_id() -> Id {
-    Id::new("ame_devtools_row_store_open")
+    Id::unique("ame_devtools_row_store_open")
 }
 
 fn snapshot_id() -> Id {
-    Id::new("ame_devtools_row_store_snapshot")
+    Id::unique("ame_devtools_row_store_snapshot")
 }
 
 fn commands_id(owner: Id) -> Id {
-    Id::new(("ame_devtools_row_store_commands", owner))
+    Id::unique(("ame_devtools_row_store_commands", owner))
 }
 
 fn count_id() -> Id {
-    Id::new("ame_devtools_row_store_count")
+    Id::unique("ame_devtools_row_store_count")
 }
 
 pub fn is_open(ctx: &Context) -> bool {
@@ -323,7 +323,7 @@ mod tests {
     #[test]
     fn commands_are_delivered_once_to_their_owner() {
         let ctx = Context::default();
-        let (a, b) = (Id::new("a"), Id::new("b"));
+        let (a, b) = (Id::unique("a"), Id::unique("b"));
         push_command(&ctx, a, Command::CheckInvariants);
         push_command(&ctx, a, Command::Synthetic(5));
         push_command(&ctx, b, Command::ClearRows);

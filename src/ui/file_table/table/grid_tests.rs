@@ -192,10 +192,6 @@ impl Rig {
         self.ex.selected_rows().iter().map(|r| r.path.clone()).collect()
     }
 
-    fn focus_path(&self) -> Option<String> {
-        self.ex.selection.focus().map(|k| k.as_str().to_string())
-    }
-
     fn focus_pos(&self) -> Option<usize> {
         let view = self.ex.view_ref();
         self.ex.selection.focus().and_then(|k| view.pos_of(k))

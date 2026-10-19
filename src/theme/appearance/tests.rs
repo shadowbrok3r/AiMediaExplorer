@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use eframe::Storage as _;
 use egui_theme_kit::saved::theme_to_json;
+use egui_theme_kit::store::StartupTheme;
 use egui_theme_kit::{KitConfig, init_context};
 
 use super::*;

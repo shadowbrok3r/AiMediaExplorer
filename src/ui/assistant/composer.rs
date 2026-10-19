@@ -60,7 +60,7 @@ impl Composer {
 }
 
 fn focus_id() -> Id {
-    Id::new("ame_assistant_composer_focus")
+    Id::unique("ame_assistant_composer_focus")
 }
 
 /// Asks the composer to take the keyboard focus on its next draw.
@@ -141,7 +141,7 @@ pub fn show(ui: &mut Ui, c: &mut Composer, env: &Env, thumbs: &mut Thumbs) -> Op
         ui.label(RichText::new(why).color(ui.visuals().warn_fg_color));
     }
     let hint = if env.blocked.is_some() { "Quick actions still work: type /help" } else { "Message. Enter sends, Shift+Enter adds a line, / lists quick actions" };
-    let id = Id::new("ame_assistant_composer");
+    let id = Id::unique("ame_assistant_composer");
     let enter = ui.memory(|m| m.has_focus(id)) && take_enter(ui);
     let edit = TextEdit::multiline(&mut c.text).id(id).desired_rows(3).desired_width(ui.available_width()).hint_text(hint).ui(ui);
     if ui.ctx().data_mut(|d| d.remove_temp::<bool>(focus_id())).unwrap_or(false) {

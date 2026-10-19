@@ -11,19 +11,19 @@ pub struct Snapshot {
 }
 
 fn open_id() -> Id {
-    Id::new("ame_devtools_actions_open")
+    Id::unique("ame_devtools_actions_open")
 }
 
 fn snapshot_id() -> Id {
-    Id::new("ame_devtools_actions_snapshot")
+    Id::unique("ame_devtools_actions_snapshot")
 }
 
 fn requests_id() -> Id {
-    Id::new("ame_devtools_actions_requests")
+    Id::unique("ame_devtools_actions_requests")
 }
 
 fn filter_id() -> Id {
-    Id::new("ame_devtools_actions_filter")
+    Id::unique("ame_devtools_actions_filter")
 }
 
 pub fn is_open(ctx: &Context) -> bool {

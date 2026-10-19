@@ -330,7 +330,7 @@ async fn folder_rows_are_selectable_and_do_not_navigate_on_a_single_click() {
     rig.click_with(2, Modifiers::COMMAND);
     assert_eq!(rig.ex.selection_count(), 2);
     assert!(rig.selected_paths().contains(&"/cells/sub_b".to_string()));
-    let (_, dirs) = crate::ui::file_table::menus::selection_menu::split_selection(&rig.ex.selected_rows());
+    let dirs: Vec<String> = rig.ex.selected_rows().iter().filter(|r| r.file_type == "<DIR>").map(|r| r.path.clone()).collect();
     assert_eq!(dirs, ["/cells/sub_a".to_string(), "/cells/sub_b".to_string()], "selected folders reach the Exclude directories action");
 }
 

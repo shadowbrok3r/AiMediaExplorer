@@ -53,19 +53,19 @@ pub enum Command {
 }
 
 fn open_id() -> Id {
-    Id::new("ame_devtools_grid_open")
+    Id::unique("ame_devtools_grid_open")
 }
 
 fn snapshot_id() -> Id {
-    Id::new("ame_devtools_grid_snapshot")
+    Id::unique("ame_devtools_grid_snapshot")
 }
 
 fn commands_id(owner: Id) -> Id {
-    Id::new(("ame_devtools_grid_commands", owner))
+    Id::unique(("ame_devtools_grid_commands", owner))
 }
 
 fn stress_rate_id() -> Id {
-    Id::new("ame_devtools_grid_stress_rate")
+    Id::unique("ame_devtools_grid_stress_rate")
 }
 
 pub fn is_open(ctx: &Context) -> bool {
@@ -342,7 +342,7 @@ mod tests {
     #[test]
     fn commands_are_delivered_once_to_their_owner() {
         let ctx = Context::default();
-        let (a, b) = (Id::new("a"), Id::new("b"));
+        let (a, b) = (Id::unique("a"), Id::unique("b"));
         push_command(&ctx, a, Command::ScrollTop);
         push_command(&ctx, a, Command::SetStress(Some(10.0)));
         push_command(&ctx, b, Command::ResetFacts);

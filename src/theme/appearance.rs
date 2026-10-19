@@ -9,7 +9,7 @@ use egui_theme_kit::persist::{self, ThemeSource};
 use egui_theme_kit::picker::{self, PickerOptions, PickerState};
 use egui_theme_kit::presets;
 use egui_theme_kit::saved::SavedTheme;
-use egui_theme_kit::store::{AutoSave, MemoryStore, StartupTheme, ThemeStore};
+use egui_theme_kit::store::{AutoSave, MemoryStore, ThemeStore};
 
 use crate::database::ui_themes::{LoadEvent, SurrealThemeStore, app_store};
 

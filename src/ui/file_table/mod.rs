@@ -29,29 +29,6 @@ pub mod thumbs;
 
 pub use explorer::rows::{ExplorerViewStats, view_stats};
 
-// Request to open a new filtered tab in the dock
-#[derive(Clone, Debug)]
-pub enum FilterRequest {
-    NewTab {
-        title: String,
-        rows: Vec<crate::database::Thumbnail>,
-        // Optional: mark this tab as a similarity-results view and attach scores
-        showing_similarity: bool,
-        similar_scores: Option<std::collections::HashMap<String, f32>>,
-        // For similarity tabs, the origin that generated results (e.g., image path or "query:<text>")
-        origin_path: Option<String>,
-        // Open without focusing the new tab
-        background: bool,
-    },
-    OpenPath {
-        title: String,
-        path: String,
-        recursive: bool,
-        // Open without focusing the new tab
-        background: bool,
-    },
-}
-
 // AI streaming update messages (interim + final)
 #[derive(Debug, Clone)]
 pub enum AIUpdate {
@@ -195,11 +172,6 @@ pub struct FileExplorer {
     // Track which scan_id owns this explorer so updates don't leak across tabs
     #[serde(skip)]
     owning_scan_id: Option<u64>,
-    // Cached WSL data to avoid recomputing every frame
-    #[serde(skip)]
-    cached_wsl_distros: Option<Vec<String>>,
-    #[serde(skip)]
-    cached_physical_drives: Option<Vec<crate::utilities::explorer::PhysicalDrive>>,
     // Scan performance timings
     #[serde(skip)]
     perf_scan_started: Option<std::time::Instant>,
@@ -209,8 +181,6 @@ pub struct FileExplorer {
     perf_batches: Vec<(usize, std::time::Duration, std::time::Duration)>, // (batch_len, recv_gap, ui_processing)
     #[serde(skip)]
     perf_last_total: Option<std::time::Duration>,
-    #[serde(skip)]
-    perf_show_per_1k: bool,
     #[serde(skip)]
     pub recursive_page_size: usize,
     #[serde(skip)]
@@ -312,14 +282,11 @@ impl FileExplorer {
             zip_password_input: String::new(),
             show_zip_modal: false,
             owning_scan_id: None,
-            cached_wsl_distros: Some(crate::utilities::explorer::list_wsl_distros()),
-            cached_physical_drives: Some(crate::utilities::explorer::list_physical_drives()),
             batch_size: 128,
             perf_scan_started: None,
             perf_last_batch_at: None,
             perf_batches: Vec::new(),
             perf_last_total: None,
-            perf_show_per_1k: false,
             recursive_page_size: 5_000,
             recursive_current_page: 0,
             recursive_total_pages: 0,
@@ -354,6 +321,7 @@ impl FileExplorer {
         self.viewer.sync_settings();
         self.receive(ui.ctx());
         self.viewer.thumbs.poll(ui.ctx());
+        self.run_pending(ui.ctx());
         if self.repaint_next {
             ui.ctx().request_repaint();
             self.repaint_next = false;
@@ -463,7 +431,9 @@ impl FileExplorer {
             if crate::ui::wizard::card_applies(self) {
                 crate::ui::wizard::checklist_card(ui);
             }
-            self.browse_panel(ui);
+            if !self.pending_panel(ui) {
+                self.browse_panel(ui);
+            }
 
             // Modal password prompt (appears at end of scans or when browsing encrypted archives)
             if self.show_zip_modal {

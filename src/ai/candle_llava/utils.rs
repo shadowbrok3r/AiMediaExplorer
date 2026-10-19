@@ -266,17 +266,18 @@ pub fn tokenizer_image_token(
 
 #[cfg(test)]
 mod tests {
+    use super::{process_anyres_image, select_best_resolution};
     use crate::ai::candle_llava::clip_image_processor::CLIPImageProcessor;
-    use crate::ai::candle_llava::utils::process_anyres_image;
-
-    const CLIP_ID: &str = "openai/clip-vit-large-patch14-336";
 
     #[test]
     fn test_process_anyres_image() {
-        let image = image::open("images/llava_logo.png").unwrap();
-        let processor = CLIPImageProcessor::from_pretrained(CLIP_ID).unwrap();
+        let (width, height) = (800u32, 600u32);
+        let image = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(width, height, |x, y| image::Rgb([(x * 255 / width) as u8, (y * 255 / height) as u8, 128])));
+        let processor: CLIPImageProcessor = serde_json::from_str(r#"{"size": 336, "crop_size": 336}"#).unwrap();
         let grid_pinpoints = vec![(336, 672), (672, 336), (672, 672), (1008, 336), (336, 1008)];
         let tensor = process_anyres_image(&image, &processor, &grid_pinpoints).unwrap();
-        log::info!("{:?}", tensor.shape());
+        let (best_w, best_h) = select_best_resolution((width, height), &grid_pinpoints);
+        let patches = 1 + (best_w / 336) * (best_h / 336);
+        assert_eq!(tensor.dims(), &[patches as usize, 3, 336, 336], "the resized original comes first, then the grid patches");
     }
 }
