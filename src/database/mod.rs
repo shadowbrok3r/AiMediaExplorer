@@ -10,6 +10,8 @@ pub mod files;
 pub mod settings;
 pub mod thumbnails;
 pub mod logical_groups;
+pub mod collections;
+pub mod collections_migration;
 pub mod filter_groups;
 pub mod cached_scans;
 pub mod assistant_chat;
@@ -231,12 +233,15 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
     // DEFINE BUCKET userfiles BACKEND "memory";
     define_schema(&DB).await?;
     let _ = ui_themes::ensure_schema(&DB).await;
+    if let Err(e) = collections::ensure_schema(&DB).await {
+        log::error!("[collections] schema setup failed: {e:#}");
+    }
     if pre_open.is_some() {
         snapshot::finish_open(Path::new(&db_path));
     }
-    // Ensure at least one logical group exists (Default)
-    if crate::database::LogicalGroup::list_all().await?.is_empty() {
-        let _ = crate::database::LogicalGroup::create("Default").await;
+    // Keep the legacy Default group record that unfiled rows link to
+    if let Err(e) = crate::database::LogicalGroup::ensure_default().await {
+        log::warn!("[collections] cannot ensure the Default group: {e:#}");
     }
     let _ = tx.send(());
     DB_STATUS.set_progress(0, 0);

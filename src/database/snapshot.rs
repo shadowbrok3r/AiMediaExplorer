@@ -427,14 +427,14 @@ pub struct ParsedName {
 }
 
 static NAME_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"^(?P<store>.+)-(?P<label>pre|post|manual|export|thumbs)-(?P<engine>[0-9][0-9A-Za-z.+_-]*?)-(?P<date>\d{8})(?:-(?P<time>\d{6}))?(?:-(?P<n>\d+))?$").unwrap()
+    regex::Regex::new(r"^(?P<store>.+)-(?P<label>pre|post|manual|export|thumbs|collections)-(?P<engine>[0-9][0-9A-Za-z.+_-]*?)-(?P<date>\d{8})(?:-(?P<time>\d{6}))?(?:-(?P<n>\d+))?$").unwrap()
 });
 
 pub fn snapshot_file_name(store_name: &str, label: &str, engine: &str, now: DateTime<Local>) -> String {
     format!("{store_name}-{label}-{engine}-{}", now.format(NAME_TS_FORMAT))
 }
 
-/// Parse `<store>-<pre|post|manual|export|thumbs>-<engine>-<yyyymmdd[-hhmmss]>` snapshot names.
+/// Parse `<store>-<pre|post|manual|export|thumbs|collections>-<engine>-<yyyymmdd[-hhmmss]>` snapshot names.
 pub fn parse_snapshot_name(name: &str) -> Option<ParsedName> {
     let stem = name.strip_suffix(".surql").unwrap_or(name);
     let c = NAME_RE.captures(stem)?;

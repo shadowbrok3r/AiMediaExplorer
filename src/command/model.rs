@@ -142,6 +142,7 @@ pub enum DevtoolsWindow {
     CommandLog,
     Perf,
     RowStore,
+    Collections,
 }
 
 /// Rows that already exist in memory, shown in a new tab.

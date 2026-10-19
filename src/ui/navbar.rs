@@ -236,6 +236,10 @@ impl crate::app::SmartMediaApp {
                 crate::ui::devtools::toggle_row_store(ui.ctx());
                 ui.close();
             }
+            if icons::button(ui, svg::AME_LOGICAL_GROUP, "Collections").clicked() {
+                crate::ui::devtools::toggle_collections(ui.ctx());
+                ui.close();
+            }
         });
 
         ui.separator();

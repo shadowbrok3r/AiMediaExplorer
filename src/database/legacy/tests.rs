@@ -1008,6 +1008,75 @@ async fn pipeline_new_store_then_merge_is_idempotent_and_migrates_thumbnails() {
 }
 
 #[tokio::test]
+async fn pipeline_turns_imported_groups_into_collections_and_flags_later_imports() {
+    use crate::database::collections;
+    use crate::database::collections_migration::{self, Phase};
+    use super::{Target, run};
+    let f = Fixture::with_png();
+    let store = f.dir.path().join("db/ai_search");
+    let mut strict = f.cfg();
+    strict.options.missing = Policy::Drop;
+    strict.options.unmapped = Policy::Drop;
+    let read_state = |store: PathBuf| async move {
+        let opened = crate::database::surql::open_store(&store).await.unwrap();
+        let state = collections_migration::load_state(&opened.db).await.unwrap();
+        let cols = collections::list_with_counts(&opened.db).await.unwrap();
+        let members = match cols.first() {
+            Some(c) => collections::members(&opened.db, &c.collection.id, 0, 100).await.unwrap(),
+            None => Vec::new(),
+        };
+        crate::database::surql::close_store(opened, &store).await;
+        (state, cols, members)
+    };
+
+    let mut first_req = request_with_cfg(&f, Target::NewStore(store.clone()), &strict);
+    first_req.then_migrate_collections = true;
+    let first = run(first_req, Job::new()).await;
+    assert!(first.result.is_ok(), "{:?}", first.result.as_ref().err().map(|e| e.message()));
+    let c = first.report.collections.as_ref().expect("the collection migration ran");
+    assert!(c.finish.ok, "{}", c.finish.summary);
+    assert_eq!((c.copy.collections_created, c.copy.memberships_added), (1, 1), "FileHistory-OldGamesHdd holds the one file under G:\\Users");
+    assert!(!first.report.next_steps.iter().any(|n| n.contains("--db-collections migrate")));
+    let (state, cols, members) = read_state(store.clone()).await;
+    assert_eq!(state.phase(), Phase::Finished);
+    assert_eq!(cols.len(), 1);
+    assert_eq!(cols[0].collection.name, "FileHistory-OldGamesHdd");
+    assert_eq!(cols[0].count, 1);
+    assert!(members[0].ends_with("Users/Owner/Pictures/g.jpg"), "{members:?}");
+
+    let more = run(request_for(&f, Target::Merge(store.clone())), Job::new()).await;
+    assert!(more.result.is_ok(), "{:?}", more.result.as_ref().err().map(|e| e.message()));
+    let (state, ..) = read_state(store.clone()).await;
+    assert!(state.needs_resync, "rows imported after the migration flag it as stale");
+    assert_eq!(state.phase(), Phase::Finished);
+
+    let mut again = request_for(&f, Target::Merge(store.clone()));
+    again.then_migrate_collections = true;
+    again.skip_snapshot = true;
+    let third = run(again, Job::new()).await;
+    assert!(third.result.is_ok(), "{:?}", third.result.as_ref().err().map(|e| e.message()));
+    let c = third.report.collections.as_ref().expect("the migration ran again");
+    assert!(c.finish.ok);
+    assert_eq!((c.copy.collections_created, c.copy.memberships_added, c.copy.memberships_existing), (0, 0, 1), "a repeat reuses the collection and adds nothing");
+    let (state, cols, _) = read_state(store).await;
+    assert!(!state.needs_resync);
+    assert_eq!((state.phase(), cols.len()), (Phase::Finished, 1));
+}
+
+#[tokio::test]
+async fn collection_migration_requests_are_validated() {
+    use super::{LegacyError, Target, run};
+    let f = Fixture::new();
+    let mut dry = request_for(&f, Target::NewStore(f.dir.path().join("x/store")));
+    dry.then_migrate_collections = true;
+    dry.dry_run = true;
+    assert!(matches!(run(dry, Job::new()).await.result, Err(LegacyError::Usage(_))));
+    let mut live = request_for(&f, Target::Live);
+    live.then_migrate_collections = true;
+    assert!(matches!(run(live, Job::new()).await.result, Err(LegacyError::Usage(_))));
+}
+
+#[tokio::test]
 async fn pipeline_demands_a_reviewed_path_map_and_refuses_unsafe_requests() {
     use super::{LegacyError, Target, run};
     let f = Fixture::new();

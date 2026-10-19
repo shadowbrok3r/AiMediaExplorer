@@ -25,53 +25,9 @@ impl super::FileExplorer {
                     ui.separator();
 
                     ScrollArea::vertical().auto_shrink([false;2]).show(ui, |ui| {
-                        CollapsingHeader::new(RichText::new("Logical Groups").strong())
+                        CollapsingHeader::new(RichText::new("Collections").strong())
                         .default_open(false)
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                if let Some(name) = &self.active_logical_group_name {
-                                    ui.label(format!("Active: {}", name));
-                                } else {
-                                    ui.label("Active: (none)");
-                                }
-                                if ui.button("Refresh").clicked() {
-                                    let tx = self.logical_groups_tx.clone();
-                                    tokio::spawn(async move {
-                                        match crate::database::LogicalGroup::list_all().await {
-                                            Ok(groups) => { let _ = tx.try_send(groups); },
-                                            Err(e) => log::error!("refresh logical groups failed: {e:?}"),
-                                        }
-                                    });
-                                }
-                            });
-                            ui.separator();
-                            if self.logical_groups.is_empty() {
-                                ui.label(RichText::new("No groups defined yet.").weak());
-                            } else {
-                                ScrollArea::vertical().max_height(160.).show(ui, |ui| {
-                                    for g in self.logical_groups.clone().into_iter() {
-                                        ui.horizontal(|ui| {
-                                            let active = self.active_logical_group_name.as_deref() == Some(g.name.as_str());
-                                            let lbl = if active { RichText::new(format!("• {}", g.name)).strong() } else { RichText::new(g.name.clone()) };
-                                            ui.label(lbl);
-                                            if ui.button("Select").on_hover_text("Use this as the active group (no mode switch)").clicked() {
-                                                self.active_logical_group_name = Some(g.name.clone());
-                                            }
-                                            if ui.button("Open").on_hover_text("Load this group's thumbnails").clicked() {
-                                                self.active_logical_group_name = Some(g.name.clone());
-                                                self.viewer.mode = super::table::ExplorerMode::Database;
-                                                self.table.clear();
-                                                self.table_index.clear();
-                                                self.db_offset = 0;
-                                                self.db_last_batch_len = 0;
-                                                self.db_loading = true;
-                                                self.load_logical_group_by_name(g.name.clone());
-                                            }
-                                        });
-                                    }
-                                });
-                            }
-                        });
+                        .show(ui, |ui| self.collections_quick_list(ui));
                         CollapsingHeader::new(RichText::new("User Directories").strong())
                         .default_open(false)
                         .show(ui, |ui| {

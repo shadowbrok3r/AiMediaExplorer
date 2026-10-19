@@ -478,6 +478,7 @@ pub async fn open_store(store: &Path) -> anyhow::Result<OpenedStore> {
     let db = Surreal::new::<SurrealKv>(store.to_string_lossy().as_ref()).await?;
     db.use_ns(NS).use_db(DB_NAME).await?;
     define_schema(&db).await?;
+    super::collections::ensure_schema(&db).await?;
     snapshot::finish_open(store);
     Ok(OpenedStore { db, pre })
 }

@@ -160,7 +160,7 @@ Selects and previews the row of a path in the focused tab; `not_found` when the 
 
 ### open_devtools
 
-Opens a debug window: `theme_panel`, `settings_store`, `db_maintenance`, `legacy_import`, `thumb_storage`, `thumb_cache`, `tasks`, `command_log`, `perf`, `row_store`.
+Opens a debug window: `theme_panel`, `settings_store`, `db_maintenance`, `legacy_import`, `thumb_storage`, `thumb_cache`, `tasks`, `command_log`, `perf`, `row_store`, `collections`.
 
 ```json
 {"cmd": "open_devtools", "window": "tasks"}

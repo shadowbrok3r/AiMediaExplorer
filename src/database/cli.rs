@@ -9,6 +9,7 @@ use super::legacy::pathmap::Policy;
 use super::legacy::{self, ImportRequest, Target};
 use super::snapshot::{self, ProgressFn, human, store_has_data, store_in_use};
 use super::surql::{self, ExportOptions, VerifyOptions, VerifyTarget};
+use super::collections_migration::{self, Migrator as CollectionsMigrator};
 use super::thumb_blobs;
 use super::thumb_migration::{CopyOptions, FinishOptions, Migrator};
 
@@ -23,6 +24,14 @@ enum ThumbsAction {
     Migrate,
     Finish,
     Missing,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CollectionsAction {
+    Status,
+    Migrate,
+    Finish,
+    Rollback,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -41,6 +50,7 @@ struct LegacyArgs {
     surreal_bin: Option<PathBuf>,
     keep_export: bool,
     then_migrate_thumbs: bool,
+    then_migrate_collections: bool,
     old_ns: Option<String>,
     old_db: Option<String>,
     from_export: Option<PathBuf>,
@@ -56,6 +66,7 @@ impl LegacyArgs {
             "--dry-run" => self.dry_run = true,
             "--keep-export" => self.keep_export = true,
             "--then-migrate-thumbs" => self.then_migrate_thumbs = true,
+            "--then-migrate-collections" => self.then_migrate_collections = true,
             "--no-snapshot" => self.no_snapshot = true,
             "--accept-suggested-map" => self.accept_suggested_map = true,
             _ => return false,
@@ -106,6 +117,7 @@ enum Command {
     Restore(PathBuf),
     Info,
     Thumbs { action: ThumbsAction, clear_undecodable: bool },
+    Collections { action: CollectionsAction, dry_run: bool, force: bool, no_snapshot: bool, no_repair: bool },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -114,7 +126,7 @@ struct Parsed {
     db_path: Option<PathBuf>,
 }
 
-const DB_FLAGS: [&str; 8] = ["--db-snapshot", "--db-export", "--db-import", "--db-verify", "--db-restore", "--db-info", "--db-thumbs", "--db-import-legacy"];
+const DB_FLAGS: [&str; 9] = ["--db-snapshot", "--db-export", "--db-import", "--db-verify", "--db-restore", "--db-info", "--db-thumbs", "--db-import-legacy", "--db-collections"];
 
 fn split_flag(arg: &str) -> (&str, Option<&str>) {
     match arg.split_once('=') {
@@ -134,6 +146,7 @@ fn parse(args: &[String]) -> Option<Result<Parsed, String>> {
     let mut no_compare = false;
     let mut with_thumbs = false;
     let mut clear_undecodable = false;
+    let mut no_repair = false;
     let mut legacy = LegacyArgs::default();
     let mut i = 0;
     let mut value = |i: &mut usize, inline: Option<&str>, flag: &str| -> Result<String, String> {
@@ -159,6 +172,13 @@ fn parse(args: &[String]) -> Option<Result<Parsed, String>> {
                 "missing" => Ok(ThumbsAction::Missing),
                 other => Err(format!("--db-thumbs expects info, migrate, finish or missing, not '{other}'")),
             }).map(|action| Command::Thumbs { action, clear_undecodable: false })),
+            "--db-collections" => Some(value(&mut i, inline, flag).and_then(|v| match v.as_str() {
+                "status" => Ok(CollectionsAction::Status),
+                "migrate" => Ok(CollectionsAction::Migrate),
+                "finish" => Ok(CollectionsAction::Finish),
+                "rollback" => Ok(CollectionsAction::Rollback),
+                other => Err(format!("--db-collections expects status, migrate, finish or rollback, not '{other}'")),
+            }).map(|action| Command::Collections { action, dry_run: false, force: false, no_snapshot: false, no_repair: false })),
             "--db-import" => Some(value(&mut i, inline, flag).map(|v| Command::Import { file: PathBuf::from(v), force: false })),
             "--db-verify" => Some(value(&mut i, inline, flag).map(|v| Command::Verify { target: PathBuf::from(v), no_compare: false, with_thumbs: false })),
             "--db-restore" => Some(value(&mut i, inline, flag).map(|v| Command::Restore(PathBuf::from(v)))),
@@ -191,12 +211,16 @@ fn parse(args: &[String]) -> Option<Result<Parsed, String>> {
                 clear_undecodable = true;
                 None
             }
+            "--no-repair" => {
+                no_repair = true;
+                None
+            }
             _ => None,
         };
         match next {
             Some(Ok(c)) => {
                 if command.is_some() {
-                    return Some(Err("only one of --db-snapshot, --db-export, --db-import, --db-import-legacy, --db-verify, --db-restore, --db-info, --db-thumbs may be given".into()));
+                    return Some(Err("only one of --db-snapshot, --db-export, --db-import, --db-import-legacy, --db-verify, --db-restore, --db-info, --db-thumbs, --db-collections may be given".into()));
                 }
                 command = Some(c);
             }
@@ -214,6 +238,12 @@ fn parse(args: &[String]) -> Option<Result<Parsed, String>> {
         }
         Command::Export { with_thumbs: w, .. } => *w = with_thumbs,
         Command::Thumbs { clear_undecodable: c, .. } => *c = clear_undecodable,
+        Command::Collections { dry_run: d, force: f, no_snapshot: n, no_repair: r, .. } => {
+            *d = legacy.dry_run;
+            *f = force;
+            *n = legacy.no_snapshot;
+            *r = no_repair;
+        }
         Command::LegacyImport(a) => {
             let old_store = std::mem::take(&mut a.old_store);
             **a = LegacyArgs { old_store, ..legacy };
@@ -230,9 +260,10 @@ fn parse(args: &[String]) -> Option<Result<Parsed, String>> {
 }
 
 fn usage() -> &'static str {
-    "database flags:\n  --db-info                         print engine, stamp and snapshots as JSON (does not open the store)\n  --db-snapshot                     copy the store folder into <db>/snapshots (store must not be in use)\n  --db-export <file.surql> [--with-thumbs]  export the database to a .surql file (thumbnail blob records are left out unless --with-thumbs)\n  --db-import <file.surql> [--force]  import into a new or empty store (--force to import into a populated one)\n  --db-verify <file.surql|dir> [--no-compare] [--with-thumbs]  import into a scratch store and compare with the store (dir: deep-verify a snapshot copy; --with-thumbs also compares thumbnail blob records)\n  --db-thumbs <info|migrate|finish|missing> [--clear-undecodable]  thumbnail blob storage: stats, copy inline thumbnails into blobs, verify and clear the inline copies, list rows without a blob\n  --db-restore <snapshot dir>       replace the store with a snapshot (old store kept as <store>.replaced-<ts>; store must not be in use)
+    "database flags:\n  --db-info                         print engine, stamp and snapshots as JSON (does not open the store)\n  --db-snapshot                     copy the store folder into <db>/snapshots (store must not be in use)\n  --db-export <file.surql> [--with-thumbs]  export the database to a .surql file (thumbnail blob records are left out unless --with-thumbs)\n  --db-import <file.surql> [--force]  import into a new or empty store (--force to import into a populated one)\n  --db-verify <file.surql|dir> [--no-compare] [--with-thumbs]  import into a scratch store and compare with the store (dir: deep-verify a snapshot copy; --with-thumbs also compares thumbnail blob records)\n  --db-thumbs <info|migrate|finish|missing> [--clear-undecodable]  thumbnail blob storage: stats, copy inline thumbnails into blobs, verify and clear the inline copies, list rows without a blob\n  --db-collections <status|migrate|finish|rollback> [--dry-run] [--no-snapshot] [--no-repair] [--force]  move single-membership logical groups into collections: status of the migration, copy (dry run lists the plan), verify and mark finished (missing memberships are copied again unless --no-repair), or remove the collections again (--force discards ones made after the migration); the legacy groups are never changed
+  --db-restore <snapshot dir>       replace the store with a snapshot (old store kept as <store>.replaced-<ts>; store must not be in use)
   --db-import-legacy <old store dir> [--path-map <file.toml>] [--merge | --into-new-store <dir>] [--missing keep|drop|tag] [--unmapped keep|drop|tag]
-        [--settings fields:a,b] [--drop-b64] [--dry-run] [--report <file.json>] [--work-dir <dir>] [--surreal-bin <path>] [--keep-export] [--then-migrate-thumbs]
+        [--settings fields:a,b] [--drop-b64] [--dry-run] [--report <file.json>] [--work-dir <dir>] [--surreal-bin <path>] [--keep-export] [--then-migrate-thumbs] [--then-migrate-collections]
         [--old-ns <ns> --old-db <db>] [--from-export <file.surql>] [--no-snapshot] [--accept-suggested-map]
                                     import a SurrealDB 2.x library (for example from Windows) via a pinned 2.x CLI run on a copy of the old store;
                                     exit codes: 0 ok, 1 failed, 2 usage, 3 in use, 4 engine unavailable, 5 verification problems, 6 path map needs review, 7 cancelled
@@ -369,6 +400,87 @@ async fn run_thumbs(store: &Path, action: ThumbsAction, clear_undecodable: bool)
     code
 }
 
+fn spawn_collections_reporter(m: &Arc<CollectionsMigrator>) -> tokio::task::JoinHandle<()> {
+    let m = Arc::clone(m);
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let p = m.progress();
+            eprintln!("{}: {} of {} memberships, {} of {} groups, {} added", p.step.label(), p.processed, p.memberships_total, p.groups_done, p.groups_total, p.added);
+        }
+    })
+}
+
+async fn run_collections(store: &Path, action: CollectionsAction, dry_run: bool, force: bool, no_snapshot: bool, no_repair: bool) -> i32 {
+    if !store_has_data(store) {
+        return fail(format!("no database found at {}", store.display()));
+    }
+    if store_in_use(store) {
+        return in_use_exit(store);
+    }
+    let opened = match surql::open_store(store).await {
+        Ok(o) => o,
+        Err(e) => return fail(e),
+    };
+    let code = {
+        let m = CollectionsMigrator::new(opened.db.clone(), store.to_path_buf());
+        match action {
+            CollectionsAction::Status => match m.status().await {
+                Ok(s) => {
+                    print_json(&json!({ "status": s }));
+                    EXIT_OK
+                }
+                Err(e) => fail(format!("{e:#}")),
+            },
+            CollectionsAction::Migrate if dry_run => match m.plan().await {
+                Ok(plan) => {
+                    print_json(&json!({ "dry_run": true, "plan": plan }));
+                    EXIT_OK
+                }
+                Err(e) => fail(format!("{e:#}")),
+            },
+            CollectionsAction::Migrate => {
+                let reporter = spawn_collections_reporter(&m);
+                let res = m.run_copy(collections_migration::CopyOptions { require_snapshot: !no_snapshot, ..Default::default() }).await;
+                reporter.abort();
+                match res {
+                    Ok(report) => {
+                        print_json(&json!({ "copy": report, "state": m.state().await.ok() }));
+                        if report.cancelled { EXIT_FAILED } else { EXIT_OK }
+                    }
+                    Err(e) => fail(format!("{e:#}")),
+                }
+            }
+            CollectionsAction::Finish => {
+                let reporter = spawn_collections_reporter(&m);
+                let res = m.run_finish(collections_migration::FinishOptions { require_snapshot: !no_snapshot, repair: !no_repair }).await;
+                reporter.abort();
+                match res {
+                    Ok(report) => {
+                        print_json(&json!({ "finish": report, "state": m.state().await.ok() }));
+                        if report.ok { EXIT_OK } else { EXIT_FAILED }
+                    }
+                    Err(e) => fail(format!("{e:#}")),
+                }
+            }
+            CollectionsAction::Rollback => {
+                let reporter = spawn_collections_reporter(&m);
+                let res = m.run_rollback(collections_migration::RollbackOptions { require_snapshot: !no_snapshot, force }).await;
+                reporter.abort();
+                match res {
+                    Ok(report) => {
+                        print_json(&json!({ "rollback": report, "state": m.state().await.ok() }));
+                        if report.ok { EXIT_OK } else { EXIT_FAILED }
+                    }
+                    Err(e) => fail(format!("{e:#}")),
+                }
+            }
+        }
+    };
+    surql::close_store(opened, store).await;
+    code
+}
+
 fn fmt_duration(d: Duration) -> String {
     let s = d.as_secs();
     if s >= 3600 { format!("{}h {}m", s / 3600, s % 3600 / 60) } else if s >= 60 { format!("{}m {}s", s / 60, s % 60) } else { format!("{s}s") }
@@ -428,6 +540,7 @@ async fn run_legacy(a: LegacyArgs, store: PathBuf) -> i32 {
     req.surreal_bin = a.surreal_bin;
     req.keep_export = a.keep_export;
     req.then_migrate_thumbs = a.then_migrate_thumbs;
+    req.then_migrate_collections = a.then_migrate_collections;
     req.old_ns = a.old_ns;
     req.old_db = a.old_db;
     req.from_export = a.from_export;
@@ -561,6 +674,7 @@ async fn run_command(parsed: Parsed) -> i32 {
             }
         }
         Command::Thumbs { action, clear_undecodable } => run_thumbs(&store, action, clear_undecodable).await,
+        Command::Collections { action, dry_run, force, no_snapshot, no_repair } => run_collections(&store, action, dry_run, force, no_snapshot, no_repair).await,
         Command::Restore(dir) => {
             if store_in_use(&store) {
                 return in_use_exit(&store);
@@ -687,7 +801,7 @@ mod tests {
     fn parses_legacy_import_flags() {
         let p = parse(&args(&[
             "--db-import-legacy", "/old/ai_search", "--path-map", "m.toml", "--into-new-store", "/new", "--missing", "tag", "--unmapped=drop", "--settings", "fields:recent_paths,excluded_dirs", "--drop-b64", "--dry-run",
-            "--report", "r.json", "--work-dir", "/w", "--surreal-bin", "/b/surreal", "--keep-export", "--then-migrate-thumbs", "--old-ns", "a", "--old-db", "b", "--from-export", "e.surql", "--no-snapshot", "--accept-suggested-map", "--db-path", "d",
+            "--report", "r.json", "--work-dir", "/w", "--surreal-bin", "/b/surreal", "--keep-export", "--then-migrate-thumbs", "--then-migrate-collections", "--old-ns", "a", "--old-db", "b", "--from-export", "e.surql", "--no-snapshot", "--accept-suggested-map", "--db-path", "d",
         ]))
         .unwrap()
         .unwrap();
@@ -697,12 +811,30 @@ mod tests {
         assert_eq!((a.path_map.as_deref(), a.into_new_store.as_deref()), (Some(Path::new("m.toml")), Some(Path::new("/new"))));
         assert_eq!((a.missing, a.unmapped), (Some(Policy::Tag), Some(Policy::Drop)));
         assert_eq!(a.settings_fields().unwrap(), vec!["recent_paths".to_string(), "excluded_dirs".to_string()]);
-        assert!(a.drop_b64 && a.dry_run && a.keep_export && a.then_migrate_thumbs && a.no_snapshot && a.accept_suggested_map && !a.merge);
+        assert!(a.drop_b64 && a.dry_run && a.keep_export && a.then_migrate_thumbs && a.then_migrate_collections && a.no_snapshot && a.accept_suggested_map && !a.merge);
         assert_eq!((a.old_ns.as_deref(), a.old_db.as_deref(), a.from_export.as_deref()), (Some("a"), Some("b"), Some(Path::new("e.surql"))));
         assert_eq!((a.report.as_deref(), a.work_dir.as_deref(), a.surreal_bin.as_deref()), (Some(Path::new("r.json")), Some(Path::new("/w")), Some(Path::new("/b/surreal"))));
         let m = parse(&args(&["--db-import-legacy=/old", "--merge"])).unwrap().unwrap();
         let Command::LegacyImport(a) = m.command else { panic!("legacy command expected") };
         assert!(a.merge && a.into_new_store.is_none() && a.settings_fields().unwrap().is_empty());
+    }
+
+    #[test]
+    fn parses_the_collections_command_and_its_flags() {
+        let c = |a: &[&str]| match parse(&args(a)).unwrap().unwrap().command {
+            Command::Collections { action, dry_run, force, no_snapshot, no_repair } => (action, dry_run, force, no_snapshot, no_repair),
+            other => panic!("collections command expected, got {other:?}"),
+        };
+        assert_eq!(c(&["--db-collections", "status"]), (CollectionsAction::Status, false, false, false, false));
+        assert_eq!(c(&["--db-collections=migrate", "--dry-run"]), (CollectionsAction::Migrate, true, false, false, false));
+        assert_eq!(c(&["--db-collections", "migrate", "--no-snapshot"]), (CollectionsAction::Migrate, false, false, true, false));
+        assert_eq!(c(&["--db-collections", "finish", "--no-repair", "--db-path", "d"]), (CollectionsAction::Finish, false, false, false, true));
+        assert_eq!(c(&["--force", "--db-collections", "rollback"]), (CollectionsAction::Rollback, false, true, false, false));
+        assert_eq!(parse(&args(&["--db-collections", "status", "--db-path", "d"])).unwrap().unwrap().db_path, Some("d".into()));
+        assert!(parse(&args(&["--db-collections", "explode"])).unwrap().is_err());
+        assert!(parse(&args(&["--db-collections"])).unwrap().is_err());
+        assert!(parse(&args(&["--db-collections", "status", "--db-info"])).unwrap().is_err());
+        assert_eq!(run(&args(&["--db-collections", "explode"])), Some(EXIT_USAGE));
     }
 
     #[test]

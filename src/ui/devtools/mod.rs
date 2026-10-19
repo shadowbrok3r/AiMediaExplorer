@@ -1,5 +1,6 @@
 //! Debug windows for subsystems, opened from the View menu.
 
+pub mod collections;
 pub mod command_log;
 pub mod db_maintenance;
 pub mod legacy_import;
@@ -38,6 +39,10 @@ pub fn toggle_row_store(ctx: &Context) {
     row_store::toggle(ctx);
 }
 
+pub fn toggle_collections(ctx: &Context) {
+    collections::set_open(ctx, !collections::is_open(ctx));
+}
+
 pub fn toggle_thumb_storage(ctx: &Context) {
     thumb_storage::set_open(ctx, !thumb_storage::is_open(ctx));
 }
@@ -67,6 +72,7 @@ pub fn open(ctx: &Context, window: DevtoolsWindow) {
         DevtoolsWindow::CommandLog => command_log::set_open(ctx, true),
         DevtoolsWindow::Perf => perf::set_open(ctx, true),
         DevtoolsWindow::RowStore => row_store::set_open(ctx, true),
+        DevtoolsWindow::Collections => collections::set_open(ctx, true),
     }
     ctx.request_repaint();
 }
@@ -82,6 +88,7 @@ pub fn show(ctx: &Context) {
     tasks::show(ctx);
     command_log::show(ctx);
     perf::show(ctx);
+    collections::show(ctx);
 }
 
 #[cfg(test)]
@@ -99,6 +106,7 @@ mod tests {
             DevtoolsWindow::CommandLog => command_log::is_open(ctx),
             DevtoolsWindow::Perf => perf::is_open(ctx),
             DevtoolsWindow::RowStore => row_store::is_open(ctx),
+            DevtoolsWindow::Collections => collections::is_open(ctx),
             DevtoolsWindow::ThemePanel => crate::theme::debug_panel::is_open(ctx),
         }
     }
@@ -117,6 +125,7 @@ mod tests {
             DevtoolsWindow::CommandLog,
             DevtoolsWindow::Perf,
             DevtoolsWindow::RowStore,
+            DevtoolsWindow::Collections,
         ];
         for w in windows {
             assert!(!is_open(&ctx, w), "{w:?} starts closed");

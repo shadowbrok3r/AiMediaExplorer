@@ -26,6 +26,7 @@ use self::job::{Job, PhaseId, PhaseView, is_cancelled};
 use self::pathmap::{Config, Policy, default_config_path};
 use self::suggest::{Evidence, Suggestion};
 use self::verify::{VerifyReport, VerifySpec};
+use super::collections_migration::{self, Migrator as CollectionsMigrator};
 use super::snapshot::{self, human, store_has_data, store_in_use};
 use super::surql;
 use super::thumb_migration::{self, CopyOptions, CopyReport, FinishOptions, FinishReport, MigrationState, Migrator};
@@ -90,6 +91,7 @@ pub struct ImportRequest {
     pub surreal_bin: Option<PathBuf>,
     pub keep_export: bool,
     pub then_migrate_thumbs: bool,
+    pub then_migrate_collections: bool,
     pub old_ns: Option<String>,
     pub old_db: Option<String>,
     pub from_export: Option<PathBuf>,
@@ -113,6 +115,7 @@ impl ImportRequest {
             surreal_bin: None,
             keep_export: false,
             then_migrate_thumbs: false,
+            then_migrate_collections: false,
             old_ns: None,
             old_db: None,
             from_export: None,
@@ -226,6 +229,12 @@ pub struct MigrateReport {
     pub finish: FinishReport,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct CollectionsMigrateReport {
+    pub copy: collections_migration::CopyReport,
+    pub finish: collections_migration::FinishReport,
+}
+
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct LegacyReport {
     pub version: u32,
@@ -248,6 +257,7 @@ pub struct LegacyReport {
     pub snapshot: Option<String>,
     pub thumb_migration_state_reset: bool,
     pub migrate: Option<MigrateReport>,
+    pub collections: Option<CollectionsMigrateReport>,
     pub phases: Vec<PhaseView>,
     pub warnings: Vec<String>,
     pub next_steps: Vec<String>,
@@ -293,6 +303,12 @@ pub fn validate(req: &ImportRequest) -> Result<(), LegacyError> {
     }
     if req.then_migrate_thumbs && req.target == Target::Live {
         return Err(LegacyError::Usage("run the thumbnail migration from the Thumbnail storage window when importing into the open database".into()));
+    }
+    if req.then_migrate_collections && req.dry_run {
+        return Err(LegacyError::Usage("--then-migrate-collections cannot be combined with --dry-run".into()));
+    }
+    if req.then_migrate_collections && req.target == Target::Live {
+        return Err(LegacyError::Usage("run the collection migration from the Collections window when importing into the open database".into()));
     }
     if req.from_export.is_none() && !req.old_store.is_dir() {
         return Err(LegacyError::Usage(format!("old store folder not found: {}", req.old_store.display())));
@@ -620,6 +636,38 @@ async fn migrate_thumbs(db: &Surreal<Db>, store: &Path, require_snapshot: bool, 
     Ok(MigrateReport { copy, finish })
 }
 
+async fn migrate_collections(db: &Surreal<Db>, store: &Path, require_snapshot: bool, job: &Arc<Job>) -> Result<CollectionsMigrateReport, LegacyError> {
+    job.note("Migrating logical groups to collections");
+    let m = CollectionsMigrator::new(db.clone(), store.to_path_buf());
+    let watcher = {
+        let (m, j) = (Arc::clone(&m), Arc::clone(job));
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                if j.is_cancel_requested() {
+                    m.cancel();
+                }
+            }
+        })
+    };
+    let copy = m.run_copy(collections_migration::CopyOptions { require_snapshot, ..Default::default() }).await;
+    let finish = match &copy {
+        Ok(c) if !c.cancelled => Some(m.run_finish(collections_migration::FinishOptions { require_snapshot, repair: true }).await),
+        _ => None,
+    };
+    watcher.abort();
+    let copy = copy.map_err(|e| LegacyError::Failed(format!("collection migration failed: {e:#}")))?;
+    if copy.cancelled {
+        return Err(LegacyError::Cancelled);
+    }
+    let finish = finish.ok_or_else(|| LegacyError::Failed("collection finish did not run".into()))?.map_err(|e| LegacyError::Failed(format!("collection migration failed: {e:#}")))?;
+    if !finish.ok {
+        return Err(LegacyError::Failed(format!("collection migration did not finish cleanly: {}", finish.summary)));
+    }
+    job.note(format!("Collections: {} created, {} memberships added", copy.collections_created, copy.memberships_added));
+    Ok(CollectionsMigrateReport { copy, finish })
+}
+
 fn next_steps(req: &ImportRequest, rep: &LegacyReport) -> Vec<String> {
     let mut v = Vec::new();
     if req.dry_run {
@@ -631,6 +679,9 @@ fn next_steps(req: &ImportRequest, rep: &LegacyReport) -> Vec<String> {
     }
     if rep.migrate.is_none() && !req.drop_b64 && rep.convert.as_ref().is_some_and(|c| c.rows_out("thumbnails") > 0) {
         v.push("The path map is applied. Next run `smart-media --db-thumbs migrate` and then `--db-thumbs finish` (thumbnail blobs are keyed by the stored path, so do not change the path map afterwards).".into());
+    }
+    if rep.collections.is_none() && rep.convert.as_ref().is_some_and(|c| c.rows_out("logical_groups") > 0) {
+        v.push("Imported logical groups become collections with `smart-media --db-collections migrate` followed by `--db-collections finish`.".into());
     }
     if let Target::NewStore(dir) = &req.target {
         v.push(format!("Start the app on the new store: smart-media --db-path {} (or write that folder to ./db/path.txt).", dir.display()));
@@ -660,6 +711,11 @@ async fn merge_into_open(req: &ImportRequest, prep: &Prepared, cfg: &Config, db:
     let out = import_stage(req, prep, cfg, db, true, plan, job, rep).await?;
     if reset_thumb_state_if_needed(store, &out.convert, req.drop_b64, job) {
         rep.thumb_migration_state_reset = true;
+    }
+    if out.convert.rows_out("thumbnails") > 0 || out.convert.rows_out("logical_groups") > 0 {
+        if let Err(e) = collections_migration::note_legacy_import(db).await {
+            log::warn!("[collections] cannot flag the migration as stale: {e:#}");
+        }
     }
     Ok(out)
 }
@@ -693,11 +749,18 @@ pub async fn import_prepared(req: &ImportRequest, prep: &Prepared, cfg: &Config,
                     None
                 }
             };
+            let collections = match (&out, req.then_migrate_collections) {
+                (Ok(s), true) if s.verify.ok => Some(migrate_collections(&db, store, true, job).await),
+                _ => None,
+            };
             snapshot::finish_open(store);
             drop(db);
             surql::close_store(opened, store).await;
             if let Some(m) = migrated {
                 rep.migrate = Some(m?);
+            }
+            if let Some(c) = collections {
+                rep.collections = Some(c?);
             }
             out?
         }
@@ -726,6 +789,10 @@ pub async fn import_prepared(req: &ImportRequest, prep: &Prepared, cfg: &Config,
                     None
                 }
             };
+            let collections = match (&out, req.then_migrate_collections) {
+                (Ok(s), true) if s.verify.ok => Some(migrate_collections(&db, dir, false, job).await),
+                _ => None,
+            };
             drop(db);
             snapshot::wait_released(dir, SHUTDOWN_WAIT).await;
             if out.is_ok() {
@@ -734,6 +801,9 @@ pub async fn import_prepared(req: &ImportRequest, prep: &Prepared, cfg: &Config,
             }
             if let Some(m) = migrated {
                 rep.migrate = Some(m?);
+            }
+            if let Some(c) = collections {
+                rep.collections = Some(c?);
             }
             out?
         }
