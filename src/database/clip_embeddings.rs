@@ -35,7 +35,7 @@ impl super::ClipEmbeddingRow {
     }
 
     /// KNN search using the HNSW index on clip_embeddings.embedding
-    /// Returns the top-K nearest neighbours to `query_vec`.
+    /// Returns `k` neighbours of `query_vec` after skipping the `start` nearest.
     pub async fn find_similar_by_embedding(
         query_vec: &[f32],
         k: usize,
@@ -45,29 +45,44 @@ impl super::ClipEmbeddingRow {
         log::info!("find_similar_by_embedding");
         let _ga = db_activity("KNN clip_embeddings");
         db_set_detail("Searching similar embeddings".to_string());
-        // let ef = ef_for(top_n);
-        let res: Vec<SimilarHit> = super::DB
-            .query(
-                r#"
-                SELECT id, thumb_ref, path, vector::distance::knn() AS dist
-                FROM clip_embeddings
-                WHERE embedding <| 64, 64 |> $vec
-                ORDER BY dist
-                LIMIT $limit START $start
-                FETCH thumb_ref
-                "#,
-            )
-            .bind(("vec", query_vec.to_vec()))
-            .bind(("limit", k as i64))
-            .bind(("start", start as i64))
-            .bind(("ef", ef as i64))
-            .await?
-            .take(0)?;
-
+        let res = knn_with(&super::DB, query_vec, k, ef, start).await?;
         log::info!("find_similar_by_embedding len: {}", res.len());
         Ok(res)
     }
 
+}
+
+/// Fewest neighbours one KNN query searches for.
+pub const KNN_MIN: usize = 64;
+/// Most neighbours one KNN query searches for.
+pub const KNN_MAX: usize = 20_000;
+
+/// KNN on any connection: the search covers `start + k` neighbours (at least [`KNN_MIN`], at most [`KNN_MAX`]) with an effort of at least `ef`, and the page is the `k` after the first `start`.
+pub async fn knn_with<C: surrealdb::Connection>(db: &surrealdb::Surreal<C>, query_vec: &[f32], k: usize, ef: usize, start: usize) -> anyhow::Result<Vec<SimilarHit>, anyhow::Error> {
+    let search = (start + k).clamp(KNN_MIN, KNN_MAX);
+    let effort = ef.max(search).min(KNN_MAX);
+    let res: Vec<SimilarHit> = db
+        .query(format!(
+            r#"
+            SELECT id, thumb_ref, path, vector::distance::knn() AS dist
+            FROM clip_embeddings
+            WHERE embedding <| {search}, {effort} |> $vec
+            ORDER BY dist
+            LIMIT $limit START $start
+            FETCH thumb_ref
+            "#
+        ))
+        .bind(("vec", query_vec.to_vec()))
+        .bind(("limit", k as i64))
+        .bind(("start", start as i64))
+        .await?
+        .take(0)?;
+    Ok(res)
+}
+
+/// Cosine similarity of a neighbour from its cosine distance.
+pub fn similarity_of(distance: f32) -> f32 {
+    1.0 - distance
 }
 
 fn _ef_for(k: usize) -> usize {

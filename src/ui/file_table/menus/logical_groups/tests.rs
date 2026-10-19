@@ -32,7 +32,8 @@ fn explorer() -> FileExplorer {
     for (path, ty) in [("/v/a.jpg", "jpg"), ("/v/b.jpg", "jpg"), ("/v/c.png", "png"), ("/v/sub", "<DIR>")] {
         ex.table.push(thumb(path, ty));
     }
-    ex.viewer.selected = ["/v/a.jpg".to_string(), "/v/c.png".to_string(), "/v/sub".to_string()].into();
+    ex.sync_view();
+    ex.select_paths(["/v/a.jpg", "/v/c.png", "/v/sub"]);
     ex.logical_groups = vec![LogicalGroup::default(), group("Holiday"), group("Trip")];
     ex
 }
@@ -128,6 +129,8 @@ async fn files_in_no_collection_can_be_added_in_bulk() {
 #[tokio::test]
 async fn the_menu_shows_the_selection_count_the_list_with_counts_and_the_active_collection() {
     let _guard = MENU_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _active = crate::command::context::serial();
+    crate::command::context::set_active_collection(None);
     reset_menu();
     let _rt = RT.enter();
     let ctx = test_ctx();
@@ -145,14 +148,14 @@ async fn the_menu_shows_the_selection_count_the_list_with_counts_and_the_active_
     assert!(!has(&all, "Default"), "the unfiled entry is not listed");
     assert!(has(&all, "Create New Collection"));
 
-    ex.active_logical_group_name = Some("Holiday".into());
+    crate::command::context::set_active_collection(Some("Holiday".into()));
     let active = settled(&ctx, &mut ex);
     assert!(has(&active, "Active collection: Holiday"), "{active:?}");
-    ex.active_logical_group_name = Some("Deleted Elsewhere".into());
+    crate::command::context::set_active_collection(Some("Deleted Elsewhere".into()));
     let stale = settled(&ctx, &mut ex);
     assert!(has(&stale, "Active collection \"Deleted Elsewhere\" no longer exists."), "{stale:?}");
     assert!(has(&stale, "Clear"));
-    ex.active_logical_group_name = Some("Default".into());
+    crate::command::context::set_active_collection(Some("Default".into()));
     let unfiled = settled(&ctx, &mut ex);
     assert!(has(&unfiled, "No active collection: scanned files are not added to one."), "Default reads as none");
     reset_menu();
@@ -161,25 +164,29 @@ async fn the_menu_shows_the_selection_count_the_list_with_counts_and_the_active_
 #[tokio::test]
 async fn nothing_selected_means_nothing_to_add_and_the_count_says_so() {
     let _guard = MENU_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _active = crate::command::context::serial();
+    crate::command::context::set_active_collection(None);
     reset_menu();
     let _rt = RT.enter();
     let ctx = test_ctx();
     let mut ex = explorer();
-    ex.viewer.selected.clear();
+    ex.clear_selection();
     assert_eq!(ex.selected_file_count(), 0);
     assert_eq!(ex.view_file_count(), 3);
     let all = settled(&ctx, &mut ex);
     assert!(has(&all, "Selected files: 0") && has(&all, "Add selection (0) to:"), "{all:?}");
-    ex.viewer.selected = ["/v/sub".to_string(), "/elsewhere/x.jpg".to_string()].into();
+    ex.select_paths(["/v/sub", "/elsewhere/x.jpg"]);
     assert_eq!(ex.selected_file_count(), 0, "folders and paths that are not in view do not count");
-    assert!(file_rows(&ex.table, Some(&ex.viewer.selected)).is_empty());
-    assert_eq!(file_rows(&ex.table, None).len(), 3);
+    assert!(ex.selected_file_rows().is_empty());
+    assert_eq!(ex.view_file_count(), 3);
     reset_menu();
 }
 
 #[tokio::test]
 async fn the_migration_hint_the_message_and_the_armed_delete_are_drawn_from_the_menu_state() {
     let _guard = MENU_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _active = crate::command::context::serial();
+    crate::command::context::set_active_collection(None);
     reset_menu();
     let _rt = RT.enter();
     let ctx = test_ctx();
@@ -198,16 +205,18 @@ async fn the_migration_hint_the_message_and_the_armed_delete_are_drawn_from_the_
 #[tokio::test]
 async fn clearing_the_active_collection_returns_to_the_unfiled_marker() {
     let _guard = MENU_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _active = crate::command::context::serial();
+    crate::command::context::set_active_collection(None);
     reset_menu();
     let _rt = RT.enter();
     let ctx = test_ctx();
     let mut ex = explorer();
-    ex.active_logical_group_name = Some("Trip".into());
+    crate::command::context::set_active_collection(Some("Trip".into()));
     let all = settled(&ctx, &mut ex);
     let clear = all.iter().find(|(t, _)| t == "Clear").map(|(_, p)| *p).expect("a Clear button is drawn for an active collection");
     body_frame(&ctx, &mut ex, press_release(clear + vec2(3.0, 3.0)));
     settled(&ctx, &mut ex);
-    assert_eq!(ex.active_logical_group_name.as_deref(), Some("Default"));
+    assert_eq!(crate::command::context::active_collection(), None);
     assert_eq!(ex.active_collection(), None);
     let after = settled(&ctx, &mut ex);
     assert!(has(&after, "No active collection: scanned files are not added to one."));
@@ -228,6 +237,8 @@ fn quick_frame(ctx: &Context, ex: &mut FileExplorer) -> Vec<(String, Pos2)> {
 #[tokio::test]
 async fn the_quick_access_list_shows_counts_the_active_collection_and_the_migration_hint() {
     let _guard = MENU_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _active = crate::command::context::serial();
+    crate::command::context::set_active_collection(None);
     reset_menu();
     let _rt = RT.enter();
     let ctx = test_ctx();
@@ -239,11 +250,70 @@ async fn the_quick_access_list_shows_counts_the_active_collection_and_the_migrat
     let none = quick_frame(&ctx, &mut ex);
     assert!(has(&none, "Active: (none)") && has(&none, "Holiday (12)") && has(&none, "Trip (1)"), "{none:?}");
     assert!(!has(&none, "Default"));
-    ex.active_logical_group_name = Some("Trip".into());
+    crate::command::context::set_active_collection(Some("Trip".into()));
     assert!(has(&quick_frame(&ctx, &mut ex), "Active: Trip"));
     menu(|m| m.pending_migration = true);
     assert!(has(&quick_frame(&ctx, &mut ex), "Old logical groups are not migrated; use the Collections menu."));
     ex.logical_groups = vec![LogicalGroup::default()];
     assert!(has(&quick_frame(&ctx, &mut ex), "No collections yet."));
     reset_menu();
+}
+
+
+fn files(paths: &[&str]) -> Vec<Thumbnail> {
+    paths.iter().map(|p| thumb(p, "jpg")).collect()
+}
+
+#[test]
+fn a_group_action_on_nothing_selected_is_refused_and_says_to_select_files() {
+    let err = plan_group_action(&[], Some("Trip")).unwrap_err();
+    assert!(err.starts_with("Select files first"), "{err}");
+    let folders = [thumb("/v/sub", "<DIR>")];
+    let refs: Vec<&Thumbnail> = folders.iter().collect();
+    assert!(plan_group_action(&refs, Some("Trip")).is_err(), "a selected folder is not a file");
+}
+
+#[test]
+fn a_group_action_needs_an_active_collection() {
+    let rows = files(&["/v/a.jpg"]);
+    let refs: Vec<&Thumbnail> = rows.iter().collect();
+    for active in [None, Some("Default")] {
+        let err = plan_group_action(&refs, active).unwrap_err();
+        assert!(err.contains("active collection"), "{err}");
+    }
+}
+
+#[test]
+fn a_group_action_plans_the_selected_files_only() {
+    let rows = vec![thumb("/v/a.jpg", "jpg"), thumb("/v/sub", "<DIR>"), thumb("/v/b.png", "png")];
+    let refs: Vec<&Thumbnail> = rows.iter().collect();
+    let (name, planned) = plan_group_action(&refs, Some("Trip")).unwrap();
+    assert_eq!(name, "Trip");
+    assert_eq!(planned.iter().map(|r| r.path.as_str()).collect::<Vec<_>>(), vec!["/v/a.jpg", "/v/b.png"]);
+}
+
+#[tokio::test]
+async fn adding_the_selection_saves_the_files_and_files_them_in_the_collection_with_counts() {
+    let db = db().await;
+    collections::create(&db, "Trip").await.unwrap();
+    let msg = apply_group_action(&db, GroupAction::Add, "Trip", files(&["/v/a.jpg", "/v/b.jpg"])).await.unwrap();
+    assert_eq!(msg, "Added 2 files to \"Trip\"; 0 were already there");
+    let c = collections::get_by_name(&db, "Trip").await.unwrap().unwrap();
+    assert_eq!(collections::count_members(&db, &c.id).await.unwrap(), 2);
+    let indexed: Vec<String> = db.query("SELECT VALUE path FROM thumbnails ORDER BY path").await.unwrap().take(0).unwrap();
+    assert_eq!(indexed, vec!["/v/a.jpg".to_string(), "/v/b.jpg".to_string()]);
+    let again = apply_group_action(&db, GroupAction::Add, "Trip", files(&["/v/b.jpg", "/v/c.jpg"])).await.unwrap();
+    assert_eq!(again, "Added 1 files to \"Trip\"; 1 were already there");
+}
+
+#[tokio::test]
+async fn removing_the_selection_takes_only_those_files_out_and_reports_the_counts() {
+    let db = db().await;
+    apply_group_action(&db, GroupAction::Add, "Trip", files(&["/v/a.jpg", "/v/b.jpg", "/v/c.jpg"])).await.unwrap();
+    let msg = apply_group_action(&db, GroupAction::Remove, "trip", files(&["/v/a.jpg", "/v/zzz.jpg"])).await.unwrap();
+    assert_eq!(msg, "Removed 1 files from \"Trip\"; 1 were not in it");
+    let c = collections::get_by_name(&db, "Trip").await.unwrap().unwrap();
+    assert_eq!(collections::count_members(&db, &c.id).await.unwrap(), 2);
+    let err = apply_group_action(&db, GroupAction::Remove, "Gone", files(&["/v/a.jpg"])).await.unwrap_err();
+    assert!(err.to_string().contains("Gone"), "{err}");
 }

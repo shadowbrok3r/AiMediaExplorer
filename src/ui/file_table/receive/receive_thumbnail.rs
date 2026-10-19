@@ -37,25 +37,16 @@ impl crate::ui::file_table::FileExplorer {
             return;
         }
 
-        // If we receive fresh rows while showing similarity, clear that mode
-        if self.viewer.showing_similarity {
-            self.viewer.showing_similarity = false;
-            self.viewer.similar_scores.clear();
-        }
-
         if self.viewer.mode == crate::ui::file_table::table::ExplorerMode::FileSystem {
             if thumbnail.file_type == "<DIR>" {
                 // Navigate into directory
-                self.current_path = thumbnail.path.clone();
-                self.table.clear();
-                self.populate_current_directory();
+                if let Err(reason) = self.open_scope(crate::command::Scope::Folder(thumbnail.path.clone())) {
+                    log::warn!("[scope] {reason}");
+                }
             }
-        } else if !thumbnail.path.is_empty() && !self.table.contains_path(&thumbnail.path) {
-            // Database mode: new row arriving from an async DB load
+        } else if !thumbnail.path.is_empty() && !thumbnail.filename.is_empty() && !self.table.contains_path(&thumbnail.path) {
+            // Rows streamed in by the virtual category and tag views
             self.table.push(thumbnail.clone());
-            self.db_last_batch_len += 1;
-            // Advance offset per item to allow incremental "Load More"
-            self.db_offset += 1;
 
             // Kick off a lightweight, per-row CLIP embedding presence check for this item
             if thumbnail.file_type != "<DIR>" {

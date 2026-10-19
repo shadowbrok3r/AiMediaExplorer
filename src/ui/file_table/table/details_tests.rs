@@ -271,7 +271,6 @@ async fn a_click_selects_one_row_and_the_preview_follows_it() {
     assert_eq!(rig.selected_paths(), paths(2..3));
     assert_eq!(rig.focus_path(), Some(path_of(2)));
     assert_eq!(rig.ex.current_thumb.path, path_of(2));
-    assert_eq!(rig.ex.viewer.selected.iter().cloned().collect::<Vec<_>>(), paths(2..3), "the legacy projection follows");
     rig.click(4);
     assert_eq!(rig.selected_paths(), paths(4..5));
     assert_eq!(rig.ex.current_thumb.path, path_of(4));
@@ -330,19 +329,24 @@ async fn folder_rows_are_selectable_and_do_not_navigate_on_a_single_click() {
     assert_eq!(rig.ex.current_path, start, "a single click only selects a folder");
     rig.click_with(2, Modifiers::COMMAND);
     assert_eq!(rig.ex.selection_count(), 2);
-    assert!(rig.ex.viewer.selected.contains("/cells/sub_b"));
+    assert!(rig.selected_paths().contains(&"/cells/sub_b".to_string()));
     let (_, dirs) = crate::ui::file_table::menus::selection_menu::split_selection(&rig.ex.selected_rows());
     assert_eq!(dirs, ["/cells/sub_a".to_string(), "/cells/sub_b".to_string()], "selected folders reach the Exclude directories action");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_double_click_opens_a_folder_and_a_category_row() {
+    let folder = tempfile::tempdir().unwrap();
+    let sub_a = folder.path().join("sub_a");
+    std::fs::create_dir(&sub_a).unwrap();
+    let sub_a = sub_a.to_string_lossy().to_string();
     let mut rig = rig(0);
-    rig.ex.table.bulk_load([dir_row("/cells/sub_a"), dir_row("cat://Landscape")]);
+    rig.ex.table.bulk_load([dir_row(&sub_a), dir_row("cat://Landscape")]);
     rig.settle(3).await;
     let p = rig.row_point(0);
     rig.click_at(p, Modifiers::NONE, 2);
-    assert_eq!(rig.ex.current_path, "/cells/sub_a");
+    assert_eq!(rig.ex.current_path, sub_a);
+    assert_eq!(rig.ex.scope(), &crate::command::Scope::Folder(sub_a.clone()));
     let mut rig = self::rig(0);
     rig.ex.table.bulk_load([dir_row("cat://Landscape")]);
     rig.settle(3).await;
@@ -415,7 +419,7 @@ async fn ctrl_a_selects_every_visible_row_and_escape_clears() {
     rig.press_key(Key::Escape, Modifiers::NONE);
     assert!(rig.ex.selection.is_empty());
     assert!(rig.selected_paths().is_empty(), "an empty selection selects no rows, never all of them");
-    assert!(rig.ex.viewer.selected.is_empty());
+    assert!(rig.ex.selected_rows().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -431,15 +435,19 @@ async fn ctrl_a_with_a_filter_selects_only_what_is_visible() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn enter_opens_the_focused_row_and_space_toggles_the_preview_pane() {
+    let folder = tempfile::tempdir().unwrap();
+    let sub_a = folder.path().join("sub_a");
+    std::fs::create_dir(&sub_a).unwrap();
+    let sub_a = sub_a.to_string_lossy().to_string();
     let mut rig = rig(0);
-    rig.ex.table.bulk_load([dir_row("/cells/sub_a"), dir_row("tag://Fox")]);
+    rig.ex.table.bulk_load([dir_row(&sub_a), dir_row("tag://Fox")]);
     rig.settle(3).await;
     rig.click(1);
     rig.press_key(Key::Enter, Modifiers::NONE);
     assert!(rig.ex.viewer.requested_tabs.iter().any(|t| matches!(t, TabAction::OpenTag(t) if t == "Fox")));
     rig.click(0);
     rig.press_key(Key::Enter, Modifiers::NONE);
-    assert_eq!(rig.ex.current_path, "/cells/sub_a");
+    assert_eq!(rig.ex.current_path, sub_a);
     let shown = rig.ex.open_preview_pane;
     rig.press_key(Key::Space, Modifiers::NONE);
     assert_eq!(rig.ex.open_preview_pane, !shown);
@@ -623,10 +631,10 @@ async fn selecting_by_path_picks_only_visible_rows_in_view_order() {
     rig.settle(3).await;
     rig.ex.select_paths([path_of(5).as_str(), path_of(1).as_str(), path_of(11).as_str(), "/not/there.jpg"]);
     assert_eq!(rig.selected_paths(), [path_of(1), path_of(5)], "img_0011 is hidden by the filter and the unknown path is ignored");
-    assert_eq!(rig.ex.viewer.selected.len(), 2);
+    assert_eq!(rig.ex.selection_count(), 2);
     assert_eq!(rig.ex.current_thumb.path, path_of(5));
     rig.ex.clear_selection();
-    assert!(rig.selected_paths().is_empty() && rig.ex.viewer.selected.is_empty());
+    assert!(rig.selected_paths().is_empty() && rig.ex.selection_count() == 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -702,7 +710,7 @@ async fn the_context_menu_acts_on_the_selection() {
         assert!(rig.text_point(label).is_some(), "{label} is in the menu");
     }
     assert!(rig.text_point("3 items").is_some());
-    assert!(rig.text_point("Attach to chat window").is_none(), "file system mode has no chat attachment");
+    assert!(rig.text_point("Attach to chat window").is_some(), "the chat attachment is offered in every scope");
     let p = rig.text_point("Open selection in new tab").unwrap();
     rig.click_at(p, Modifiers::NONE, 1);
     let mine = crate::command::bus::testing::take_matching(|c| matches!(c, crate::command::AppCommand::OpenRows(tab) if tab.title.starts_with("Selected (3)")));
@@ -794,7 +802,6 @@ async fn row_removals_during_use_keep_the_store_the_view_and_the_selection_consi
     rig.settle(3).await;
     rig.ex.check_row_invariants().unwrap();
     assert!(rig.ex.selection.is_empty());
-    assert!(rig.ex.viewer.selected.is_empty());
 }
 
 /* ----------------------------------------------- devtools -------------------------------------------- */

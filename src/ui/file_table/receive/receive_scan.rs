@@ -35,22 +35,6 @@ impl crate::ui::file_table::FileExplorer {
                 // Ignore stray messages for other tabs/scans, but continue draining the queue
                 continue;
             }
-            // Create or reuse a cached scan record when a recursive scan begins receiving
-            if self.recursive_scan && self.owning_scan_id.is_some() && self.last_scan_root.is_none() {
-                let root_str = self.current_path.clone();
-                let title = format!("Scan: {}", root_str);
-                let root_for_task = root_str.clone();
-                let sid = self.owning_scan_id.unwrap_or(0);
-                let tx = self.scan_tx.clone();
-                tokio::spawn(async move {
-                    if let Ok(_scan) = crate::database::CachedScan::create(&root_for_task, Some(title), sid).await {
-                        // Notify UI thread with a no-op progress to store scan id (optional)
-                        let _ = tx.try_send(crate::ScanEnvelope { scan_id: sid, msg: crate::utilities::scan::ScanMsg::Progress { scanned: 0, total: 0 } });
-                        // Store scan.id on UI via subsequent messages referencing owning_scan_id; we'll fetch lazily when appending
-                    }
-                });
-                self.last_scan_root = Some(root_str);
-            }
             match env.msg {
                 crate::utilities::scan::ScanMsg::FoundDir(dir) => {
                     if !self.viewer.types_show_dirs { ctx.request_repaint(); continue; }
@@ -220,27 +204,13 @@ impl crate::ui::file_table::FileExplorer {
                         let auto_save = self.viewer.ui_settings.auto_save_to_database;
                         // Only auto-save immediately when the row is already stored or arrived with a thumbnail (so failed thumbs don't get stored).
                         if auto_save && (db_known || meta.thumbnail_b64.is_some()) {
-                            let group_name = self.active_logical_group_name.clone();
-                            let meta_clone = meta.clone();
                             let do_index = self.viewer.ui_settings.auto_indexing;
-                            tokio::spawn(async move {
-                                // Upsert row always when auto-save is enabled
-                                match crate::database::upsert_rows_and_get_ids(vec![meta_clone.clone()]).await {
-                                    Ok(ids) => {
-                                        // Optionally add to group if one is active
-                                        if let Some(group_name) = group_name {
-                                            if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&group_name).await {
-                                                let _ = crate::database::LogicalGroup::add_thumbnails(&g.id, &ids).await;
-                                            }
-                                        }
-                                    }
-                                    Err(e) => log::error!("Error upserting rows and getting ID's: {e:?}")
-                                }
-                                // Index only if enabled
-                                if do_index {
-                                    let _ = crate::ai::GLOBAL_AI_ENGINE.enqueue_index(meta_clone).await;
-                                }
-                            });
+                            self.queue_persist(vec![meta.clone()]);
+                            if do_index {
+                                tokio::spawn(async move {
+                                    let _ = crate::ai::GLOBAL_AI_ENGINE.enqueue_index(meta).await;
+                                });
+                            }
                         }
                         // If auto CLIP is enabled but auto indexing is off, schedule CLIP embedding for images here
                         if self.viewer.ui_settings.auto_clip_embeddings && !self.viewer.ui_settings.auto_indexing {
@@ -417,31 +387,7 @@ impl crate::ui::file_table::FileExplorer {
                                 }
                             }
                         }
-                        if self.pending_thumb_rows.len() >= 32 {
-                            let batch = std::mem::take(&mut self.pending_thumb_rows);
-                            let group_name = self.active_logical_group_name.clone();
-                            if self.viewer.ui_settings.auto_save_to_database {
-                                tokio::spawn(async move {
-                                    let mut ids: Vec<surrealdb::types::RecordId> = Vec::new();
-                                    for meta in batch.into_iter() {
-                                        match crate::database::upsert_row_and_get_id(meta).await {
-                                            Ok(Some(id)) => ids.push(id),
-                                            Ok(None) => {},
-                                            Err(e) => log::warn!("per-item upsert failed: {e}"),
-                                        }
-                                    }
-                                    if !ids.is_empty() {
-                                        if let Some(gname) = group_name {
-                                            if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&gname).await {
-                                                let _ = crate::database::LogicalGroup::add_thumbnails(&g.id, &ids).await;
-                                            }
-                                        }
-                                    }
-                                });
-                            } else {
-                                log::debug!("Skipping batch DB save: auto_save_to_database disabled");
-                            }
-                        }
+                        self.flush_pending_rows(false);
                     }
                     if self.recursive_scan && !cached_paths.is_empty() {
                         let sid = self.owning_scan_id.unwrap_or(0);
@@ -459,32 +405,16 @@ impl crate::ui::file_table::FileExplorer {
                     if need_repaint { ctx.request_repaint(); }
                     if !to_index.is_empty() {
                         let do_index = self.viewer.ui_settings.auto_indexing;
-                        let auto_save = self.viewer.ui_settings.auto_save_to_database;
-                        let group_name = self.active_logical_group_name.clone();
-                        tokio::spawn(async move {
-                            let mut ids: Vec<surrealdb::types::RecordId> = Vec::new();
-                            if auto_save {
-                                for meta in to_index.iter().cloned() {
-                                    match crate::database::upsert_row_and_get_id(meta.clone()).await {
-                                        Ok(Some(id)) => ids.push(id),
-                                        Ok(None) => {},
-                                        Err(e) => log::warn!("per-item upsert failed: {e}"),
-                                    }
-                                }
-                                if !ids.is_empty() {
-                                    if let Some(group_name) = group_name {
-                                        if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&group_name).await {
-                                            let _ = crate::database::LogicalGroup::add_thumbnails(&g.id, &ids).await;
-                                        }
-                                    }
-                                }
-                            }
-                            if do_index {
+                        if self.viewer.ui_settings.auto_save_to_database {
+                            self.queue_persist(to_index.clone());
+                        }
+                        if do_index {
+                            tokio::spawn(async move {
                                 for meta in to_index.into_iter() {
                                     let _ = crate::ai::GLOBAL_AI_ENGINE.enqueue_index(meta).await;
                                 }
-                            }
-                        });
+                            });
+                        }
                     }
                 }
                 crate::utilities::scan::ScanMsg::ThumbReady { path, .. } => {
@@ -539,63 +469,14 @@ impl crate::ui::file_table::FileExplorer {
                             }
                         }
                     }
-                    if self.pending_thumb_rows.len() >= 32 {
-                        let batch = std::mem::take(&mut self.pending_thumb_rows);
-                        let group_name = self.active_logical_group_name.clone();
-                        let auto_save = self.viewer.ui_settings.auto_save_to_database;
-                        tokio::spawn(async move {
-                            if auto_save {
-                                match crate::database::upsert_rows_and_get_ids(batch).await {
-                                    Ok(ids) => {
-                                        if let Some(gname) = group_name {
-                                            if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&gname).await {
-                                                let _ = crate::database::LogicalGroup::add_thumbnails(&g.id, &ids).await;
-                                            }
-                                        }
-                                    }
-                                    Err(e) => log::error!("thumb update batch upsert failed: {e}"),
-                                }
-                            } else {
-                                log::debug!("Skipping batch DB save: auto_save_to_database disabled");
-                            }
-                        });
-                    }
+                    super::super::scope::failed::clear_path(&key);
+                    self.flush_pending_rows(false);
                 }
                 crate::utilities::scan::ScanMsg::ThumbFailed { path, error } => {
                     let key = path.to_string_lossy().to_string();
+                    super::super::scope::failed::record(&key, &error);
                     self.failed_thumbs.push((key.clone(), error.clone()));
                     log::warn!("Thumbnail failed: {} => {}", key, error);
-                    // If scan already done (or user switched tabs and came back), open a failed tab now
-                    if self.scan_done && !self.failed_thumbs.is_empty() && !self.failed_tab_opened {
-                        let mut rows: Vec<crate::database::Thumbnail> = Vec::new();
-                        for (p, err) in self.failed_thumbs.iter() {
-                            let filename = std::path::Path::new(p).file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
-                            let ext = std::path::Path::new(p).extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()).unwrap_or_default();
-                            rows.push(crate::database::Thumbnail {
-                                id: crate::Thumbnail::new(&filename).id,
-                                db_created: None,
-                                path: p.clone(),
-                                filename,
-                                file_type: ext,
-                                size: 0,
-                                description: Some(format!("Thumbnail failed: {}", err)),
-                                caption: None,
-                                tags: Vec::new(),
-                                category: Some("<FAILED_THUMB>".to_string()),
-                                thumbnail_b64: None,
-                                modified: None,
-                                hash: None,
-                                parent_dir: std::path::Path::new(p).parent().map(|pp| pp.to_string_lossy().to_string()).unwrap_or_default(),
-                                logical_group: crate::LogicalGroup::default().id,
-                            });
-                        }
-                        let title = format!("Failed thumbnails ({})", rows.len());
-                        crate::app::OPEN_TAB_REQUESTS
-                            .lock()
-                            .unwrap()
-                            .push(crate::ui::file_table::FilterRequest::NewTab { title, rows, showing_similarity: false, similar_scores: None, origin_path: None, background: false });
-                        self.failed_tab_opened = true;
-                    }
                 }
                 crate::utilities::scan::ScanMsg::EncryptedArchives(zips) => {
                     // Queue unique archives; show modal after scan completes
@@ -617,38 +498,6 @@ impl crate::ui::file_table::FileExplorer {
                     // Rebuild page view at end of scan to ensure correct slice size
                     if self.recursive_scan { self.rebuild_recursive_page(); }
 
-                    // Open a tab listing failed thumbnails, if any
-                    if !self.failed_thumbs.is_empty() && !self.failed_tab_opened {
-                        let mut rows: Vec<crate::database::Thumbnail> = Vec::new();
-                        for (p, err) in self.failed_thumbs.iter() {
-                            let filename = std::path::Path::new(p).file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
-                            let ext = std::path::Path::new(p).extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()).unwrap_or_default();
-                            rows.push(crate::database::Thumbnail {
-                                id: crate::Thumbnail::new(&filename).id,
-                                db_created: None,
-                                path: p.clone(),
-                                filename,
-                                file_type: ext,
-                                size: 0,
-                                description: Some(format!("Thumbnail failed: {}", err)),
-                                caption: None,
-                                tags: Vec::new(),
-                                category: Some("<FAILED_THUMB>".to_string()),
-                                thumbnail_b64: None,
-                                modified: None,
-                                hash: None,
-                                parent_dir: std::path::Path::new(p).parent().map(|pp| pp.to_string_lossy().to_string()).unwrap_or_default(),
-                                logical_group: crate::LogicalGroup::default().id,
-                            });
-                        }
-                        let title = format!("Failed thumbnails ({})", rows.len());
-                        crate::app::OPEN_TAB_REQUESTS
-                            .lock()
-                            .unwrap()
-                            .push(crate::ui::file_table::FilterRequest::NewTab { title, rows, showing_similarity: false, similar_scores: None, origin_path: None, background: false });
-                        self.failed_tab_opened = true;
-                        self.failed_thumbs.clear();
-                    }
                     log::info!("Done");
                     self.file_scan_progress = 1.0;
                     self.scan_done = true;
@@ -679,27 +528,8 @@ impl crate::ui::file_table::FileExplorer {
                             if let Ok(Some(sc)) = crate::database::CachedScan::get_by_scan_id(sid).await { let _ = sc.mark_finished(total).await; }
                         });
                     }
-                    if !self.pending_thumb_rows.is_empty() {
-                        let batch = std::mem::take(&mut self.pending_thumb_rows);
-                        let group_name = self.active_logical_group_name.clone();
-                        let auto_save = self.viewer.ui_settings.auto_save_to_database;
-                        tokio::spawn(async move {
-                            if auto_save {
-                                match crate::database::upsert_rows_and_get_ids(batch).await {
-                                    Ok(ids) => {
-                                        if let Some(gname) = group_name {
-                                            if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&gname).await {
-                                                let _ = crate::database::LogicalGroup::add_thumbnails(&g.id, &ids).await;
-                                            }
-                                        }
-                                    }
-                                    Err(e) => log::error!("final scan batch upsert failed: {e}"),
-                                }
-                            } else {
-                                log::debug!("Skipping final batch DB save: auto_save_to_database disabled");
-                            }
-                        });
-                    }
+                    self.flush_pending_rows(true);
+                    self.note_listing_done();
                     // Do not bulk-refresh CLIP presence here; per-thumbnail checks will update presence incrementally.
                 }
             }

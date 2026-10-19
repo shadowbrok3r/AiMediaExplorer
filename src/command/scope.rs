@@ -134,6 +134,46 @@ impl Scope {
         }
     }
 
+    /// True for scopes that list a place on disk, shown by a filesystem scan.
+    pub fn is_filesystem(&self) -> bool {
+        matches!(self, Self::Folder(_) | Self::Archive(_))
+    }
+
+    /// Short lowercase name of the variant.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Folder(_) => "folder",
+            Self::Archive(_) => "archive",
+            Self::Library => "library",
+            Self::Recent => "recent",
+            Self::Collection(_) => "collection",
+            Self::Tag(_) => "tag",
+            Self::Category(_) => "category",
+            Self::Semantic(_) => "semantic",
+            Self::Similar(_) => "similar",
+            Self::Scan(_) => "scan",
+            Self::Smart(_) => "smart",
+        }
+    }
+
+    /// The scope Up leads to: the parent folder, the folder around an archive, or the library for everything else.
+    pub fn parent(&self) -> Option<Self> {
+        match self {
+            Self::Folder(p) => folder_parent(p).map(Self::Folder),
+            Self::Archive(p) => {
+                let (scheme, archive, internal) = split_virtual(p)?;
+                let inner: Vec<&str> = internal.split('/').filter(|s| !s.is_empty()).collect();
+                match inner.split_last() {
+                    None => folder_parent(&archive).map(Self::Folder),
+                    Some((_, [])) => Some(Self::Archive(format!("{scheme}://{archive}!/"))),
+                    Some((_, rest)) => Some(Self::Archive(format!("{scheme}://{archive}!/{}/", rest.join("/")))),
+                }
+            }
+            Self::Library => None,
+            _ => Some(Self::Library),
+        }
+    }
+
     /// Tab title for a scope opened without an explicit one.
     pub fn default_title(&self) -> String {
         let leaf = |p: &str| p.trim_end_matches(['/', '\\']).rsplit(['/', '\\', '!']).next().filter(|s| !s.is_empty()).unwrap_or(p).to_string();
@@ -151,6 +191,37 @@ impl Scope {
             Self::Smart(v) => v.label().to_string(),
         }
     }
+}
+
+/// `(scheme, archive path, inner path)` of a virtual path `scheme://<archive>!/<inner>`.
+pub fn split_virtual(path: &str) -> Option<(String, String, String)> {
+    let (scheme, rest) = path.split_once("://")?;
+    let (archive, internal) = rest.split_once('!')?;
+    let archive = archive.strip_prefix('/').filter(|a| is_drive_path(a)).unwrap_or(archive);
+    Some((scheme.to_string(), archive.trim_end_matches('/').to_string(), internal.trim_start_matches('/').to_string()))
+}
+
+/// True for `C:` or `C:\..` style paths.
+fn is_drive_path(path: &str) -> bool {
+    let mut chars = path.chars();
+    matches!((chars.next(), chars.next()), (Some(d), Some(':')) if d.is_ascii_alphabetic())
+}
+
+/// The folder around `path`, or `None` at a root.
+fn folder_parent(path: &str) -> Option<String> {
+    let trimmed = path.trim_end_matches(['/', '\\']);
+    let cut = trimmed.rfind(['/', '\\'])?;
+    let parent = &trimmed[..cut];
+    if parent.is_empty() {
+        return Some(path[..1].to_string());
+    }
+    if parent.ends_with(':') {
+        return Some(format!("{parent}{}", &trimmed[cut..=cut]));
+    }
+    if parent.starts_with("\\\\") && !parent[2..].contains(['/', '\\']) {
+        return None;
+    }
+    Some(parent.to_string())
 }
 
 impl fmt::Display for Scope {
@@ -253,6 +324,40 @@ mod tests {
         let err = Scope::parse("wat:1").unwrap_err();
         assert!(err.to_string().contains("unknown prefix"));
         assert!(serde_json::from_str::<Scope>("\"wat:1\"").is_err());
+    }
+
+    #[test]
+    fn up_leads_to_the_parent_folder_and_stops_at_the_root() {
+        assert_eq!(Scope::Folder("/a/b".into()).parent(), Some(Scope::Folder("/a".into())));
+        assert_eq!(Scope::Folder("/a".into()).parent(), Some(Scope::Folder("/".into())));
+        assert_eq!(Scope::Folder("/".into()).parent(), None);
+        assert_eq!(Scope::Folder("relative".into()).parent(), None);
+    }
+
+    #[test]
+    fn up_inside_an_archive_climbs_to_its_root_then_to_the_folder_around_it() {
+        let inner = Scope::Archive("zip:///data/a.zip!/x/y/".into());
+        assert_eq!(inner.parent(), Some(Scope::Archive("zip:///data/a.zip!/x/".into())));
+        assert_eq!(inner.parent().unwrap().parent(), Some(Scope::Archive("zip:///data/a.zip!/".into())));
+        assert_eq!(inner.parent().unwrap().parent().unwrap().parent(), Some(Scope::Folder("/data".into())));
+        assert_eq!(Scope::Archive("7z://C:\\pics\\b.7z!/".into()).parent(), Some(Scope::Folder("C:\\pics".into())));
+        assert_eq!(Scope::Archive("not-a-scheme".into()).parent(), None);
+    }
+
+    #[test]
+    fn up_from_a_query_or_list_scope_leads_to_the_library() {
+        assert_eq!(Scope::Library.parent(), None);
+        for scope in [Scope::Recent, Scope::Collection("c".into()), Scope::Tag("t".into()), Scope::Category("c".into()), Scope::Semantic("q".into()), Scope::Similar("/p".into()), Scope::Scan(1), Scope::Smart(SmartView::NoClip)] {
+            assert_eq!(scope.parent(), Some(Scope::Library), "{scope}");
+        }
+    }
+
+    #[test]
+    fn virtual_paths_keep_the_leading_slash_of_unix_archives() {
+        assert_eq!(split_virtual("zip:///data/a.zip!/in/er"), Some(("zip".into(), "/data/a.zip".into(), "in/er".into())));
+        assert_eq!(split_virtual("zip:///C:/x/a.zip!/"), Some(("zip".into(), "C:/x/a.zip".into(), String::new())));
+        assert_eq!(split_virtual("zip://C:\\x\\a.zip!/q"), Some(("zip".into(), "C:\\x\\a.zip".into(), "q".into())));
+        assert_eq!(split_virtual("/plain/path"), None);
     }
 
     #[test]

@@ -61,8 +61,12 @@ fn attention_row(ui: &mut Ui, item: &AttentionItem, actions: &mut Vec<CenterActi
         icons::label(ui, svg::WARNING, RichText::new(&item.title).strong());
         if let Some(command) = &item.action {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let label = if item.kind == AttentionKind::FailedThumbs { "Show failures" } else { "Open" };
-                if icons::small_button(ui, svg::FUNNEL, label).clicked() {
+                let (label, icon) = match item.kind {
+                    AttentionKind::FailedThumbs => ("Show failures", svg::FUNNEL),
+                    AttentionKind::Database => ("Retry", svg::ARROW_CLOCKWISE),
+                    _ => ("Open", svg::FUNNEL),
+                };
+                if icons::small_button(ui, icon, label).clicked() {
                     actions.push(CenterAction::Command(command.clone()));
                 }
             });

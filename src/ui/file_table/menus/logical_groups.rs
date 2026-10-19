@@ -14,6 +14,8 @@ use crate::database::collections::{self, UNFILED_NAME};
 use crate::database::collections_migration::{self, CopyOptions, FinishOptions, Migrator};
 use crate::database::{DB, LogicalGroup, Thumbnail};
 use crate::icons::{self, svg};
+use crate::ui::dialogs;
+use crate::ui::file_table::explorer::persist::persist_scanned;
 
 /// Longest collection name shown on the menu button before it is cut with an ellipsis.
 const GROUP_LABEL_MAX_CHARS: usize = 18;
@@ -89,9 +91,55 @@ pub async fn add_unfiled(db: &Surreal<Db>, name: &str) -> anyhow::Result<String>
     add_to_named(db, name, &paths).await
 }
 
-/// Rows of the table that are files, optionally only the selected ones.
-fn file_rows(table: &crate::ui::file_table::rows::RowStore<Thumbnail>, selected: Option<&std::collections::HashSet<String>>) -> Vec<Thumbnail> {
-    table.iter().filter(|r| r.file_type != "<DIR>" && selected.is_none_or(|s| s.contains(&r.path))).cloned().collect()
+/// What the add and remove actions do with the rows they are given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroupAction {
+    Add,
+    Remove,
+}
+
+/// The collection to act on and the files among `rows`; selecting nothing or having no active collection plans nothing.
+pub fn plan_group_action(rows: &[&Thumbnail], active: Option<&str>) -> Result<(String, Vec<Thumbnail>), String> {
+    let files: Vec<Thumbnail> = rows.iter().filter(|r| r.file_type != "<DIR>" && !r.path.is_empty()).map(|r| (*r).clone()).collect();
+    if files.is_empty() {
+        return Err("Select files first: this acts on the selection only".to_string());
+    }
+    match collection_of_active(active) {
+        Some(name) => Ok((name.to_string(), files)),
+        None => Err("Choose an active collection in the Collections menu first".to_string()),
+    }
+}
+
+/// Adds the files to the collection `name`, saving them to the library first, or removes them from it.
+pub async fn apply_group_action(db: &Surreal<Db>, action: GroupAction, name: &str, files: Vec<Thumbnail>) -> anyhow::Result<String> {
+    let paths: Vec<String> = files.iter().map(|r| r.path.clone()).collect();
+    match action {
+        GroupAction::Add => {
+            persist_scanned(db, files, None).await?;
+            add_to_named(db, name, &paths).await
+        }
+        GroupAction::Remove => {
+            let found = collections::get_by_name(db, name).await?.ok_or_else(|| collections::CollectionError::NotFound(name.to_string()))?;
+            remove_from(db, &found.id, &found.name, &paths).await
+        }
+    }
+}
+
+/// Runs the action on the selected rows in the background and toasts the counts, or why nothing happened.
+pub fn run_group_action(action: GroupAction, rows: &[&Thumbnail]) {
+    let active = crate::command::context::active_collection();
+    match plan_group_action(rows, active.as_deref()) {
+        Err(reason) => dialogs::toast(egui_toast::ToastKind::Warning, reason),
+        Ok((name, files)) => {
+            tokio::spawn(async move {
+                let (kind, text) = match apply_group_action(&DB, action, &name, files).await {
+                    Ok(summary) => (egui_toast::ToastKind::Success, summary),
+                    Err(e) => (egui_toast::ToastKind::Error, format!("{e:#}")),
+                };
+                dialogs::toast(kind, text);
+            });
+        }
+    }
 }
 
 fn run_op<F>(ctx: &Context, tx: Sender<Vec<LogicalGroup>>, fut: F)
@@ -104,6 +152,7 @@ where
             Ok(text) => (true, text),
             Err(e) => (false, format!("{e:#}")),
         };
+        dialogs::toast(if message.0 { egui_toast::ToastKind::Success } else { egui_toast::ToastKind::Error }, message.1.clone());
         menu(|m| m.message = Some(message));
         refresh_now(&ctx, tx).await;
     });
@@ -190,35 +239,26 @@ fn name_row(ui: &mut Ui, label: &str, hint: &str, text: &mut String, button: &st
 
 impl crate::ui::file_table::FileExplorer {
     /// The collection scanned files are added to, if one is chosen.
-    pub fn active_collection(&self) -> Option<&str> {
-        collection_of_active(self.active_logical_group_name.as_deref())
+    pub fn active_collection(&self) -> Option<String> {
+        crate::command::context::active_collection().filter(|n| collection_of_active(Some(n)).is_some())
     }
 
     /// Text of the Collections menu button.
     pub fn logical_group_label(&self) -> String {
-        menu_label(self.active_collection())
+        menu_label(self.active_collection().as_deref())
+    }
+
+    /// Selected rows that are files, in view order.
+    fn selected_file_rows(&self) -> Vec<Thumbnail> {
+        self.selected_rows().into_iter().filter(|r| r.file_type != "<DIR>").cloned().collect()
     }
 
     fn selected_file_count(&self) -> usize {
-        if self.viewer.selected.is_empty() {
-            return 0;
-        }
-        self.table.iter().filter(|r| r.file_type != "<DIR>" && self.viewer.selected.contains(&r.path)).count()
+        self.selected_rows().iter().filter(|r| r.file_type != "<DIR>").count()
     }
 
     fn view_file_count(&self) -> usize {
-        self.table.iter().filter(|r| r.file_type != "<DIR>").count()
-    }
-
-    /// Shows the rows of a collection in this explorer.
-    pub fn open_collection(&mut self, name: &str) {
-        self.viewer.mode = crate::ui::file_table::table::ExplorerMode::Database;
-        self.table.clear();
-        self.table_index.clear();
-        self.db_offset = 0;
-        self.db_last_batch_len = 0;
-        self.db_loading = true;
-        self.load_logical_group_by_name(name.to_string());
+        self.view.rows(&self.table).filter(|r| r.file_type != "<DIR>").count()
     }
 
     fn add_rows_to(&self, ctx: &Context, name: String, rows: Vec<Thumbnail>) {
@@ -228,8 +268,8 @@ impl crate::ui::file_table::FileExplorer {
         let paths: Vec<String> = rows.iter().map(|r| r.path.clone()).collect();
         run_op(ctx, self.logical_groups_tx.clone(), async move {
             let summary = add_to_named(&DB, &name, &paths).await?;
-            if let Err(e) = crate::database::upsert_rows_and_get_ids(rows).await {
-                log::error!("Add to collection: indexing the rows failed: {e:?}");
+            if let Err(e) = persist_scanned(&DB, rows, None).await {
+                log::error!("Add to collection: saving the rows failed: {e:#}");
             }
             Ok(summary)
         });
@@ -261,7 +301,7 @@ impl crate::ui::file_table::FileExplorer {
 
     fn collections_header(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            match self.active_collection().map(str::to_string) {
+            match self.active_collection() {
                 Some(name) => {
                     let known = self.logical_groups.is_empty() || self.logical_groups.iter().any(|g| g.name == name);
                     if known {
@@ -270,7 +310,7 @@ impl crate::ui::file_table::FileExplorer {
                         ui.colored_label(crate::theme::warn(ui), format!("Active collection \"{name}\" no longer exists."));
                     }
                     if ui.small_button("Clear").on_hover_text("Stop adding scanned files to this collection").clicked() {
-                        self.active_logical_group_name = Some(UNFILED_NAME.to_string());
+                        crate::command::context::set_active_collection(None);
                     }
                 }
                 None => {
@@ -316,7 +356,7 @@ impl crate::ui::file_table::FileExplorer {
         let mut target = std::mem::take(&mut self.group_add_target);
         let go = name_row(ui, &format!("Add selection ({selected}) to:"), "Collection name", &mut target, "Add", selected > 0);
         if go {
-            let rows = file_rows(&self.table, Some(&self.viewer.selected));
+            let rows = self.selected_file_rows();
             self.add_rows_to(ui.ctx(), target.trim().to_string(), rows);
             target.clear();
         }
@@ -325,7 +365,7 @@ impl crate::ui::file_table::FileExplorer {
         let mut view_target = std::mem::take(&mut self.group_add_view_target);
         let go = name_row(ui, &format!("Add current view ({in_view}) to:"), "Collection name", &mut view_target, "Add", in_view > 0);
         if go {
-            let rows = file_rows(&self.table, None);
+            let rows: Vec<Thumbnail> = self.view.rows(&self.table).filter(|r| r.file_type != "<DIR>").cloned().collect();
             self.add_rows_to(ui.ctx(), view_target.trim().to_string(), rows);
             view_target.clear();
         }
@@ -395,7 +435,7 @@ impl crate::ui::file_table::FileExplorer {
                 }
                 return;
             }
-            let active = self.active_collection() == Some(g.name.as_str());
+            let active = self.active_collection().as_deref() == Some(g.name.as_str());
             let name = if active { RichText::new(&g.name).strong() } else { RichText::new(&g.name) };
             ui.label(name);
             ui.label(RichText::new(count.map_or("-".to_string(), |n| format!("{n} files"))).weak());
@@ -419,20 +459,20 @@ impl crate::ui::file_table::FileExplorer {
                 let can = selected > 0;
                 let remove = ui.add_enabled_ui(can, |ui| icons::icon_button(ui, svg::MINUS, &format!("Remove the {selected} selected files from this collection"))).inner;
                 if remove.clicked() {
-                    let paths: Vec<String> = file_rows(&self.table, Some(&self.viewer.selected)).into_iter().map(|r| r.path).collect();
+                    let paths: Vec<String> = self.selected_file_rows().into_iter().map(|r| r.path).collect();
                     let (id, name) = (g.id.clone(), g.name.clone());
                     run_op(ui.ctx(), self.logical_groups_tx.clone(), async move { remove_from(&DB, &id, &name, &paths).await });
                 }
                 let add = ui.add_enabled_ui(can, |ui| icons::icon_button(ui, svg::PLUS, &format!("Add the {selected} selected files to this collection"))).inner;
                 if add.clicked() {
-                    let rows = file_rows(&self.table, Some(&self.viewer.selected));
+                    let rows = self.selected_file_rows();
                     self.add_rows_to(ui.ctx(), g.name.clone(), rows);
                 }
                 if icons::icon_button(ui, svg::FOLDER_OPEN, "Show the indexed files of this collection").clicked() {
                     self.open_collection(&g.name);
                 }
                 if icons::toggle_button(ui, svg::CHECK, active, "Add scanned files to this collection").clicked() {
-                    self.active_logical_group_name = Some(if active { UNFILED_NAME.to_string() } else { g.name.clone() });
+                    crate::command::context::set_active_collection((!active).then(|| g.name.clone()));
                 }
             });
         });
@@ -446,8 +486,8 @@ impl crate::ui::file_table::FileExplorer {
             menu(|m| m.message = Some((false, format!("\"{new_name}\" is not a usable collection name"))));
             return;
         };
-        if self.active_collection() == Some(g.name.as_str()) {
-            self.active_logical_group_name = Some(display);
+        if self.active_collection().as_deref() == Some(g.name.as_str()) {
+            crate::command::context::set_active_collection(Some(display));
         }
         let id = g.id.clone();
         run_op(ctx, self.logical_groups_tx.clone(), async move {
@@ -458,8 +498,8 @@ impl crate::ui::file_table::FileExplorer {
 
     fn delete_collection(&mut self, ctx: &Context, g: &LogicalGroup) {
         menu(|m| m.confirm_delete = None);
-        if self.active_collection() == Some(g.name.as_str()) {
-            self.active_logical_group_name = Some(UNFILED_NAME.to_string());
+        if self.active_collection().as_deref() == Some(g.name.as_str()) {
+            crate::command::context::set_active_collection(None);
         }
         let (id, name) = (g.id.clone(), g.name.clone());
         run_op(ctx, self.logical_groups_tx.clone(), async move {
@@ -493,7 +533,7 @@ impl crate::ui::file_table::FileExplorer {
         ScrollArea::vertical().max_height(160.).show(ui, |ui| {
             for g in groups {
                 ui.horizontal(|ui| {
-                    let active = self.active_collection() == Some(g.name.as_str());
+                    let active = self.active_collection().as_deref() == Some(g.name.as_str());
                     let count = counts.get(&collections::key_of(&g.id)).map_or(String::new(), |n| format!(" ({n})"));
                     ui.label(if active { RichText::new(format!("{}{count}", g.name)).strong() } else { RichText::new(format!("{}{count}", g.name)) });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -501,7 +541,7 @@ impl crate::ui::file_table::FileExplorer {
                             self.open_collection(&g.name);
                         }
                         if icons::toggle_button(ui, svg::CHECK, active, "Add scanned files to this collection").clicked() {
-                            self.active_logical_group_name = Some(if active { UNFILED_NAME.to_string() } else { g.name.clone() });
+                            crate::command::context::set_active_collection((!active).then(|| g.name.clone()));
                         }
                     });
                 });

@@ -1,6 +1,7 @@
-//! Start-up commands from `--run <json|scope>` and `--devtools <window>[,<window>...]`.
+//! Start-up commands from `--run <json|scope>`, `--scope <scope>` and `--devtools <window>[,<window>...]`.
 
 use super::model::{AppCommand, DevtoolsWindow, parse_input};
+use super::scope::Scope;
 
 fn devtools_command(name: &str) -> Result<AppCommand, String> {
     let snake = name.trim().replace('-', "_");
@@ -18,7 +19,7 @@ pub fn startup_commands(args: &[String]) -> Result<Vec<AppCommand>, String> {
             Some((flag, value)) => (flag, Some(value.to_string())),
             None => (arg.as_str(), None),
         };
-        if flag != "--run" && flag != "--devtools" {
+        if flag != "--run" && flag != "--devtools" && flag != "--scope" {
             continue;
         }
         let value = match inline {
@@ -27,6 +28,8 @@ pub fn startup_commands(args: &[String]) -> Result<Vec<AppCommand>, String> {
         };
         if flag == "--run" {
             commands.extend(parse_input(&value).map_err(|e| format!("--run: {e}"))?);
+        } else if flag == "--scope" {
+            commands.push(Scope::parse(&value).map(AppCommand::open).map_err(|e| format!("--scope: {e}"))?);
         } else {
             for name in value.split(',').filter(|n| !n.trim().is_empty()) {
                 commands.push(devtools_command(name)?);
@@ -56,16 +59,30 @@ mod tests {
     fn run_takes_json_lists_and_scopes_in_order() {
         let cmds = startup_commands(&args(&["--run", "tag:sunset", "--run={\"cmd\":\"show_task_center\"}", "--run", "[{\"cmd\":\"clear_selection\"}]"])).unwrap();
         assert_eq!(cmds.len(), 3);
-        assert!(matches!(&cmds[0], AppCommand::OpenScope { scope: Scope::Tag(t), target: Target::NewTab, .. } if t == "sunset"));
+        assert!(matches!(&cmds[0], AppCommand::OpenScope { scope: Scope::Tag(t), target: Target::Current, .. } if t == "sunset"));
         assert!(matches!(cmds[1], AppCommand::ShowTaskCenter));
         assert!(matches!(cmds[2], AppCommand::ClearSelection));
     }
 
     #[test]
+    fn scope_takes_a_scope_string_each_time_it_is_given() {
+        let cmds = startup_commands(&args(&["--scope", "lib:all", "--scope=smart:no-clip", "--scope", "q:sem:a red car"])).unwrap();
+        let scopes: Vec<String> = cmds.iter().map(|c| match c { AppCommand::OpenScope { scope, target: Target::Current, .. } => scope.format(), other => panic!("{other:?}") }).collect();
+        assert_eq!(scopes, vec!["lib:all", "smart:no-clip", "q:sem:\"a red car\""]);
+    }
+
+    #[test]
+    fn scope_rejects_json_and_unknown_scopes_naming_the_flag() {
+        assert!(startup_commands(&args(&["--scope", "nonsense"])).unwrap_err().starts_with("--scope:"));
+        assert!(startup_commands(&args(&["--scope", "{\"cmd\":\"clear_selection\"}"])).unwrap_err().starts_with("--scope:"));
+        assert!(startup_commands(&args(&["--scope"])).unwrap_err().contains("--scope needs a value"));
+    }
+
+    #[test]
     fn devtools_accepts_lists_with_dashes_or_underscores() {
-        let cmds = startup_commands(&args(&["--devtools", "tasks,command-log", "--devtools=perf"])).unwrap();
+        let cmds = startup_commands(&args(&["--devtools", "tasks,command-log", "--devtools=perf,scope"])).unwrap();
         let windows: Vec<_> = cmds.iter().map(|c| match c { AppCommand::OpenDevtools { window } => *window, other => panic!("{other:?}") }).collect();
-        assert_eq!(windows, vec![DevtoolsWindow::Tasks, DevtoolsWindow::CommandLog, DevtoolsWindow::Perf]);
+        assert_eq!(windows, vec![DevtoolsWindow::Tasks, DevtoolsWindow::CommandLog, DevtoolsWindow::Perf, DevtoolsWindow::Scope]);
     }
 
     #[test]

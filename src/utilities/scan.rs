@@ -22,7 +22,10 @@ const PROGRESS_EVERY: usize = 5_000;
 /// Scan id of thumbnail jobs queued outside a scan; they have no delivery route.
 pub const STANDALONE_SCAN_ID: u64 = 0;
 
-pub fn next_scan_id() -> u64 { SCAN_ID_COUNTER.fetch_add(1, Ordering::Relaxed) }
+/// Offset that keeps scan ids unique across launches.
+static SCAN_ID_BASE: Lazy<u64> = Lazy::new(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() * 1_000).unwrap_or(0));
+
+pub fn next_scan_id() -> u64 { *SCAN_ID_BASE + SCAN_ID_COUNTER.fetch_add(1, Ordering::Relaxed) }
 
 pub fn cancel_scan(id: u64) {
     if id == 0 { return; }
@@ -99,11 +102,11 @@ struct ScanRoute {
 static SCAN_ROUTERS: Lazy<std::sync::Mutex<std::collections::HashMap<u64, ScanRoute>>> =
     Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
-// Registers the delivery route; earlier scans still active on the same channel are superseded and cancelled.
+// Registers the delivery route; older scans still active on the same channel are superseded and cancelled.
 fn register_route(scan_id: u64, tx: Sender<ScanEnvelope>) {
     let superseded: Vec<u64> = SCAN_ROUTERS
         .lock()
-        .map(|m| m.iter().filter(|(id, r)| **id != scan_id && r.tx.same_channel(&tx)).map(|(id, _)| *id).collect())
+        .map(|m| m.iter().filter(|(id, r)| **id < scan_id && r.tx.same_channel(&tx)).map(|(id, _)| *id).collect())
         .unwrap_or_default();
     for id in superseded { cancel_scan(id); }
     if let Ok(mut map) = SCAN_ROUTERS.lock() { map.insert(scan_id, ScanRoute { tx, pending: 0, walk_done: false }); }
@@ -859,6 +862,18 @@ mod tests {
         assert!(!is_cancelled(second));
         assert!(!is_cancelled(unrelated), "scans of other explorers are untouched");
         for id in [first, second, unrelated] {
+            route_walk_done(id);
+        }
+    }
+
+    #[test]
+    fn a_scan_that_registers_late_never_cancels_a_newer_one() {
+        let (tx, _rx) = unbounded::<ScanEnvelope>();
+        let (older, newer) = (next_scan_id(), next_scan_id());
+        register_route(newer, tx.clone());
+        register_route(older, tx);
+        assert!(!is_cancelled(newer), "the newer scan keeps its route when the older one starts late");
+        for id in [older, newer] {
             route_walk_done(id);
         }
     }

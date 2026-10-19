@@ -1,42 +1,12 @@
-
 impl crate::ui::file_table::FileExplorer {
     pub fn receive_preload(&mut self, ctx: &eframe::egui::Context) {
-        // First, integrate any preloaded DB rows for current path into a fast lookup by path
+        // Integrate the library rows of the current folder into a lookup by path and merge them into the rows shown
         let started = std::time::Instant::now();
         while let Ok(mut rows) = self.db_preload_rx.try_recv() {
             crate::ui::file_table::thumbs::adopt_legacy(&self.viewer.thumbs, &mut rows);
             self.viewer.thumbs.note_rows(rows.iter().filter(|r| r.file_type != "<DIR>").map(|r| r.path.clone()).collect());
-            // Page-aware apply: only apply to table if these rows belong to the active loading page
-            let expecting_page = self.db_loading_page;
-            let current_page = self.db_current_page;
-            let rows_len = rows.len();
-            if rows_len > 0 {
-                // Determine which page these rows correspond to based on current offset when spawned
-                // We treat any incoming rows as the ones requested for expecting_page
-                if let Some(p) = expecting_page {
-                    if p == current_page {
-                        // Apply to table (fresh page swap)
-                        self.viewer.thumbs.new_scope(self.viewer.scope);
-                        self.table.replace_all(rows.iter().take(self.db_limit).cloned());
-                        self.db_last_batch_len = self.table.len();
-                        self.db_offset = p * self.db_limit + self.db_last_batch_len;
-                        // Cache page snapshot
-                        self.cache_db_page(p, self.table.iter().cloned().collect());
-                        self.db_max_loaded_page = self.db_max_loaded_page.max(p);
-                        self.db_reached_end = rows_len < self.db_limit;
-                        self.db_loading = false;
-                        self.db_loading_page = None;
-                    } else {
-                        // Not the page we're currently viewing; cache only
-                        self.cache_db_page(p, rows.clone());
-                        self.db_max_loaded_page = self.db_max_loaded_page.max(p);
-                        if rows_len < self.db_limit { self.db_reached_end = true; }
-                        // Keep loading state as-is for the actual active page
-                    }
-                } else {
-                    // No page is expected (shouldn't happen), ignore apply but keep lookup merge below
-                }
-            }
+            self.viewer.badges.mark_indexed(rows.iter().map(|r| r.path.as_str()));
+            super::super::scope::runner::spawn_embedded_check(rows.iter().filter(|r| r.file_type != "<DIR>").map(|r| r.path.clone()).collect(), self.nav.tx.clone());
             self.db_lookup.clear();
             for r in rows.into_iter() {
                 self.db_lookup.insert(r.path.clone(), r);

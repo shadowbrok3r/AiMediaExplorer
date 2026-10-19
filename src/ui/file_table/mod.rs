@@ -4,9 +4,6 @@ use eframe::egui::*;
 use egui::style::StyleModifier;
 use humansize::DECIMAL;
 use serde::Serialize;
-use std::sync::Arc as StdArc;
-use std::sync::atomic::AtomicBool;
-use std::sync::{Mutex, OnceLock};
 use table::FileTableViewer;
 
 pub mod explorer;
@@ -17,24 +14,12 @@ pub mod quick_access_pane;
 pub mod receive;
 #[path = "../../rows/mod.rs"]
 pub mod rows;
+pub mod scope;
 pub mod table;
 #[path = "../../thumbs/mod.rs"]
 pub mod thumbs;
 
 pub use explorer::rows::{ExplorerViewStats, view_stats};
-
-/// Database pages kept in memory per explorer.
-const DB_PAGE_CACHE_MAX: usize = 3;
-
-// Global accessor for the current active logical group name to be used by viewer context menu actions.
-static ACTIVE_GROUP_NAME: OnceLock<Mutex<Option<String>>> = OnceLock::new();
-pub fn active_group_name() -> Option<String> {
-    ACTIVE_GROUP_NAME
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .ok()
-        .and_then(|g| g.clone())
-}
 
 // Request to open a new filtered tab in the dock
 #[derive(Clone, Debug)]
@@ -47,12 +32,6 @@ pub enum FilterRequest {
         similar_scores: Option<std::collections::HashMap<String, f32>>,
         // For similarity tabs, the origin that generated results (e.g., image path or "query:<text>")
         origin_path: Option<String>,
-        // Open without focusing the new tab
-        background: bool,
-    },
-    // Open a new tab that loads the entire database (DB mode, not filtered by current_path)
-    OpenDatabaseAll {
-        title: String,
         // Open without focusing the new tab
         background: bool,
     },
@@ -94,20 +73,10 @@ pub struct SimilarResult {
     pub clip_similarity_score: Option<f32>,
 }
 
-#[derive(Clone)]
-pub struct VideoFrame {
-    pub rgba: StdArc<[u8]>,
-    pub width: usize,
-    pub height: usize,
-    pub pts: f64,
-}
-
 #[derive(Serialize)]
 pub struct FileExplorer {
     #[serde(skip)]
     pub table: rows::RowStore<Thumbnail>,
-    #[serde(skip)]
-    pub table_index: explorer::rows::RetiredIndex,
     #[serde(skip)]
     pub view: rows::ViewIndex,
     #[serde(skip)]
@@ -137,10 +106,6 @@ pub struct FileExplorer {
     #[serde(skip)]
     scan_rx: Receiver<ScanEnvelope>,
     #[serde(skip)]
-    back_stack: Vec<String>,
-    #[serde(skip)]
-    forward_stack: Vec<String>,
-    #[serde(skip)]
     pending_thumb_rows: Vec<Thumbnail>,
     #[serde(skip)]
     ai_update_rx: Receiver<AIUpdate>,
@@ -161,21 +126,6 @@ pub struct FileExplorer {
     pub vision_completed: usize,
     #[serde(skip)]
     pub vision_pending: usize, // scheduled but not yet final
-    // Database paging state
-    #[serde(skip)]
-    pub db_offset: usize,
-    #[serde(skip)]
-    pub db_limit: usize,
-    #[serde(skip)]
-    pub db_last_batch_len: usize,
-    #[serde(skip)]
-    db_loading: bool,
-    // When true, the Database view shows all thumbnails in the DB (not filtered by current_path)
-    #[serde(skip)]
-    pub db_all_view: bool,
-    // Toggle: when true and in Database mode, the path input performs AI semantic search over the whole DB
-    #[serde(skip)]
-    ai_search_enabled: bool,
     // Track current scan id for cancellation
     #[serde(skip)]
     current_scan_id: Option<u64>,
@@ -208,8 +158,6 @@ pub struct FileExplorer {
     filter_groups_tx: Sender<Vec<crate::database::FilterGroup>>,
     #[serde(skip)]
     filter_groups_rx: Receiver<Vec<crate::database::FilterGroup>>,
-    // Logical group navigation
-    pub active_logical_group_name: Option<String>,
     #[serde(skip)]
     logical_groups: Vec<crate::database::LogicalGroup>,
     #[serde(skip)]
@@ -246,9 +194,6 @@ pub struct FileExplorer {
     // Track which scan_id owns this explorer so updates don't leak across tabs
     #[serde(skip)]
     owning_scan_id: Option<u64>,
-    // The cached_scan id for the currently running recursive scan (DB record)
-    #[serde(skip)]
-    _cached_scan_id: Option<surrealdb::types::RecordId>,
     // Cached WSL data to avoid recomputing every frame
     #[serde(skip)]
     cached_wsl_distros: Option<Vec<String>>,
@@ -265,12 +210,6 @@ pub struct FileExplorer {
     perf_last_total: Option<std::time::Duration>,
     #[serde(skip)]
     perf_show_per_1k: bool,
-    // Similarity incremental append state
-    #[serde(skip)]
-    similarity_origin_path: Option<String>,
-    similarity_query_offset: usize,
-    #[serde(skip)]
-    similarity_batch_size: usize,
     #[serde(skip)]
     pub recursive_page_size: usize,
     #[serde(skip)]
@@ -287,35 +226,10 @@ pub struct FileExplorer {
     #[serde(skip)]
     pub failed_thumbs: Vec<(String, String)>, // (path, error)
     #[serde(skip)]
-    pub failed_tab_opened: bool,
-    #[serde(skip)]
     repaint_next: bool,
+    // Where the tab is, where it came from and the loader feeding it
     #[serde(skip)]
-    pub video_frame_tx: crossbeam::channel::Sender<VideoFrame>,
-    #[serde(skip)]
-    pub video_frame_rx: crossbeam::channel::Receiver<VideoFrame>,
-    #[serde(skip)]
-    pub video_playing: bool,
-    #[serde(skip)]
-    pub video_stop_flag: StdArc<AtomicBool>,
-    #[serde(skip)]
-    pub video_texture: Option<egui::TextureHandle>,
-    #[serde(skip)]
-    pub video_duration_secs: Option<f32>,
-    #[serde(skip)]
-    pub video_position_secs: f32,
-
-    // Database paging state (for directory and All DB views)
-    #[serde(skip)]
-    pub db_current_page: usize,
-    #[serde(skip)]
-    pub db_page_cache: std::collections::BTreeMap<usize, Vec<crate::database::Thumbnail>>,
-    #[serde(skip)]
-    pub db_loading_page: Option<usize>,
-    #[serde(skip)]
-    pub db_max_loaded_page: usize,
-    #[serde(skip)]
-    pub db_reached_end: bool,
+    pub nav: scope::Nav,
 }
 
 impl FileExplorer {
@@ -323,20 +237,10 @@ impl FileExplorer {
         self.recursive_scan
     }
 
-    /// Stores a loaded database page, keeping only the pages nearest the current one.
-    pub(crate) fn cache_db_page(&mut self, page: usize, rows: Vec<Thumbnail>) {
-        self.db_page_cache.insert(page, rows);
-        while self.db_page_cache.len() > DB_PAGE_CACHE_MAX {
-            let current = self.db_current_page;
-            let Some(&farthest) = self.db_page_cache.keys().max_by_key(|p| p.abs_diff(current)) else { break };
-            self.db_page_cache.remove(&farthest);
-        }
-    }
     // New constructor that optionally skips initial directory scan/population
     pub fn new(skip_initial_scan: bool) -> Self {
         let (thumbnail_tx, thumbnail_rx) = crossbeam::channel::unbounded();
         let (scan_tx, scan_rx) = crossbeam::channel::unbounded();
-        let (video_frame_tx, video_frame_rx) = crossbeam::channel::unbounded();
         let (ai_update_tx, ai_update_rx) = crossbeam::channel::unbounded();
         let (clip_embedding_tx, clip_embedding_rx) = crossbeam::channel::unbounded();
         let (db_preload_tx, db_preload_rx) = crossbeam::channel::unbounded();
@@ -346,7 +250,6 @@ impl FileExplorer {
 
         let mut this = Self {
             table: Default::default(),
-            table_index: Default::default(),
             view: Default::default(),
             selection: Default::default(),
             details: Default::default(),
@@ -359,7 +262,7 @@ impl FileExplorer {
             files: Default::default(),
             open_preview_pane: false,
             open_quick_access: false,
-            current_path,
+            current_path: current_path.clone(),
             file_scan_progress: 0.0,
             recursive_scan: false,
             scan_done: false,
@@ -370,35 +273,15 @@ impl FileExplorer {
             thumbnail_rx,
             scan_tx,
             scan_rx,
-            back_stack: Vec::new(),
-            forward_stack: Vec::new(),
             pending_thumb_rows: Vec::new(),
             ai_update_rx,
             streaming_interim: std::collections::HashMap::new(),
-            video_frame_tx,
-            video_frame_rx,
-            video_playing: false,
-            video_stop_flag: StdArc::new(AtomicBool::new(false)),
-            video_texture: None,
-            video_duration_secs: None,
-            video_position_secs: 0.0,
             follow_active_vision: false,
             clip_presence: std::collections::HashSet::new(),
             clip_embedding_rx,
             vision_started: 0,
             vision_completed: 0,
             vision_pending: 0,
-            db_offset: 0,
-            db_limit: 5_000,
-            db_last_batch_len: 0,
-            db_loading: false,
-            db_all_view: false,
-            db_current_page: 0,
-            db_page_cache: std::collections::BTreeMap::new(),
-            db_loading_page: None,
-            db_max_loaded_page: 0,
-            db_reached_end: false,
-            ai_search_enabled: false,
             current_scan_id: None,
             db_lookup: std::collections::HashMap::new(),
             db_preload_rx,
@@ -413,7 +296,6 @@ impl FileExplorer {
             filter_groups: Vec::new(),
             filter_groups_tx,
             filter_groups_rx,
-            active_logical_group_name: None,
             logical_groups: Vec::new(),
             logical_groups_tx,
             logical_groups_rx,
@@ -430,7 +312,6 @@ impl FileExplorer {
             zip_password_input: String::new(),
             show_zip_modal: false,
             owning_scan_id: None,
-            _cached_scan_id: None,
             cached_wsl_distros: Some(crate::utilities::explorer::list_wsl_distros()),
             cached_physical_drives: Some(crate::utilities::explorer::list_physical_drives()),
             batch_size: 128,
@@ -439,9 +320,6 @@ impl FileExplorer {
             perf_batches: Vec::new(),
             perf_last_total: None,
             perf_show_per_1k: false,
-            similarity_origin_path: None,
-            similarity_query_offset: 0,
-            similarity_batch_size: 50,
             recursive_page_size: 5_000,
             recursive_current_page: 0,
             recursive_total_pages: 0,
@@ -449,8 +327,8 @@ impl FileExplorer {
             recursive_sort_key: None,
             recursive_filter_sig: None,
             failed_thumbs: Vec::new(),
-            failed_tab_opened: false,
             repaint_next: false,
+            nav: scope::Nav::new(crate::command::Scope::Folder(current_path.clone())),
         };
         // Preload saved filter groups
         {
@@ -461,18 +339,6 @@ impl FileExplorer {
                         let _ = tx.try_send(groups);
                     }
                     Err(e) => log::warn!("No filter groups yet or failed to load: {e:?}"),
-                }
-            });
-        }
-        // Preload logical groups list
-        {
-            let tx = this.logical_groups_tx.clone();
-            tokio::spawn(async move {
-                match crate::database::LogicalGroup::list_all().await {
-                    Ok(groups) => {
-                        let _ = tx.try_send(groups);
-                    }
-                    Err(e) => log::warn!("No logical groups yet or failed to load: {e:?}"),
                 }
             });
         }
@@ -495,6 +361,7 @@ impl FileExplorer {
         self.quick_access_pane(ui);
         self.navbar(ui);
         self.breadcrumbs(ui);
+        self.scope_footer(ui);
 
         // For recursive scan pagination: ensure filtered snapshot stays in sync with current user filter
         if self.recursive_scan {
@@ -591,82 +458,6 @@ impl FileExplorer {
                         ui.separator();
                         ui.label(format!("Rows {}-{}", start_idx + 1, end_idx));
                     }
-                });
-                ui.separator();
-            }
-            // Database mode pagination (directory and All DB views)
-            if self.viewer.mode == table::ExplorerMode::Database && !self.viewer.showing_similarity
-            {
-                ui.horizontal(|ui| {
-                    let current_page = self.db_current_page;
-                    let next_page = current_page + 1;
-                    let can_prev = current_page > 0 && !self.db_loading;
-                    let can_next = if self.db_loading {
-                        false
-                    } else {
-                        if self.db_reached_end && next_page > self.db_max_loaded_page {
-                            false
-                        } else {
-                            true
-                        }
-                    };
-                    if ui
-                        .add_enabled(can_prev, egui::Button::new("Prev Page"))
-                        .clicked()
-                    {
-                        // Target previous page index and offset
-                        let target_page = current_page.saturating_sub(1);
-                        let new_off = target_page * self.db_limit;
-                        self.db_offset = new_off;
-                        self.db_current_page = target_page;
-                        self.db_last_batch_len = 0;
-                        self.viewer.thumbs.new_scope(self.viewer.scope);
-                        // If we have this page cached, swap it in; else trigger a load
-                        if let Some(rows) = self.db_page_cache.get(&target_page).cloned() {
-                            self.table.replace_all(rows);
-                            self.db_last_batch_len = self.table.len();
-                            self.db_loading = false;
-                        } else {
-                            self.table.clear();
-                            self.db_loading_page = Some(target_page);
-                            if self.db_all_view {
-                                self.load_all_database_rows();
-                            } else {
-                                self.load_database_rows();
-                            }
-                        }
-                    }
-                    if ui
-                        .add_enabled(can_next, egui::Button::new("Next Page"))
-                        .clicked()
-                    {
-                        self.db_last_batch_len = 0;
-                        let target_page = current_page + 1;
-                        self.db_offset = target_page * self.db_limit;
-                        self.db_current_page = target_page;
-                        self.viewer.thumbs.new_scope(self.viewer.scope);
-                        if let Some(rows) = self.db_page_cache.get(&target_page).cloned() {
-                            self.table.replace_all(rows);
-                            self.db_last_batch_len = self.table.len();
-                            self.db_loading = false;
-                        } else {
-                            self.table.clear();
-                            self.db_loading_page = Some(target_page);
-                            if self.db_all_view {
-                                self.load_all_database_rows();
-                            } else {
-                                self.load_database_rows();
-                            }
-                        }
-                    }
-                    ui.separator();
-                    ui.label(format!(
-                        "Page {} · Offset {} · Page size {}{}",
-                        current_page + 1,
-                        self.db_offset,
-                        self.db_limit,
-                        if self.db_all_view { " · All DB" } else { "" }
-                    ));
                 });
                 ui.separator();
             }
@@ -786,152 +577,7 @@ impl FileExplorer {
                     });
             }
 
-            // Check for tag/category open-tab actions requested by the viewer
-            if !self.viewer.requested_tabs.is_empty() {
-                let actions = std::mem::take(&mut self.viewer.requested_tabs);
-                for act in actions.into_iter() {
-                    match act {
-                        crate::ui::file_table::table::TabAction::OpenCategory(cat) => {
-                            let title = format!("Category: {}", cat);
-                            // Prefer current-table filter; if none (e.g., from virtual view), fetch from DB
-                            let rows_in_view: Vec<crate::database::Thumbnail> = self
-                                .table
-                                .iter()
-                                .filter(|r| r.category.as_deref() == Some(cat.as_str()))
-                                .cloned()
-                                .collect();
-                            if rows_in_view.is_empty()
-                                || matches!(self.viewer.mode, table::ExplorerMode::Database)
-                            {
-                                tokio::spawn(async move {
-                                    let fetched = crate::Thumbnail::fetch_by_category(&cat)
-                                        .await
-                                        .unwrap_or_default();
-                                    crate::app::OPEN_TAB_REQUESTS.lock().unwrap().push(
-                                        crate::ui::file_table::FilterRequest::NewTab {
-                                            title,
-                                            rows: fetched,
-                                            showing_similarity: false,
-                                            similar_scores: None,
-                                            origin_path: None,
-                                            background: false,
-                                        },
-                                    );
-                                });
-                            } else {
-                                crate::app::OPEN_TAB_REQUESTS.lock().unwrap().push(
-                                    crate::ui::file_table::FilterRequest::NewTab {
-                                        title,
-                                        rows: rows_in_view,
-                                        showing_similarity: false,
-                                        similar_scores: None,
-                                        origin_path: None,
-                                        background: false,
-                                    },
-                                );
-                            }
-                        }
-                        crate::ui::file_table::table::TabAction::OpenTag(tag) => {
-                            let title = format!("Tag: {}", tag);
-                            let rows_in_view: Vec<crate::database::Thumbnail> = self
-                                .table
-                                .iter()
-                                .filter(|r| r.tags.iter().any(|t| t.eq_ignore_ascii_case(&tag)))
-                                .cloned()
-                                .collect();
-                            if rows_in_view.is_empty()
-                                || matches!(self.viewer.mode, table::ExplorerMode::Database)
-                            {
-                                tokio::spawn(async move {
-                                    let fetched = crate::Thumbnail::fetch_by_tag(&tag)
-                                        .await
-                                        .unwrap_or_default();
-                                    crate::app::OPEN_TAB_REQUESTS.lock().unwrap().push(
-                                        crate::ui::file_table::FilterRequest::NewTab {
-                                            title,
-                                            rows: fetched,
-                                            showing_similarity: false,
-                                            similar_scores: None,
-                                            origin_path: None,
-                                            background: false,
-                                        },
-                                    );
-                                });
-                            } else {
-                                crate::app::OPEN_TAB_REQUESTS.lock().unwrap().push(
-                                    crate::ui::file_table::FilterRequest::NewTab {
-                                        title,
-                                        rows: rows_in_view,
-                                        showing_similarity: false,
-                                        similar_scores: None,
-                                        origin_path: None,
-                                        background: false,
-                                    },
-                                );
-                            }
-                        }
-                        crate::ui::file_table::table::TabAction::OpenArchive(path_clicked) => {
-                            // Choose scheme based on extension (zip or tar family)
-                            let is_virtual = path_clicked.starts_with("zip://")
-                                || path_clicked.starts_with("tar://")
-                                || path_clicked.starts_with("7z://");
-                            let vpath = if is_virtual {
-                                path_clicked
-                            } else {
-                                let ext = std::path::Path::new(&path_clicked)
-                                    .extension()
-                                    .and_then(|e| e.to_str())
-                                    .map(|s| s.to_ascii_lowercase())
-                                    .unwrap_or_default();
-                                let name = path_clicked.to_ascii_lowercase();
-                                let is_tar_family = ext == "tar"
-                                    || ext == "gz"
-                                    || ext == "bz"
-                                    || ext == "bz2"
-                                    || ext == "xz"
-                                    || name.ends_with(".tgz")
-                                    || name.ends_with(".tbz")
-                                    || name.ends_with(".tbz2")
-                                    || name.ends_with(".txz")
-                                    || name.ends_with(".tar.gz")
-                                    || name.ends_with(".tar.bz2")
-                                    || name.ends_with(".tar.xz");
-                                if is_tar_family {
-                                    format!("tar://{}!/", path_clicked)
-                                } else if ext == "7z" {
-                                    format!("7z://{}!/", path_clicked)
-                                } else {
-                                    format!("zip://{}!/", path_clicked)
-                                }
-                            };
-                            self.current_path = vpath;
-                            self.populate_current_directory();
-                        }
-                        crate::ui::file_table::table::TabAction::OpenSimilar(filename) => {
-                            let title = format!("Similar to {filename}");
-                            // If similar results are present, use them; else fallback to current table (no filtering)
-                            let rows: Vec<crate::database::Thumbnail> =
-                                if self.viewer.showing_similarity
-                                    && !self.viewer.similar_scores.is_empty()
-                                {
-                                    self.table.iter().cloned().collect()
-                                } else {
-                                    Vec::new()
-                                };
-                            crate::app::OPEN_TAB_REQUESTS.lock().unwrap().push(
-                                crate::ui::file_table::FilterRequest::NewTab {
-                                    title,
-                                    rows,
-                                    showing_similarity: true,
-                                    similar_scores: Some(self.viewer.similar_scores.clone()),
-                                    origin_path: Some(filename),
-                                    background: false,
-                                },
-                            );
-                        }
-                    }
-                }
-            }
+            self.apply_tab_actions(ui);
 
             // Summary inline (counts) if selection active
             if !self.selection.is_empty() {
@@ -939,163 +585,36 @@ impl FileExplorer {
                 ui.label(format!("Selected: {}", self.selection.len()));
             }
 
-            if self.viewer.mode == table::ExplorerMode::Database && !self.viewer.showing_similarity
-            {
-                ui.separator();
-                ui.horizontal(|ui| {
-                    if self.db_all_view {
-                        ui.colored_label(crate::theme::info(ui), "All DB");
-                        ui.separator();
-                    }
-                    if self.db_loading {
-                        ui.label(RichText::new("Loading page ...").italics());
-                    }
-                    ui.label(format!("Loaded: {} rows", self.table.len()));
-                });
-            }
-
             // Similarity button relocated to navbar
         });
+        self.auto_load_more();
         self.viewer.thumbs.record_ui_time(started.elapsed());
+    }
+
+    /// Opens what a click on a category, tag or archive in the table asked for; Ctrl opens a new tab.
+    fn apply_tab_actions(&mut self, ui: &Ui) {
+        if self.viewer.requested_tabs.is_empty() {
+            return;
+        }
+        let new_tab = ui.input(|i| i.modifiers.command || i.modifiers.ctrl);
+        for action in std::mem::take(&mut self.viewer.requested_tabs) {
+            let scope = match action {
+                table::TabAction::OpenCategory(category) => crate::command::Scope::Category(category),
+                table::TabAction::OpenTag(tag) => crate::command::Scope::Tag(tag),
+                table::TabAction::OpenSimilar(path) => crate::command::Scope::Similar(path),
+                table::TabAction::OpenArchive(path) => explorer::archive_scope(&path),
+            };
+            if new_tab {
+                crate::command::send(crate::command::AppCommand::OpenScope { scope, target: crate::command::Target::NewTab, title: None, recursive: false });
+            } else if let Err(reason) = self.open_scope(scope) {
+                crate::ui::dialogs::toast(egui_toast::ToastKind::Error, reason);
+            }
+        }
     }
 
     /// Number of selected rows in the current table.
     pub fn selection_count(&self) -> usize {
         self.selection.len()
-    }
-
-    pub fn append_more_similar(&mut self) {
-        if !self.viewer.showing_similarity {
-            return;
-        }
-        let origin = if let Some(o) = self.similarity_origin_path.clone() {
-            o
-        } else {
-            return;
-        };
-        let batch = self.similarity_batch_size;
-        let tx_updates = self.viewer.ai_update_tx.clone();
-        let existing: std::collections::HashSet<String> =
-            self.table.iter().map(|r| r.path.clone()).collect();
-        // If this is a text query (origin starts with query:) embed that text; otherwise treat origin as a path to embed its image
-        if let Some(qtext) = origin.strip_prefix("query:") {
-            let qtext = qtext.to_string();
-            let start = self.similarity_query_offset;
-            let batch = batch; // capture
-            let _offset_tx = self.viewer.ai_update_tx.clone();
-            tokio::spawn(async move {
-                // Ensure engine
-                let _ = crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await;
-                let embed_opt = {
-                    let mut guard = crate::ai::GLOBAL_AI_ENGINE.clip_engine.lock().await;
-                    if let Some(engine) = guard.as_mut() {
-                        engine.embed_text(&qtext).ok()
-                    } else {
-                        None
-                    }
-                };
-                if let Some(embed_vec) = embed_opt {
-                    let k = batch * 2; // oversample
-                    if let Ok(hits) = crate::database::ClipEmbeddingRow::find_similar_by_embedding(
-                        &embed_vec, k, 256, start,
-                    )
-                    .await
-                    {
-                        let mut results: Vec<crate::ui::file_table::SimilarResult> = Vec::new();
-                        for hit in hits.into_iter() {
-                            if existing.contains(&hit.path) {
-                                continue;
-                            }
-                            let thumb = if let Some(t) = hit.thumb_ref {
-                                t
-                            } else {
-                                crate::Thumbnail::get_thumbnail_by_path(&hit.path)
-                                    .await
-                                    .unwrap_or(None)
-                                    .unwrap_or_default()
-                            };
-                            let cosine_sim = 1.0 - hit.dist;
-                            let norm_sim = ((cosine_sim + 1.0) / 2.0).clamp(0.0, 1.0);
-                            results.push(crate::ui::file_table::SimilarResult {
-                                thumb: thumb.clone(),
-                                created: None,
-                                updated: None,
-                                similarity_score: Some(norm_sim),
-                                clip_similarity_score: Some(norm_sim),
-                            });
-                            if results.len() >= batch {
-                                break;
-                            }
-                        }
-                        if !results.is_empty() {
-                            let _ = tx_updates.try_send(
-                                crate::ui::file_table::AIUpdate::SimilarResults {
-                                    origin_path: format!("query:{qtext}"),
-                                    results,
-                                },
-                            );
-                        }
-                    }
-                }
-            });
-            // Increment offset immediately for next batch
-            self.similarity_query_offset += batch;
-            return;
-        }
-        // Fallback: original behavior using origin path's embedding
-        tokio::spawn(async move {
-            if let Ok(Some(thumb)) = crate::Thumbnail::get_thumbnail_by_path(&origin).await {
-                let embed_vec = thumb
-                    .get_embedding()
-                    .await
-                    .unwrap_or_default()
-                    .embedding
-                    .clone();
-                if embed_vec.is_empty() {
-                    return;
-                }
-                let k = existing.len() + batch * 4; // oversample to get enough new uniques
-                if let Ok(hits) = crate::database::ClipEmbeddingRow::find_similar_by_embedding(
-                    &embed_vec, k, 256, 0,
-                )
-                .await
-                {
-                    let mut results: Vec<crate::ui::file_table::SimilarResult> = Vec::new();
-                    for hit in hits.into_iter() {
-                        if existing.contains(&hit.path) {
-                            continue;
-                        }
-                        let thumb = if let Some(t) = hit.thumb_ref {
-                            t
-                        } else {
-                            crate::Thumbnail::get_thumbnail_by_path(&hit.path)
-                                .await
-                                .unwrap_or(None)
-                                .unwrap_or_default()
-                        };
-                        let cosine_sim = 1.0 - hit.dist;
-                        let norm_sim = ((cosine_sim + 1.0) / 2.0).clamp(0.0, 1.0);
-                        results.push(crate::ui::file_table::SimilarResult {
-                            thumb: thumb.clone(),
-                            created: None,
-                            updated: None,
-                            similarity_score: Some(norm_sim),
-                            clip_similarity_score: Some(norm_sim),
-                        });
-                        if results.len() >= batch {
-                            break;
-                        }
-                    }
-                    if !results.is_empty() {
-                        let _ =
-                            tx_updates.try_send(crate::ui::file_table::AIUpdate::SimilarResults {
-                                origin_path: origin.clone(),
-                                results,
-                            });
-                    }
-                }
-            }
-        });
     }
 
     // Recompute total pages for current recursive snapshot (uses filtered rows for accurate pagination)

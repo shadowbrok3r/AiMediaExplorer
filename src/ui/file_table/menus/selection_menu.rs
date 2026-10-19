@@ -8,7 +8,6 @@ use surrealdb::types::RecordId;
 
 use crate::database::Thumbnail;
 use crate::ui::dialogs;
-use crate::ui::file_table::table::ExplorerMode;
 
 /// Names listed in a confirmation before the rest are summarised as a count.
 const NAME_PREVIEW: usize = 5;
@@ -120,26 +119,24 @@ impl crate::ui::file_table::FileExplorer {
                 ui.close();
             }
 
-            if self.viewer.mode == ExplorerMode::Database {
-                ui.horizontal(|ui| {
-                    if ui.add_enabled(has_files, Button::new("Attach to chat window")).on_hover_text(hint).clicked() {
-                        crate::ui::assistant::request_attach_to_chat(file_paths.clone());
+            ui.horizontal(|ui| {
+                if ui.add_enabled(has_files, Button::new("Attach to chat window")).on_hover_text(hint).clicked() {
+                    crate::ui::assistant::request_attach_to_chat(file_paths.clone());
+                    ui.close();
+                }
+                let delete = ui.add_enabled(delete_plan.is_some(), crate::theme::danger_button(format!("Delete {n} From DB")))
+                    .on_hover_text("Remove the selected rows from the database, including their CLIP embeddings. Files on disk are NOT affected.");
+                if delete.clicked() {
+                    if let Some(plan) = delete_plan.clone() {
+                        ui.ctx().data_mut(|d| d.insert_temp(pending_id, Pending::Delete(plan)));
                         ui.close();
                     }
-                    let delete = ui.add_enabled(delete_plan.is_some(), crate::theme::danger_button(format!("Delete {n} From DB")))
-                        .on_hover_text("Remove the selected rows from the database, including their CLIP embeddings. Files on disk are NOT affected.");
-                    if delete.clicked() {
-                        if let Some(plan) = delete_plan.clone() {
-                            ui.ctx().data_mut(|d| d.insert_temp(pending_id, Pending::Delete(plan)));
-                            ui.close();
-                        }
-                    }
-                    if ui.add_enabled(has_files, Button::new("Refine selection")).on_hover_text("Send the selected files to the AI Refinements tab").clicked() {
-                        crate::ui::refine::request_refine_for_paths(file_paths.clone());
-                        ui.close();
-                    }
-                });
-            }
+                }
+                if ui.add_enabled(has_files, Button::new("Refine selection")).on_hover_text("Send the selected files to the AI Refinements tab").clicked() {
+                    crate::ui::refine::request_refine_for_paths(file_paths.clone());
+                    ui.close();
+                }
+            });
         });
     }
 

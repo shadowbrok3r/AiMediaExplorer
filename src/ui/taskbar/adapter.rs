@@ -24,6 +24,7 @@ pub fn view_signature(ex: &FileExplorer) -> Signature {
     ex.viewer.filter.hash(&mut h);
     (ex.viewer.types_show_images, ex.viewer.types_show_videos, ex.viewer.types_show_dirs).hash(&mut h);
     (ex.viewer.mode as u8, ex.viewer.showing_similarity).hash(&mut h);
+    ex.scope().format().hash(&mut h);
     (ex.is_recursive_scan(), ex.recursive_total_filtered(), ex.recursive_total_unfiltered()).hash(&mut h);
     crate::settings::store().generation().hash(&mut h);
     h.finish()
@@ -74,18 +75,18 @@ pub fn clear_filters(ex: &mut FileExplorer) {
 pub fn explorer_probe(tab: &str, ex: &FileExplorer) -> ExplorerProbe {
     ExplorerProbe {
         tab: tab.to_string(),
-        scan_id: None,
+        scan_id: ex.scan_id(),
         scan_progress: ex.file_scan_progress,
         scan_done: ex.scan_done,
         failed_thumbs: ex.failed_thumbs.len(),
-        archive_prompts: 0,
+        archive_prompts: ex.archive_prompt_count(),
     }
 }
 
 /// What the task sources need to know about the application this frame.
 pub fn app_probe(ctx: &mut SmartMediaContext) -> AppProbe {
-    let mut explorers = vec![explorer_probe(crate::app::MAIN_EXPLORER_TAB, &ctx.file_explorer)];
-    explorers.extend(ctx.filtered_tabs.iter().map(|(title, ex)| explorer_probe(title, ex)));
+    let mut explorers = vec![explorer_probe(&ctx.file_explorer.tab_title(), &ctx.file_explorer)];
+    explorers.extend(ctx.filtered_tabs.values().map(|ex| explorer_probe(&ex.tab_title(), ex)));
     AppProbe { explorers, image_edit_cancel: ctx.image_edit.cancel_handle() }
 }
 

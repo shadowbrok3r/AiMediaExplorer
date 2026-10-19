@@ -6,6 +6,7 @@ pub mod db_maintenance;
 pub mod legacy_import;
 pub mod perf;
 pub mod row_store;
+pub mod scope;
 pub mod settings_store;
 pub mod tasks;
 pub mod thumb_cache;
@@ -52,6 +53,10 @@ pub fn toggle_video(ctx: &Context) {
     video::toggle(ctx);
 }
 
+pub fn toggle_scope(ctx: &Context) {
+    scope::set_open(ctx, !scope::is_open(ctx));
+}
+
 pub fn toggle_tasks(ctx: &Context) {
     tasks::set_open(ctx, !tasks::is_open(ctx));
 }
@@ -79,6 +84,7 @@ pub fn open(ctx: &Context, window: DevtoolsWindow) {
         DevtoolsWindow::RowStore => row_store::set_open(ctx, true),
         DevtoolsWindow::Collections => collections::set_open(ctx, true),
         DevtoolsWindow::Video => video::set_open(ctx, true),
+        DevtoolsWindow::Scope => scope::set_open(ctx, true),
     }
     ctx.request_repaint();
 }
@@ -96,6 +102,7 @@ pub fn show(ctx: &Context) {
     perf::show(ctx);
     collections::show(ctx);
     video::show(ctx);
+    scope::show(ctx);
 }
 
 #[cfg(test)]
@@ -115,6 +122,7 @@ mod tests {
             DevtoolsWindow::RowStore => row_store::is_open(ctx),
             DevtoolsWindow::Collections => collections::is_open(ctx),
             DevtoolsWindow::Video => video::is_open(ctx),
+            DevtoolsWindow::Scope => scope::is_open(ctx),
             DevtoolsWindow::ThemePanel => crate::theme::debug_panel::is_open(ctx),
         }
     }
@@ -135,6 +143,7 @@ mod tests {
             DevtoolsWindow::RowStore,
             DevtoolsWindow::Collections,
             DevtoolsWindow::Video,
+            DevtoolsWindow::Scope,
         ];
         for w in windows {
             assert!(!is_open(&ctx, w), "{w:?} starts closed");

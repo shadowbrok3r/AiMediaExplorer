@@ -11,7 +11,7 @@ The JSON form is the stable surface. Names are `snake_case`. Fields marked optio
 | Rust | `crate::command::send(AppCommand::...)` from any thread; the next frame runs it |
 | Text | `crate::command::send_text(text)`: a JSON object, a JSON array of objects, or a scope string (opens the scope in a new tab) |
 | Devtools | View > Devtools > Command log: the runner box takes the same text; Run again re-sends a logged command |
-| Command line | `--run '<json or scope>'` (repeatable) and `--devtools tasks,command-log,perf` queue commands for the first frame |
+| Command line | `--run '<json or scope>'`, `--scope '<scope>'` (both repeatable) and `--devtools tasks,command-log,perf` queue commands for the first frame |
 
 The dispatcher drains the bus once per frame (at most 256 commands), runs each against the application and records it in the command log (500 entries; Devtools > Command log). A failed command shows a warning toast naming it, at most three per frame.
 
@@ -35,7 +35,35 @@ A scope says what a browser tab shows. Its string form is lossless: `Scope::pars
 
 Smart views: `no-clip`, `undescribed`, `untagged`, `failed-thumbs`, `duplicates`.
 
-Scopes the application can open today: `fs:`, archives, `lib:all`, `tag:`, `cat:` and `smart:failed-thumbs`. The others return an `unsupported` error until their loaders exist.
+Every scope can be opened. A scope shown in a tab replaces what the tab showed and is remembered in the history of that tab (see [Navigation](#navigation)).
+
+| Scope | What the tab lists |
+|---|---|
+| `fs:<path>` | The folder, listed by the file scanner and merged with the library rows of the folder. `recursive` lists everything below it and records the scan |
+| archive | The inside of the archive, with the password prompt for encrypted ones |
+| `lib:all` | Every row of the library in path order, read in batches of 500 while the view fills |
+| `recent:all` | The 1000 newest additions to the library, newest first |
+| `col:<name>` | The members of the collection in path order, 500 at a time. Members that are not in the library are listed from the file system and carry the Not indexed badge |
+| `tag:<tag>` | Rows with exactly that tag |
+| `cat:<category>` | Rows of exactly that category |
+| `q:sem:"<text>"` | The files closest to the text by CLIP, 100 per page, nearest first, with a Similarity column |
+| `sim:<path>` | The files closest to the CLIP embedding of that file, the file itself left out, 100 per page. A file without an embedding fails with a message saying so |
+| `scan:<id>` | The files a recorded recursive scan found. The id is the number in the scan's title (`Scan #<id>`); ids are unique across launches |
+| `smart:no-clip` | Images with no CLIP embedding |
+| `smart:undescribed` | Images with no description or an empty one |
+| `smart:untagged` | Rows with no tags |
+| `smart:failed-thumbs` | Files whose thumbnail failed in any tab since the application started; the same list the Needs attention entry counts |
+| `smart:duplicates` | Files with identical contents, see below |
+
+Search scopes show the first page and a footer under the rows with **Load more**; scrolling to the last row loads the next page by itself. The similarity is the cosine similarity of the CLIP vectors, from 1.0 (the same) downwards.
+
+### Duplicates
+
+`smart:duplicates` reads the library once in path order and groups the rows by size, which needs no file access. Only groups of two or more files are checked further. A row that has a stored content hash (blake3 of the whole file, written by indexing) uses it; the other rows of the group are read and hashed with blake3 on background threads, four at a time. Rows that share a size and a hash form a group of exact duplicates. The view lists the members of all groups, one group after the other, and the Hash column shows the group's hash. Near-duplicates (resized or re-encoded copies) are not found by this view; use `sim:<path>` for those.
+
+### Badges
+
+Each file row shows a badge in the Name column: **Indexed** (in the library), **Not indexed** (on disk only) and **Offline** (in the library but missing on disk). The disk check runs in the background for rows that are drawn, once per file a minute, never over the whole view.
 
 ## Commands
 
@@ -50,9 +78,19 @@ Shows a scope in a tab.
 | Field | Meaning |
 |---|---|
 | `scope` | A scope string |
-| `target` | `current` (replace the focused tab; folders, archives and the library only), `new_tab` (default), `background` (new tab behind the focused one) |
-| `title` | Optional tab title |
+| `target` | `current` (default; replace what the focused tab shows and push its history), `new_tab` (a new tab that takes focus), `background` (a new tab behind the focused one) |
+| `title` | Optional tab title; the tab goes back to the title its scope gives once it navigates |
 | `recursive` | Optional; scan the folder recursively |
+
+A folder or archive that does not exist is a `not_found` error and changes nothing. If a tool tab is in front, `current` brings the browser forward first. Searches, similar-to, tags and categories never open tabs on their own: a click replaces the tab, and Ctrl+click opens a new one.
+
+### navigate
+
+Moves the focused tab. `op`: `back`, `forward`, `up` (the parent folder, or the library for any scope that is not a place on disk), `home`, `refresh` (read the scope again, keeping the history), `load_more` (the next page of a search) and `cancel` (stop the load in flight). An operation that has nowhere to go is an `invalid` error. Alt+Left, Alt+Right and Alt+Up (and the mouse back and forward buttons) send the same commands.
+
+```json
+{"cmd": "navigate", "op": "back"}
+```
 
 ### open_rows
 
@@ -160,10 +198,20 @@ Selects and previews the row of a path in the focused tab; `not_found` when the 
 
 ### open_devtools
 
-Opens a debug window: `theme_panel`, `settings_store`, `db_maintenance`, `legacy_import`, `thumb_storage`, `thumb_cache`, `tasks`, `command_log`, `perf`, `row_store`, `collections`, `video`.
+Opens a debug window: `theme_panel`, `settings_store`, `db_maintenance`, `legacy_import`, `thumb_storage`, `thumb_cache`, `tasks`, `command_log`, `perf`, `row_store`, `collections`, `video`, `scope`.
+
+The `scope` window takes a scope string and shows how it parses (kind, title, parent, whether a folder exists), opens it in the focused tab or a new one, steps back and forward, lists the history stack of the focused tab with the scroll row and selection saved in each entry, and shows the timing of its recent loads: rows, batches, time to the first batch and total time.
 
 ```json
 {"cmd": "open_devtools", "window": "tasks"}
+```
+
+### connect_database
+
+Opens the database at the configured folder. The application does this by itself at start-up when the folder exists, as a Database task; when it fails, Needs attention lists it with a Retry button that sends this command. It does nothing when the database is already open.
+
+```json
+{"cmd": "connect_database"}
 ```
 
 ### show_task_center
@@ -173,6 +221,14 @@ Opens the task list popover of the status bar.
 ```json
 {"cmd": "show_task_center"}
 ```
+
+## Navigation
+
+Every browser tab keeps a history: the scopes it showed, with the first row on screen and the selected row when the user left each. Back and Forward bring the scope back with that view; the rows are read again, and the position returns once they have arrived. A scope that cannot be opened any more (a folder that was deleted) leaves the tab where it is and the reason shows in the footer.
+
+A tab is named after its scope (a folder's name, `Tag: sunset`, `Search: red car`); a title given with a command lasts until the tab navigates. The address box of the toolbar takes a scope string or a plain path.
+
+Loads run as Database tasks in the status bar and can be cancelled there; a failed load keeps the rows already read, shows the reason in the footer with a Retry, and the task list offers the same retry.
 
 ## Results
 
@@ -195,6 +251,7 @@ The statics that predate the bus still exist as thin wrappers, so existing call 
 | `app::OPEN_SETTINGS_REQUEST.store(true, _)` | queues `show_settings` |
 | `assistant::request_attach_to_chat(paths)` | queues `attach_to_assistant` |
 | `refine::request_refine_for_paths(paths)` | queues `refine` |
-| `file_table::ACTIVE_GROUP_NAME` | `command::context::active_collection()` is the shared accessor; the explorer still writes its own static until it is switched over |
+| `file_table::ACTIVE_GROUP_NAME` | removed; `command::context::{active_collection, set_active_collection}` hold the collection scanned and selected files are added to |
+| `FilterRequest::OpenDatabaseAll` | removed; `open_scope` with `lib:all` |
 
 `assistant::ATTACH_REQUESTS` and `refine::REFINE_SELECTION_REQUESTS` remain as the mailboxes the dispatcher fills for the panels, which read them while they are shown.

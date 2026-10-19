@@ -3,7 +3,7 @@ use crossbeam::channel::{Receiver, Sender};
 use egui_dock::{DockState, NodePath, SurfaceIndex};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use crate::{ui::{file_table::FileExplorer, refine::RefinementsPanel}, UiSettings};
+use crate::{ui::{file_table::FileExplorer, refine::RefinementsPanel, tabs::{BrowserId, TabKind}}, UiSettings};
 use egui_toast::Toasts;
 use crate::theme::chrome::Chrome;
 
@@ -16,7 +16,7 @@ pub const MAX_NEW_TOKENS: usize = 200;
 pub const TEMPERATURE: f32 = 0.5;
 
 pub struct SmartMediaApp {
-    pub tree: DockState<String>,
+    pub tree: DockState<TabKind>,
     pub context: SmartMediaContext,
     pub egui_ctx: Context,
     pub chrome: Chrome,
@@ -54,9 +54,9 @@ pub struct SmartMediaContext {
     // Dock add-button presses waiting to become new explorer tabs
     pub pending_tab_adds: Vec<NodePath>,
     pub file_explorer: crate::ui::file_table::FileExplorer,
-    pub open_tabs: HashSet<String>,
-    // Map of dynamic tab title -> a dedicated FileExplorer instance with filters applied
-    pub filtered_tabs: std::collections::HashMap<String, crate::ui::file_table::FileExplorer>,
+    pub open_tabs: HashSet<TabKind>,
+    // Browsers other than the main one, by tab id
+    pub filtered_tabs: std::collections::HashMap<BrowserId, crate::ui::file_table::FileExplorer>,
     pub assistant: crate::ui::assistant::AssistantPanel,
     pub refinements: crate::ui::refine::RefinementsPanel,
     pub image_edit: crate::ui::image_edit::ImageEditPanel,
@@ -74,8 +74,8 @@ pub struct SmartMediaContext {
     // Channel for AI Refinements proposals
     pub refine_tx: Sender<Vec<crate::ui::refine::RefinementProposal>>,
     pub refine_rx: Receiver<Vec<crate::ui::refine::RefinementProposal>>,
-    // Title of the focused explorer tab (updated each frame from the dock state)
-    pub active_tab_title: Option<String>,
+    // The focused browser tab (updated each frame from the dock state)
+    pub active_tab: Option<TabKind>,
     pub ref_old_category: String,
     pub ref_new_category: String,
     pub ref_old_tag: String,
@@ -113,10 +113,7 @@ impl SmartMediaApp {
         let (toast_tx, toast_rx) = crossbeam::channel::unbounded();
         let (refine_tx, refine_rx) = crossbeam::channel::unbounded();
         
-        let mut tree = DockState::new(vec![
-            "File Explorer".to_owned(),
-            "Logs".to_owned(),
-        ]);
+        let mut tree = DockState::new(vec![TabKind::MAIN, TabKind::Logs]);
 
         "Undock".clone_into(&mut tree.translations.tab_context_menu.eject_button);
 
@@ -127,7 +124,7 @@ impl SmartMediaApp {
         for node in tree[SurfaceIndex::main()].iter() {
             if let Some(tabs) = node.tabs() {
                 for tab in tabs {
-                    open_tabs.insert(tab.clone());
+                    open_tabs.insert(*tab);
                 }
             }
         }
@@ -164,7 +161,7 @@ impl SmartMediaApp {
             toast_rx,
             refine_tx,
             refine_rx,
-            active_tab_title: None,
+            active_tab: None,
             ref_old_category: String::new(),
             ref_new_category: String::new(),
             ref_old_tag: String::new(),
@@ -184,42 +181,65 @@ impl SmartMediaApp {
 
 
 impl SmartMediaContext {
-    /// The explorer of the focused explorer tab, or the main explorer when that tab is unknown.
+    /// The explorer of the focused browser tab, or the main explorer when that tab is unknown.
     pub fn active_explorer(&mut self) -> &mut crate::ui::file_table::FileExplorer {
-        explorer_for(&mut self.file_explorer, &mut self.filtered_tabs, self.active_tab_title.as_deref())
+        explorer_for(&mut self.file_explorer, &mut self.filtered_tabs, self.active_tab.as_ref())
     }
 
-    pub fn open_image_edit_with_path(&mut self, path: &str, tree: &mut egui_dock::DockState<String>) {
-        // Ensure the Image Edit tab exists and is focused
-        let title = "Image Edit".to_string();
-        if !self.open_tabs.contains(&title) {
-            tree[egui_dock::SurfaceIndex::main()].push_to_focused_leaf(title.clone());
-            self.open_tabs.insert(title.clone());
+    /// The tab the active explorer is shown in.
+    pub fn active_kind(&self) -> TabKind {
+        match self.active_tab {
+            Some(kind @ TabKind::Browser { id }) if id == BrowserId::MAIN || self.filtered_tabs.contains_key(&id) => kind,
+            _ => TabKind::MAIN,
         }
-        self.image_edit.open_with_path(path);
+    }
+
+    /// Key that tells the active explorer's per-tab state from the others'.
+    pub fn active_owner(&self) -> String {
+        match self.active_kind() {
+            TabKind::Browser { id } if id != BrowserId::MAIN => format!("browser-{}", id.0),
+            _ => MAIN_EXPLORER_TAB.to_string(),
+        }
+    }
+
+    /// The explorer of browser tab `id`.
+    pub fn explorer_mut(&mut self, id: BrowserId) -> Option<&mut crate::ui::file_table::FileExplorer> {
+        if id == BrowserId::MAIN { Some(&mut self.file_explorer) } else { self.filtered_tabs.get_mut(&id) }
+    }
+
+    /// Every browser tab with the title its scope gives, the main one first.
+    pub fn browser_titles(&self) -> Vec<(BrowserId, String)> {
+        let mut others: Vec<(BrowserId, String)> = self.filtered_tabs.iter().map(|(id, ex)| (*id, ex.tab_title())).collect();
+        others.sort_by_key(|(id, _)| *id);
+        std::iter::once((BrowserId::MAIN, self.file_explorer.tab_title())).chain(others).collect()
+    }
+
+    /// The browser tab titled `title`, if there is one.
+    pub fn browser_titled(&self, title: &str) -> Option<(BrowserId, &crate::ui::file_table::FileExplorer)> {
+        std::iter::once((BrowserId::MAIN, &self.file_explorer)).chain(self.filtered_tabs.iter().map(|(id, ex)| (*id, ex))).find(|(_, ex)| ex.tab_title() == title)
     }
 }
 
 /// Title of the always-present main explorer tab.
 pub const MAIN_EXPLORER_TAB: &str = "File Explorer";
 
-/// The explorer shown in tab `title`, or `main` for the main tab and unknown titles.
+/// The explorer shown in tab `kind`, or `main` for the main tab and unknown tabs.
 pub fn explorer_for<'a>(
     main: &'a mut FileExplorer,
-    tabs: &'a mut std::collections::HashMap<String, FileExplorer>,
-    title: Option<&str>,
+    tabs: &'a mut std::collections::HashMap<BrowserId, FileExplorer>,
+    kind: Option<&TabKind>,
 ) -> &'a mut FileExplorer {
-    if let Some(title) = title.filter(|t| *t != MAIN_EXPLORER_TAB) {
-        if let Some(ex) = tabs.get_mut(title) {
+    if let Some(id) = kind.and_then(TabKind::browser_id).filter(|id| *id != BrowserId::MAIN) {
+        if let Some(ex) = tabs.get_mut(&id) {
             return ex;
         }
     }
     main
 }
 
-/// True for tab titles that render a file explorer.
-pub fn is_explorer_tab(title: &str, tabs: &std::collections::HashMap<String, FileExplorer>) -> bool {
-    title == MAIN_EXPLORER_TAB || tabs.contains_key(title)
+/// True for tabs that render a file explorer.
+pub fn is_explorer_tab(kind: &TabKind, tabs: &std::collections::HashMap<BrowserId, FileExplorer>) -> bool {
+    kind.browser_id().is_some_and(|id| id == BrowserId::MAIN || tabs.contains_key(&id))
 }
 
 const EGUI_PREFS_KEY: &str = "ame_egui_options_v1";
@@ -251,20 +271,24 @@ mod tests {
     async fn the_focused_tab_selects_its_own_explorer() {
         let mut main = marked("main");
         let mut tabs = std::collections::HashMap::new();
-        tabs.insert("Scan: x".to_string(), marked("scan"));
-        assert_eq!(explorer_for(&mut main, &mut tabs, Some("Scan: x")).current_path, "scan");
-        assert_eq!(explorer_for(&mut main, &mut tabs, Some(MAIN_EXPLORER_TAB)).current_path, "main");
-        assert_eq!(explorer_for(&mut main, &mut tabs, Some("closed tab")).current_path, "main");
+        let other = BrowserId::next();
+        tabs.insert(other, marked("scan"));
+        assert_eq!(explorer_for(&mut main, &mut tabs, Some(&TabKind::browser(other))).current_path, "scan");
+        assert_eq!(explorer_for(&mut main, &mut tabs, Some(&TabKind::MAIN)).current_path, "main");
+        assert_eq!(explorer_for(&mut main, &mut tabs, Some(&TabKind::browser(BrowserId::next()))).current_path, "main");
+        assert_eq!(explorer_for(&mut main, &mut tabs, Some(&TabKind::Logs)).current_path, "main");
         assert_eq!(explorer_for(&mut main, &mut tabs, None).current_path, "main");
     }
 
     #[tokio::test]
-    async fn only_explorer_tabs_count_as_explorers() {
+    async fn only_browser_tabs_count_as_explorers() {
         let mut tabs = std::collections::HashMap::new();
-        tabs.insert("Scan: x".to_string(), marked("scan"));
-        assert!(is_explorer_tab(MAIN_EXPLORER_TAB, &tabs));
-        assert!(is_explorer_tab("Scan: x", &tabs));
-        assert!(!is_explorer_tab("Logs", &tabs));
-        assert!(!is_explorer_tab("AI Refinements", &tabs));
+        let other = BrowserId::next();
+        tabs.insert(other, marked("scan"));
+        assert!(is_explorer_tab(&TabKind::MAIN, &tabs));
+        assert!(is_explorer_tab(&TabKind::browser(other), &tabs));
+        assert!(!is_explorer_tab(&TabKind::browser(BrowserId::next()), &tabs));
+        assert!(!is_explorer_tab(&TabKind::Logs, &tabs));
+        assert!(!is_explorer_tab(&TabKind::Refine, &tabs));
     }
 }

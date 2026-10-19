@@ -26,9 +26,13 @@ impl eframe::App for app::SmartMediaApp {
         let started = std::time::Instant::now();
         let ctx = ui.ctx().clone();
         theme::glass::frost_open_windows(&ctx);
+        if let Some(op) = ui::tabs::read_nav_keys(&ctx) {
+            command::send(command::AppCommand::Navigate { op });
+        }
         self.pump_commands(&ctx);
         self.context.receive(&ctx);
         self.sync_focused_explorer();
+        ui::devtools::scope::publish(&ctx, self.context.active_explorer());
         self.poll_tasks();
         self.title_strip(ui);
         settings::banner::show(ui);
@@ -93,32 +97,32 @@ impl eframe::App for app::SmartMediaApp {
 impl app::SmartMediaApp {
     /// Records the focused dock tab as the active explorer when it shows one.
     fn sync_focused_explorer(&mut self) {
-        let focused = self.tree.find_active_focused().map(|(_, tab)| tab.clone());
-        if let Some(title) = focused {
-            if app::is_explorer_tab(&title, &self.context.filtered_tabs) {
-                self.context.active_tab_title = Some(title);
+        let focused = self.tree.find_active_focused().map(|(_, tab)| *tab);
+        if let Some(kind) = focused {
+            if app::is_explorer_tab(&kind, &self.context.filtered_tabs) {
+                self.context.active_tab = Some(kind);
             }
         }
     }
 
-    /// Focuses the tab `title` if it is open, otherwise opens it in the focused leaf.
-    pub fn focus_or_open_tab(&mut self, title: &str) {
-        ui::tabs::focus_or_open_tab(&mut self.tree, &mut self.context.open_tabs, title);
+    /// Focuses the tab `kind` if it is open, otherwise opens it in the focused leaf.
+    pub fn focus_or_open_tab(&mut self, kind: ui::tabs::TabKind) {
+        ui::tabs::focus_or_open_tab(&mut self.tree, &mut self.context.open_tabs, kind);
     }
 
-    /// Opens `title` in the focused leaf; with `background` the previously focused tab stays in front.
-    fn open_tab(&mut self, title: &str, background: bool) {
-        ui::tabs::open_tab(&mut self.tree, &mut self.context.open_tabs, title, background);
+    /// Opens `kind` in the focused leaf; with `background` the previously focused tab stays in front.
+    fn open_tab(&mut self, kind: ui::tabs::TabKind, background: bool) {
+        ui::tabs::open_tab(&mut self.tree, &mut self.context.open_tabs, kind, background);
     }
 
     /// Turns dock add-button presses into new explorer tabs.
     fn process_tab_adds(&mut self) {
         for path in std::mem::take(&mut self.context.pending_tab_adds) {
-            let title = ui::tabs::uniquify_title(&self.context.open_tabs, "Explorer");
+            let id = ui::tabs::BrowserId::next();
             self.tree.set_focused_node_and_surface(path);
-            self.tree.push_to_focused_leaf(title.clone());
-            self.context.open_tabs.insert(title.clone());
-            self.context.filtered_tabs.insert(title, ui::file_table::FileExplorer::new(false));
+            self.tree.push_to_focused_leaf(ui::tabs::TabKind::browser(id));
+            self.context.open_tabs.insert(ui::tabs::TabKind::browser(id));
+            self.context.filtered_tabs.insert(id, ui::file_table::FileExplorer::new(false));
         }
     }
 

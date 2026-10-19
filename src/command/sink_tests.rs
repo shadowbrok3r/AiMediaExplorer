@@ -11,6 +11,7 @@ use crate::tasks::{TaskEvent, TaskKind, TaskState};
 use crate::theme::Appearance;
 use crate::theme::chrome::Chrome;
 use crate::ui::file_table::FileExplorer;
+use crate::ui::tabs::{BrowserId, TabKind};
 use crate::ui::test_support::test_ctx;
 
 struct Rig {
@@ -31,12 +32,25 @@ impl Rig {
         Self { app, dir: tempfile::tempdir().expect("empty folder"), _fixture: fixture, _runtime: runtime }
     }
 
+    fn title_of(&self, kind: TabKind) -> String {
+        match kind.browser_id() {
+            Some(id) if id == BrowserId::MAIN => self.app.context.file_explorer.tab_title(),
+            Some(id) => self.app.context.filtered_tabs.get(&id).map(|ex| ex.tab_title()).unwrap_or_default(),
+            None => kind.fixed_title().to_string(),
+        }
+    }
+
     fn titles(&self) -> Vec<String> {
-        self.app.tree.iter_all_tabs().map(|(_, t)| t.clone()).collect()
+        self.app.tree.iter_all_tabs().map(|(_, t)| self.title_of(*t)).collect()
     }
 
     fn focused(&mut self) -> String {
-        self.app.tree.find_active_focused().map(|(_, t)| t.clone()).unwrap_or_default()
+        let kind = self.app.tree.find_active_focused().map(|(_, t)| *t);
+        kind.map(|k| self.title_of(k)).unwrap_or_default()
+    }
+
+    fn focused_kind(&mut self) -> Option<TabKind> {
+        self.app.tree.find_active_focused().map(|(_, t)| *t)
     }
 
     fn toasts(&self) -> Vec<(egui_toast::ToastKind, String)> {
@@ -62,18 +76,19 @@ fn a_folder_scope_opens_a_titled_tab_that_takes_focus() {
     let mut rig = Rig::new();
     assert!(open_folder(&mut rig, "Sink folder", Target::NewTab).is_ok());
     assert!(rig.titles().contains(&"Sink folder".to_string()));
-    assert!(rig.app.context.filtered_tabs.contains_key("Sink folder"));
+    assert!(rig.app.context.browser_titled("Sink folder").is_some());
     assert_eq!(rig.focused(), "Sink folder");
 }
 
 #[test]
-fn a_background_scope_leaves_focus_alone_and_titles_stay_unique() {
+fn a_background_scope_leaves_focus_alone_and_each_tab_keeps_its_own_explorer() {
     let mut rig = Rig::new();
     open_folder(&mut rig, "Sink a", Target::NewTab).unwrap();
     open_folder(&mut rig, "Sink b", Target::Background).unwrap();
     assert_eq!(rig.focused(), "Sink a");
     open_folder(&mut rig, "Sink a", Target::NewTab).unwrap();
-    assert!(rig.titles().contains(&"Sink a (2)".to_string()));
+    assert_eq!(rig.titles().iter().filter(|t| t.as_str() == "Sink a").count(), 2, "titles come from the scope, so two tabs may share one");
+    assert_eq!(rig.app.context.filtered_tabs.len(), 3);
 }
 
 #[test]
@@ -82,10 +97,9 @@ fn row_tabs_hold_their_rows_and_similarity_data() {
     let tab = RowsTab { title: "Sink rows".into(), rows: vec![row("/a/1.jpg"), row("/a/2.jpg")], showing_similarity: true, origin_path: Some("/a/1.jpg".into()), ..Default::default() };
     let text = rig.app.open_rows(tab).unwrap();
     assert!(text.contains("2 rows"), "{text}");
-    let ex = &rig.app.context.filtered_tabs["Sink rows"];
+    let (_, ex) = rig.app.context.browser_titled("Sink rows").expect("the rows tab");
     assert_eq!(ex.table.len(), 2);
     assert!(ex.viewer.showing_similarity);
-    assert_eq!(ex.current_path, "/a/1.jpg");
 }
 
 #[test]
@@ -98,24 +112,123 @@ fn the_image_edit_tool_opens_once_and_loads_the_file() {
 }
 
 #[test]
-fn the_unsupported_scopes_say_so() {
+fn every_query_scope_opens_in_the_focused_tab_and_back_returns_to_where_it_was() {
     let mut rig = Rig::new();
-    for scope in [Scope::Recent, Scope::Collection("c".into()), Scope::Semantic("q".into()), Scope::Similar("/p".into()), Scope::Scan(1), Scope::Smart(SmartView::NoClip)] {
-        let err = rig.app.open_scope(&scope, Target::NewTab, None, false).unwrap_err();
-        assert_eq!(err.kind, ErrorKind::Unsupported, "{scope}");
+    let start = rig.app.context.file_explorer.scope().clone();
+    let scopes = [
+        Scope::Library,
+        Scope::Recent,
+        Scope::Collection("c".into()),
+        Scope::Tag("t".into()),
+        Scope::Category("c".into()),
+        Scope::Semantic("q".into()),
+        Scope::Similar("/p".into()),
+        Scope::Scan(1),
+        Scope::Smart(SmartView::NoClip),
+        Scope::Smart(SmartView::Undescribed),
+        Scope::Smart(SmartView::Untagged),
+        Scope::Smart(SmartView::FailedThumbs),
+        Scope::Smart(SmartView::Duplicates),
+    ];
+    for scope in &scopes {
+        let text = rig.app.open_scope(scope, Target::Current, None, false).unwrap_or_else(|e| panic!("{scope}: {e}"));
+        assert!(text.contains("focused tab"), "{text}");
+        assert_eq!(rig.app.context.file_explorer.scope(), scope);
+        assert_eq!(rig.app.context.filtered_tabs.len(), 0, "{scope} did not spawn a tab");
+    }
+    assert_eq!(rig.titles().len(), 2, "the main browser and the logs tab");
+    for _ in 0..scopes.len() {
+        rig.app.navigate(NavOp::Back).unwrap();
+    }
+    assert_eq!(rig.app.context.file_explorer.scope(), &start);
+    assert_eq!(rig.app.navigate(NavOp::Back).unwrap_err().kind, ErrorKind::Invalid, "nothing is further back");
+    rig.app.navigate(NavOp::Forward).unwrap();
+    assert_eq!(rig.app.context.file_explorer.scope(), &scopes[0]);
+    rig.app.context.file_explorer.cancel_load();
+}
+
+#[test]
+fn every_query_scope_can_open_in_a_new_tab_that_starts_with_that_scope() {
+    let mut rig = Rig::new();
+    for scope in [Scope::Library, Scope::Tag("t".into()), Scope::Smart(SmartView::Duplicates), Scope::Semantic("q".into())] {
+        rig.app.open_scope(&scope, Target::NewTab, None, false).unwrap();
+        let kind = rig.focused_kind().unwrap();
+        let id = kind.browser_id().unwrap();
+        let ex = &rig.app.context.filtered_tabs[&id];
+        assert_eq!(ex.scope(), &scope);
+        assert!(!ex.can_go_back(), "a new tab starts its history at its scope");
+    }
+    for ex in rig.app.context.filtered_tabs.values_mut() {
+        ex.cancel_load();
     }
 }
 
 #[test]
-fn failed_thumbnails_open_as_a_tab_and_report_when_there_are_none() {
+fn an_explicit_title_names_the_tab_until_it_navigates() {
     let mut rig = Rig::new();
-    let none = rig.app.open_scope(&Scope::Smart(SmartView::FailedThumbs), Target::NewTab, None, false).unwrap_err();
-    assert_eq!(none.kind, ErrorKind::NotFound);
-    rig.app.context.file_explorer.failed_thumbs.push(("/a/bad.jpg".into(), "corrupt".into()));
-    rig.app.open_scope(&Scope::Smart(SmartView::FailedThumbs), Target::NewTab, None, false).unwrap();
-    let ex = &rig.app.context.filtered_tabs["Failed thumbnails (1)"];
-    assert_eq!(ex.table.len(), 1);
-    assert_eq!(ex.table.iter().next().unwrap().description.as_deref(), Some("Thumbnail failed: corrupt"));
+    open_folder(&mut rig, "Named", Target::NewTab).unwrap();
+    let id = rig.focused_kind().unwrap().browser_id().unwrap();
+    assert_eq!(rig.app.context.filtered_tabs[&id].tab_title(), "Named");
+    let ex = rig.app.context.explorer_mut(id).unwrap();
+    ex.open_scope(Scope::Library).unwrap();
+    assert_eq!(ex.tab_title(), "Entire Database");
+    ex.cancel_load();
+}
+
+#[test]
+fn a_folder_that_does_not_exist_is_not_found_and_changes_nothing() {
+    let mut rig = Rig::new();
+    let before = rig.app.context.file_explorer.scope().clone();
+    let err = rig.app.open_scope(&Scope::Folder("/definitely/not/here".into()), Target::Current, None, false).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::NotFound);
+    assert_eq!(rig.app.context.file_explorer.scope(), &before);
+    assert!(rig.app.open_scope(&Scope::Folder("/definitely/not/here".into()), Target::NewTab, None, false).is_err());
+    assert!(rig.app.context.filtered_tabs.is_empty(), "no tab is left behind");
+}
+
+#[test]
+fn opening_in_the_focused_tab_brings_the_browser_forward_when_a_tool_tab_is_in_front() {
+    let mut rig = Rig::new();
+    rig.app.open_tool(Tool::Logs, None, Target::NewTab).unwrap();
+    assert_eq!(rig.focused_kind(), Some(TabKind::Logs));
+    rig.app.open_scope(&Scope::Library, Target::Current, None, false).unwrap();
+    assert_eq!(rig.focused_kind(), Some(TabKind::MAIN), "the scope is shown where the user can see it");
+    rig.app.context.file_explorer.cancel_load();
+}
+
+#[test]
+fn navigation_commands_report_what_they_did_or_why_not() {
+    let mut rig = Rig::new();
+    let dir = rig.dir.path().display().to_string();
+    let sub = rig.dir.path().join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    rig.app.open_scope(&Scope::Folder(dir.clone()), Target::Current, None, false).unwrap();
+    rig.app.open_scope(&Scope::Folder(sub.display().to_string()), Target::Current, None, false).unwrap();
+    assert!(rig.app.navigate(NavOp::Up).unwrap().contains(&dir));
+    assert!(rig.app.navigate(NavOp::Back).unwrap().contains(&sub.display().to_string()));
+    assert!(rig.app.navigate(NavOp::Forward).is_ok());
+    assert_eq!(rig.app.navigate(NavOp::Forward).unwrap_err().kind, ErrorKind::Invalid);
+    assert_eq!(rig.app.navigate(NavOp::LoadMore).unwrap_err().kind, ErrorKind::Invalid, "a folder has no further pages");
+    assert!(rig.app.navigate(NavOp::Refresh).is_ok());
+    assert!(rig.app.navigate(NavOp::Cancel).is_ok());
+}
+
+#[test]
+fn the_database_command_is_a_no_op_when_the_database_is_already_connected() {
+    if !crate::database::is_connected() {
+        return;
+    }
+    let mut rig = Rig::new();
+    assert!(rig.app.connect_database().unwrap().contains("already connected"));
+}
+
+#[test]
+fn failed_thumbnails_are_listed_without_needing_any_tab_to_hold_them() {
+    let _serial = crate::ui::file_table::scope::failed::serial();
+    crate::ui::file_table::scope::failed::clear();
+    crate::ui::file_table::scope::failed::record("/a/bad.jpg", "corrupt");
+    assert_eq!(crate::ui::file_table::scope::failed::count(), 1);
+    crate::ui::file_table::scope::failed::clear();
 }
 
 #[test]
@@ -179,10 +292,15 @@ fn selectors_resolve_against_the_focused_tab_without_falling_back_to_everything(
         ex.table.push(row("/p/c.jpg"));
     }
     assert!(rig.app.resolve(&Selector::Selection).is_empty(), "nothing selected resolves to nothing");
-    rig.app.context.file_explorer.viewer.selected.extend(["/p/b.jpg".to_string(), "/p/a.jpg".to_string()]);
+    assert!(rig.app.resolve(&Selector::Focus).is_empty(), "nothing is focused before a row is chosen");
+    {
+        let ex = &mut rig.app.context.file_explorer;
+        ex.sync_view();
+        ex.select_paths(["/p/b.jpg", "/p/a.jpg"]);
+    }
     assert_eq!(rig.app.resolve(&Selector::Selection), vec!["/p/a.jpg", "/p/b.jpg"]);
     assert_eq!(rig.app.resolve(&Selector::View).len(), 3);
-    assert!(rig.app.resolve(&Selector::Focus).is_empty());
+    assert_eq!(rig.app.resolve(&Selector::Focus).len(), 1, "the focus is one of the selected rows");
     rig.app.focus_path("/p/c.jpg").unwrap();
     assert_eq!(rig.app.resolve(&Selector::Focus), vec!["/p/c.jpg"]);
     assert_eq!(rig.app.resolve(&Selector::Selection), vec!["/p/c.jpg"]);
@@ -220,16 +338,16 @@ fn the_global_pump_runs_queued_commands_logs_them_and_toasts_failures() {
     take_matching(|_| true);
     with_log(|log| log.clear());
     send(AppCommand::ClearSelection);
-    send(AppCommand::open(Scope::Scan(77)));
+    send(AppCommand::open(Scope::Folder("/definitely/not/here".into())));
     send(AppCommand::Toast { kind: ToastLevel::Info, text: "pumped".into() });
     assert_eq!(pump_global(&mut rig.app), 3);
     let (entries, failures) = with_log(|log| (log.entries().map(|e| e.json.clone()).collect::<Vec<_>>(), log.failures()));
     assert_eq!(entries.len(), 3);
-    assert!(entries[1].contains("scan:77"));
+    assert!(entries[1].contains("fs:/definitely/not/here"));
     assert_eq!(failures, 1);
     let toasts = rig.toasts();
     assert!(toasts.iter().any(|(k, t)| *k == egui_toast::ToastKind::Info && t == "pumped"));
-    assert!(toasts.iter().any(|(k, t)| *k == egui_toast::ToastKind::Warning && t.starts_with("open_scope: no loader for scan scopes")), "{toasts:?}");
+    assert!(toasts.iter().any(|(k, t)| *k == egui_toast::ToastKind::Warning && t.starts_with("open_scope: ") && t.contains("not a folder that exists")), "{toasts:?}");
     with_log(|log| log.clear());
 }
 

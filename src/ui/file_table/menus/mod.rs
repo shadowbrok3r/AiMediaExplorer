@@ -8,13 +8,10 @@ pub mod db_delete;
 pub mod logical_groups;
 pub mod selection_menu;
 pub mod filter_menu;
-pub mod table_menu;
 pub mod scan_menu;
 
 /// Width reserved for the right-hand navbar controls, search field aside, before their measured width is known.
 const RIGHT_FIXED_ESTIMATE: f32 = 270.;
-/// Width reserved for the database-mode controls beside the path field.
-const DB_CONTROLS_WIDTH: f32 = 150.;
 const PATH_MIN_WIDTH: f32 = 120.;
 const PATH_MAX_WIDTH: f32 = 400.;
 const SEARCH_MIN_WIDTH: f32 = 80.;
@@ -39,126 +36,31 @@ impl super::FileExplorer {
                 ui.add_space(5.);
                 ui.separator();
                 ui.add_space(5.);
-                if icons::icon_button(ui, svg::ARROW_UP, "Up one folder").clicked() { self.nav_up(); }
-                if icons::icon_button(ui, svg::ARROW_LEFT, "Back").clicked() { self.nav_back(); }
-                if icons::icon_button(ui, svg::ARROW_RIGHT, "Forward").clicked() { self.nav_forward(); }
+                let (can_up, can_back, can_forward) = (self.can_go_up(), self.can_go_back(), self.can_go_forward());
+                if ui.add_enabled_ui(can_up, |ui| icons::icon_button(ui, svg::ARROW_UP, "Up (Alt+Up)")).inner.clicked() { self.nav_up(); }
+                if ui.add_enabled_ui(can_back, |ui| icons::icon_button(ui, svg::ARROW_LEFT, "Back (Alt+Left)")).inner.clicked() { self.nav_back(); }
+                if ui.add_enabled_ui(can_forward, |ui| icons::icon_button(ui, svg::ARROW_RIGHT, "Forward (Alt+Right)")).inner.clicked() { self.nav_forward(); }
                 if icons::icon_button(ui, svg::ARROW_CLOCKWISE, "Refresh").clicked() { self.refresh(); }
                 if icons::icon_button(ui, svg::HOUSE_SIMPLE, "Home").clicked() { self.nav_home(); }
-                if self.viewer.mode == super::table::ExplorerMode::Database {
-                    if icons::icon_button(ui, svg::TRASH, "Double click to Clear Database Table").double_clicked() { self.table.clear(); }
-                }
                 ui.separator();
                 let right_id = ui.id().with("navbar_right_width");
                 let right_fixed = ui.data(|d| d.get_temp::<f32>(right_id)).unwrap_or(RIGHT_FIXED_ESTIMATE);
-                let db_extra = if self.viewer.mode == super::table::ExplorerMode::Database { DB_CONTROLS_WIDTH } else { 0. };
-                let flex = ui.available_width() - right_fixed - db_extra - 3. * ui.spacing().item_spacing.x;
+                let flex = ui.available_width() - right_fixed - 3. * ui.spacing().item_spacing.x;
                 let path_w = (flex - SEARCH_PREFERRED_WIDTH).clamp(PATH_MIN_WIDTH, PATH_MAX_WIDTH);
                 let search_w = (flex - path_w).clamp(SEARCH_MIN_WIDTH, SEARCH_PREFERRED_WIDTH);
-                let path_edit = TextEdit::singleline(&mut self.current_path)
-                    .hint_text("Current Directory")
+                let address = TextEdit::singleline(&mut self.nav.input)
+                    .hint_text("Path or scope (lib:all, tag:x, col:Name)")
                     .desired_width(path_w)
                     .ui(ui);
-
-                match self.viewer.mode {
-                    super::table::ExplorerMode::FileSystem => {
-                        if path_edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                            self.refresh();
-                        }
-                    },
-                    super::table::ExplorerMode::Database => {
-                        ui.checkbox(&mut self.ai_search_enabled, "AI").on_hover_text("Use AI semantic search across the database (text prompt)");
-
-                        // Apply filter on Enter
-                        if (path_edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)))
-                            || ui.button("Apply Filter").clicked()
-                        {
-                            if self.ai_search_enabled {
-                                // Run AI semantic search using the 'Search for files' field as the semantic prompt
-                                let query = self.viewer.filter.trim().to_string();
-                                if !query.is_empty() {
-                                    let tx_updates = self.viewer.ai_update_tx.clone();
-                                    // Reset similarity state for new query
-                                    self.viewer.showing_similarity = true;
-                                    self.similarity_origin_path = Some(format!("query:{query}"));
-                                    self.table.clear();
-                                    let types_show_images = self.viewer.types_show_images;
-                                    let types_show_videos = self.viewer.types_show_videos;
-                                    let minb = self.viewer.ui_settings.db_min_size_bytes;
-                                    let maxb = self.viewer.ui_settings.db_max_size_bytes;
-                                    self.similarity_query_offset = 0;
-                                    let batch_size = self.similarity_batch_size;
-                                    let query_clone = query.clone();
-                                    let similarity_offset = self.similarity_query_offset;
-                                    tokio::spawn(async move {
-                                        // Ensure engine ready
-                                        let _ = crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await;
-                                        // Embed query text
-                                        let q_vec_opt = {
-                                            let mut guard = crate::ai::GLOBAL_AI_ENGINE.clip_engine.lock().await;
-                                            if let Some(engine) = guard.as_mut() {
-                                                engine.embed_text(&query).ok()
-                                            } else { None }
-                                        };
-                                        if let Some(q) = q_vec_opt {
-                                            let mut results: Vec<crate::ui::file_table::SimilarResult> = Vec::new();
-                                            match crate::database::ClipEmbeddingRow::find_similar_by_embedding(
-                                                &q, 
-                                                batch_size * 2, 
-                                                256, 
-                                                similarity_offset
-                                            ).await {
-                                                Ok(hits) => {
-                                                    for hit in hits.into_iter() {
-                                                        // Get thumbnail record (prefer embedded thumb_ref on hit)
-                                                        let thumb = if let Some(t) = hit.thumb_ref { t } else { crate::Thumbnail::get_thumbnail_by_path(&hit.path).await.unwrap_or(None).unwrap_or_default() };
-                                                        // Optional: filter by type and size
-                                                        let ext_ok = std::path::Path::new(&thumb.path)
-                                                            .extension()
-                                                            .and_then(|e| e.to_str())
-                                                            .map(|s| s.to_ascii_lowercase());
-                                                        let mut type_ok = true;
-                                                        if let Some(ext) = ext_ok.as_ref() {
-                                                            if crate::is_image(ext.as_str()) { type_ok = types_show_images; }
-                                                            else if crate::is_video(ext.as_str()) { type_ok = types_show_videos; }
-                                                            else { type_ok = false; }
-                                                        }
-                                                        if !type_ok { continue; }
-                                                        if let Some(mn) = minb { if thumb.size < mn { continue; } }
-                                                        if let Some(mx) = maxb { if thumb.size > mx { continue; } }
-
-                                                        // Compute similarity vs stored embedding (prefer clip_similarity_score)
-                                                        let (mut created, mut updated, mut clip_sim) = (None, None, None);
-                                                        if let Ok(rows) = crate::database::ClipEmbeddingRow::load_clip_embeddings_for_path(&thumb.path).await {
-                                                            for row in rows.iter() {
-                                                                created = row.created.clone();
-                                                                updated = row.updated.clone();
-                                                                if clip_sim.is_none() && !row.embedding.is_empty() { clip_sim = Some(crate::ai::clip::dot(&q, &row.embedding)); }
-                                                            }
-                                                        }
-                                                        // If we have distance from the hit, convert it (lower distance => higher similarity)
-                                                        let cosine_sim = 1.0 - hit.dist;
-                                                        let norm_sim = ((cosine_sim + 1.0)/2.0).clamp(0.0, 1.0);
-                                                        let final_sim = clip_sim.unwrap_or(norm_sim);
-                                                        results.push(crate::ui::file_table::SimilarResult { thumb, created, updated, similarity_score: Some(final_sim), clip_similarity_score: Some(final_sim) });
-                                                        if results.len() >= batch_size { break; }
-                                                    }
-                                                }
-                                                Err(e) => log::error!("[AI] text knn failed: {e:?}"),
-                                            }
-                                            let _ = tx_updates.try_send(crate::ui::file_table::AIUpdate::SimilarResults { origin_path: format!("query:{query_clone}"), results });
-                                        }
-                                    });
-                                }
-                            } else {
-                                // Reset paging and reload
-                                self.db_offset = 0;
-                                self.db_last_batch_len = 0;
-                                self.load_database_rows();
-                            }
-                        }
-                    },
+                if address.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                    if let Err(reason) = self.submit_address() {
+                        crate::ui::dialogs::toast(egui_toast::ToastKind::Error, reason);
+                    }
                 }
-                
+                if self.is_loading() {
+                    ui.add(Spinner::new().size(14.));
+                }
+
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     self.filter_menu(ui);
 
@@ -168,6 +70,14 @@ impl super::FileExplorer {
 
                     ui.separator();
 
+                    let by_meaning = ui.add_enabled_ui(!self.viewer.filter.trim().is_empty(), |ui| icons::icon_button(ui, svg::AME_SEMANTIC_SEARCH, "Search the library by meaning (CLIP)")).inner;
+                    if by_meaning.clicked() {
+                        let text = self.viewer.filter.trim().to_string();
+                        if let Err(reason) = self.open_scope(crate::command::Scope::Semantic(text)) {
+                            crate::ui::dialogs::toast(egui_toast::ToastKind::Error, reason);
+                        }
+                    }
+
                     TextEdit::singleline(&mut self.viewer.filter)
                     .desired_width(search_w)
                     .hint_text("Search for files")
@@ -176,16 +86,6 @@ impl super::FileExplorer {
                     ui.separator();
 
                     self.scan_menu(ui);
-                    if self.viewer.showing_similarity {
-                        if self.similarity_origin_path.is_none() && !self.current_path.is_empty() {
-                            self.similarity_origin_path = Some(self.current_path.clone());
-                        }
-                        ui.separator();
-                        if ui.button(format!("Load {} more", self.similarity_batch_size)).on_hover_text("Append more similar results").clicked() {
-                            self.append_more_similar();
-                        }
-                    }
-                    self.table_menu(ui);
                     let fixed = ui.min_rect().width() - search_w;
                     ui.data_mut(|d| d.insert_temp(right_id, fixed));
                 });

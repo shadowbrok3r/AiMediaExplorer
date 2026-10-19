@@ -4,7 +4,7 @@ use std::fmt;
 
 use super::bus::CommandBus;
 use super::log::{CommandLog, Outcome};
-use super::model::{ActionId, AppCommand, DevtoolsWindow, Section, Selector, Target, Tool, ToastLevel};
+use super::model::{ActionId, AppCommand, DevtoolsWindow, NavOp, Section, Selector, Target, Tool, ToastLevel};
 use super::scope::Scope;
 use super::model::RowsTab;
 use crate::tasks::{TaskEvent, TaskId};
@@ -83,6 +83,10 @@ pub trait CommandSink {
     fn focus_path(&mut self, path: &str) -> CommandResult;
     fn open_devtools(&mut self, window: DevtoolsWindow) -> CommandResult;
     fn show_task_center(&mut self) -> CommandResult;
+    /// Moves the focused tab through its history or its load.
+    fn navigate(&mut self, op: NavOp) -> CommandResult;
+    /// Opens the database at the configured folder.
+    fn connect_database(&mut self) -> CommandResult;
 }
 
 /// Runs one command; an action on an empty set of files is an error, never "all files".
@@ -109,6 +113,8 @@ pub fn dispatch(sink: &mut dyn CommandSink, cmd: AppCommand) -> CommandResult {
         AppCommand::FocusPath { path } => sink.focus_path(&path),
         AppCommand::OpenDevtools { window } => sink.open_devtools(window),
         AppCommand::ShowTaskCenter => sink.show_task_center(),
+        AppCommand::Navigate { op } => sink.navigate(op),
+        AppCommand::ConnectDatabase => sink.connect_database(),
     }
 }
 
@@ -207,6 +213,12 @@ pub(crate) mod fake {
         fn show_task_center(&mut self) -> CommandResult {
             self.done("task_center".to_string())
         }
+        fn navigate(&mut self, op: NavOp) -> CommandResult {
+            self.done(format!("navigate {op:?}"))
+        }
+        fn connect_database(&mut self) -> CommandResult {
+            self.done("connect_database".to_string())
+        }
     }
 }
 
@@ -231,6 +243,8 @@ mod tests {
             AppCommand::FocusPath { path: "/f".into() },
             AppCommand::OpenDevtools { window: DevtoolsWindow::Tasks },
             AppCommand::ShowTaskCenter,
+            AppCommand::Navigate { op: NavOp::Forward },
+            AppCommand::ConnectDatabase,
         ];
         for cmd in cmds {
             assert!(dispatch(&mut sink, cmd).is_ok());
@@ -238,7 +252,7 @@ mod tests {
         assert_eq!(
             sink.calls,
             vec![
-                "open_scope lib:all NewTab None false",
+                "open_scope lib:all Current None false",
                 "open_tool Logs None Current",
                 "run Open /sel",
                 "show_settings Some(Library)",
@@ -250,6 +264,8 @@ mod tests {
                 "focus /f",
                 "devtools Tasks",
                 "task_center",
+                "navigate Forward",
+                "connect_database",
             ]
         );
     }

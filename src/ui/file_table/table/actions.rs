@@ -96,15 +96,13 @@ pub struct MenuTargets {
     pub dirs: usize,
 }
 
-/// Entries shown for the current mode, each with whether it can run on `targets`.
-pub fn menu_entries(mode: ExplorerMode, targets: MenuTargets) -> Vec<(MenuAction, bool)> {
+/// Entries of the context menu, each with whether it can run on `targets`.
+pub fn menu_entries(targets: MenuTargets) -> Vec<(MenuAction, bool)> {
     let any = targets.rows > 0;
     MenuAction::ALL
         .into_iter()
-        .filter(|a| *a != MenuAction::AttachToChatWindow || mode == ExplorerMode::Database)
         .map(|a| {
             let enabled = match a {
-                MenuAction::AddSelectionToGroup | MenuAction::RemoveSelectionFromGroup => true,
                 MenuAction::ExcludeDirsFromScan => targets.dirs > 0,
                 _ => any,
             };
@@ -166,40 +164,8 @@ impl FileTableViewer {
                     self.spawn_clip_generation(row);
                 }
             }
-            MenuAction::AddSelectionToGroup => {
-                let Some(group_name) = crate::ui::file_table::active_group_name() else {
-                    log::warn!("No active logical group; cannot add selection");
-                    return;
-                };
-                let rows: Vec<Thumbnail> = rows.iter().filter(|r| r.file_type != "<DIR>").map(|r| (*r).clone()).collect();
-                tokio::spawn(async move {
-                    if let Ok(ids) = crate::database::upsert_rows_and_get_ids(rows).await {
-                        if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&group_name).await {
-                            let _ = crate::database::LogicalGroup::add_thumbnails(&g.id, &ids).await;
-                        }
-                    }
-                });
-            }
-            MenuAction::RemoveSelectionFromGroup => {
-                let Some(group_name) = crate::ui::file_table::active_group_name() else {
-                    log::warn!("No active logical group; cannot remove selection");
-                    return;
-                };
-                let paths: Vec<String> = rows.iter().map(|r| r.path.clone()).filter(|p| !p.is_empty()).collect();
-                tokio::spawn(async move {
-                    if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&group_name).await {
-                        let mut ids: Vec<surrealdb::types::RecordId> = Vec::new();
-                        for p in paths {
-                            if let Ok(Some(id)) = crate::Thumbnail::get_thumbnail_id_by_path(&p).await {
-                                ids.push(id);
-                            }
-                        }
-                        for id in ids.iter() {
-                            let _ = crate::database::LogicalGroup::remove_thumbnail(&g.id, id).await;
-                        }
-                    }
-                });
-            }
+            MenuAction::AddSelectionToGroup => crate::ui::file_table::menus::logical_groups::run_group_action(crate::ui::file_table::menus::logical_groups::GroupAction::Add, rows),
+            MenuAction::RemoveSelectionFromGroup => crate::ui::file_table::menus::logical_groups::run_group_action(crate::ui::file_table::menus::logical_groups::GroupAction::Remove, rows),
             MenuAction::ExcludeDirsFromScan => {
                 let mut add: Vec<String> = rows.iter().filter(|r| r.file_type == "<DIR>").map(|r| r.path.clone()).filter(|p| !p.trim().is_empty()).collect();
                 if add.is_empty() {
@@ -294,34 +260,13 @@ impl FileTableViewer {
         });
     }
 
-    /// Searches the CLIP index for rows like `origin` and sends them back as a similarity update.
+    /// Shows the files most like `origin` in the tab, ordered by CLIP similarity.
     pub fn find_similar(&self, origin: String) {
-        let tx_updates = self.ai_update_tx.clone();
-        tokio::spawn(async move {
-            let Ok(Some(thumb)) = crate::Thumbnail::get_thumbnail_by_path(&origin).await else { return };
-            let Ok(embed_row) = thumb.clone().get_embedding().await else { return };
-            let embed_vec = embed_row.embedding.clone();
-            if embed_vec.is_empty() {
-                return;
-            }
-            let Ok(hits) = crate::database::ClipEmbeddingRow::find_similar_by_embedding(&embed_vec, 256, 256, 0).await else { return };
-            let mut results = Vec::new();
-            for hit in hits.into_iter() {
-                if hit.path == origin {
-                    continue;
-                }
-                let t = match hit.thumb_ref {
-                    Some(t) => t,
-                    None => crate::Thumbnail::get_thumbnail_by_path(&hit.path).await.unwrap_or(None).unwrap_or_default(),
-                };
-                let cosine_sim = 1.0 - hit.dist;
-                let norm_sim = ((cosine_sim + 1.0) / 2.0).clamp(0.0, 1.0);
-                results.push(crate::ui::file_table::SimilarResult { thumb: t, created: None, updated: None, similarity_score: Some(norm_sim), clip_similarity_score: Some(norm_sim) });
-                if results.len() >= 96 {
-                    break;
-                }
-            }
-            let _ = tx_updates.try_send(crate::ui::file_table::AIUpdate::SimilarResults { origin_path: origin.clone(), results });
+        crate::command::send(crate::command::AppCommand::OpenScope {
+            scope: crate::command::Scope::Similar(origin),
+            target: crate::command::Target::Current,
+            title: None,
+            recursive: false,
         });
     }
 
@@ -330,7 +275,7 @@ impl FileTableViewer {
         if row.path.is_empty() || row.file_type == "<DIR>" {
             return;
         }
-        if self.mode != ExplorerMode::Database && is_virtual(&row.path) && !self.thumbs.has_thumb(&row.path) {
+        if self.mode == ExplorerMode::FileSystem && is_virtual(&row.path) && !self.thumbs.has_thumb(&row.path) {
             self.spawn_archive_thumbnail(row);
         }
         if !is_virtual(&row.path) {
@@ -416,28 +361,25 @@ mod tests {
     }
 
     #[test]
-    fn attach_to_chat_only_appears_in_database_mode() {
+    fn every_entry_is_offered_in_every_scope() {
         let t = MenuTargets { rows: 2, dirs: 0 };
-        assert!(!menu_entries(ExplorerMode::FileSystem, t).iter().any(|(a, _)| *a == MenuAction::AttachToChatWindow));
-        assert!(menu_entries(ExplorerMode::Database, t).iter().any(|(a, _)| *a == MenuAction::AttachToChatWindow));
-        assert_eq!(menu_entries(ExplorerMode::FileSystem, t).len(), 10);
-        assert_eq!(menu_entries(ExplorerMode::Database, t).len(), 11);
+        assert_eq!(menu_entries(t).len(), 11);
+        assert!(menu_entries(t).iter().any(|(a, _)| *a == MenuAction::AttachToChatWindow));
     }
 
     #[test]
     fn exclude_directories_needs_a_selected_folder() {
-        let enabled = |t: MenuTargets| menu_entries(ExplorerMode::FileSystem, t).into_iter().find(|(a, _)| *a == MenuAction::ExcludeDirsFromScan).unwrap().1;
+        let enabled = |t: MenuTargets| menu_entries(t).into_iter().find(|(a, _)| *a == MenuAction::ExcludeDirsFromScan).unwrap().1;
         assert!(!enabled(MenuTargets { rows: 3, dirs: 0 }));
         assert!(enabled(MenuTargets { rows: 3, dirs: 1 }));
     }
 
     #[test]
     fn row_actions_need_at_least_one_row() {
-        let none = menu_entries(ExplorerMode::Database, MenuTargets::default());
+        let none = menu_entries(MenuTargets::default());
         for (a, enabled) in none {
-            let expected = matches!(a, MenuAction::AddSelectionToGroup | MenuAction::RemoveSelectionFromGroup);
-            assert_eq!(enabled, expected, "{a:?}");
+            assert!(!enabled, "{a:?} needs rows");
         }
-        assert!(menu_entries(ExplorerMode::Database, MenuTargets { rows: 1, dirs: 0 }).iter().filter(|(a, _)| *a != MenuAction::ExcludeDirsFromScan).all(|(_, e)| *e));
+        assert!(menu_entries(MenuTargets { rows: 1, dirs: 0 }).iter().filter(|(a, _)| *a != MenuAction::ExcludeDirsFromScan).all(|(_, e)| *e));
     }
 }

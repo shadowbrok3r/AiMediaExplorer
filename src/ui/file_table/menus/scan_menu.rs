@@ -6,6 +6,7 @@ use crate::icons::{self, svg};
 impl crate::ui::file_table::FileExplorer {
     /// Starts a recursive scan of the current path that replaces this tab's rows.
     fn start_kind_scan(&mut self, images: bool, videos: bool, archives: bool) {
+        self.stop_work();
         self.recursive_scan = true;
         self.scan_done = false;
         self.table.clear();
@@ -13,17 +14,13 @@ impl crate::ui::file_table::FileExplorer {
         self.last_scan_paths.clear();
         self.last_scan_root = Some(self.current_path.clone());
         self.file_scan_progress = 0.0;
-        let scan_id = crate::next_scan_id();
-        let tx = self.scan_tx.clone();
         let mut filters = crate::Filters::default();
         filters.root = std::path::PathBuf::from(self.current_path.clone());
         filters.include_images = images;
         filters.include_videos = videos;
         filters.include_archives = archives;
         filters.excluded_terms = self.excluded_terms.clone();
-        self.owning_scan_id = Some(scan_id);
-        self.current_scan_id = Some(scan_id);
-        tokio::spawn(async move { crate::spawn_scan(filters, tx, true, scan_id).await; });
+        self.launch_recorded_scan(filters, true);
     }
 
     pub fn scan_menu(&mut self, ui: &mut Ui) {
@@ -32,28 +29,30 @@ impl crate::ui::file_table::FileExplorer {
         .ui(ui, |ui| {
             ui.vertical_centered_justified(|ui| {
                 ui.set_width(250.);
+                let in_folder = matches!(self.nav.scope, crate::command::Scope::Folder(_));
                 ui.vertical_centered(|ui|
                     ui.heading(RichText::new("Recursive Scanning").underline().color(crate::theme::primary(ui)))
                 );
-                if icons::button(ui, svg::AME_SCAN, "Recursive Scan").on_hover_text("Scan this folder and its subfolders in a new tab").clicked() {
-                    let title = format!("Scan: {}", self.current_path);
-                    let path = self.current_path.clone();
-                    crate::app::OPEN_TAB_REQUESTS
-                        .lock()
-                        .unwrap()
-                        .push(crate::ui::file_table::FilterRequest::OpenPath { title, path, recursive: true, background: false });
+                if ui.add_enabled_ui(in_folder, |ui| icons::button(ui, svg::AME_SCAN, "Recursive Scan")).inner.on_hover_text("Scan this folder and its subfolders in a new tab").clicked() {
+                    crate::command::send(crate::command::AppCommand::OpenScope {
+                        scope: crate::command::Scope::Folder(self.current_path.clone()),
+                        target: crate::command::Target::NewTab,
+                        title: None,
+                        recursive: true,
+                    });
                 }
-                if icons::button(ui, svg::IMAGE, "Scan Images").on_hover_text("Recursive scan including only images").clicked() {
+                if ui.add_enabled_ui(in_folder, |ui| icons::button(ui, svg::IMAGE, "Scan Images")).inner.on_hover_text("Recursive scan including only images").clicked() {
                     self.start_kind_scan(true, false, false);
                 }
-                if icons::button(ui, svg::VIDEO_CAMERA, "Scan Videos").on_hover_text("Recursive scan including only videos").clicked() {
+                if ui.add_enabled_ui(in_folder, |ui| icons::button(ui, svg::VIDEO_CAMERA, "Scan Videos")).inner.on_hover_text("Recursive scan including only videos").clicked() {
                     self.start_kind_scan(false, true, false);
                 }
-                if icons::button(ui, svg::ARCHIVE, "Scan Archives (.zip/.7z/.rar/.tar)").on_hover_text("Recursive scan including only archive containers").clicked() {
+                if ui.add_enabled_ui(in_folder, |ui| icons::button(ui, svg::ARCHIVE, "Scan Archives (.zip/.7z/.rar/.tar)")).inner.on_hover_text("Recursive scan including only archive containers").clicked() {
                     self.start_kind_scan(false, false, true);
                 }
 
-                if icons::button(ui, svg::ARROWS_CLOCKWISE, "Re-scan Current Folder").on_hover_text("Shallow scan with current filters (applies 'Skip likely icons')").clicked() {
+                if ui.add_enabled_ui(in_folder, |ui| icons::button(ui, svg::ARROWS_CLOCKWISE, "Re-scan Current Folder")).inner.on_hover_text("Shallow scan with current filters (applies 'Skip likely icons')").clicked() {
+                    self.stop_work();
                     self.recursive_scan = false;
                     self.scan_done = false;
                     self.table.clear();
@@ -61,8 +60,6 @@ impl crate::ui::file_table::FileExplorer {
                     self.last_scan_paths.clear();
                     self.last_scan_root = Some(self.current_path.clone());
                     self.file_scan_progress = 0.0;
-                    let scan_id = crate::next_scan_id();
-                    let tx = self.scan_tx.clone();
                     let mut filters = crate::Filters::default();
                     filters.root = std::path::PathBuf::from(self.current_path.clone());
                     filters.min_size_bytes = self.viewer.ui_settings.db_min_size_bytes;
@@ -71,9 +68,7 @@ impl crate::ui::file_table::FileExplorer {
                     filters.include_videos = self.viewer.types_show_videos;
                     filters.skip_icons = self.viewer.ui_settings.filter_skip_icons;
                     filters.excluded_terms = self.excluded_terms.clone();
-                    self.owning_scan_id = Some(scan_id);
-                    self.current_scan_id = Some(scan_id);
-                    tokio::spawn(async move { crate::spawn_scan(filters, tx, false, scan_id).await; });
+                    self.launch_recorded_scan(filters, false);
                 }
 
                 if crate::ui::danger_icon_button(ui, svg::STOP, "Cancel Scan").on_hover_text("Cancel active recursive scan").clicked() {
@@ -83,38 +78,10 @@ impl crate::ui::file_table::FileExplorer {
                 ui.vertical_centered(|ui|
                     ui.heading(RichText::new("Database Save").underline().color(crate::theme::primary(ui)))
                 );
-                if icons::button(ui, svg::FLOPPY_DISK, "Save Current View to DB").on_hover_text("Upsert all currently visible rows into the database and add them to the active logical group").clicked() {
-                    let group_opt = self.active_logical_group_name.clone();
-                    let rows: Vec<crate::database::Thumbnail> = self
-                        .table
-                        .iter()
-                        .filter(|r| r.file_type != "<DIR>")
-                        .cloned()
-                        .collect();
-                    if !rows.is_empty() {
-                        tokio::spawn(async move {
-                            match crate::database::upsert_rows_and_get_ids(rows).await {
-                                Ok(ids) => {
-                                    if let Some(group_name) = group_opt {
-                                        match crate::database::LogicalGroup::get_by_name(&group_name).await {
-                                            Ok(Some(g)) => {
-                                                if let Err(e) = crate::database::LogicalGroup::add_thumbnails(&g.id, &ids).await {
-                                                    log::error!("Add thumbs to group failed: {e:?}");
-                                                } else {
-                                                    log::info!("Saved {} rows to DB and associated with group '{}'", ids.len(), group_name);
-                                                }
-                                            }
-                                            Ok(None) => log::warn!("Active group '{}' not found during save", group_name),
-                                            Err(e) => log::error!("get_by_name failed: {e:?}"),
-                                        }
-                                    } else {
-                                        log::info!("Saved {} rows to DB (no group association)", ids.len());
-                                    }
-                                }
-                                Err(e) => log::error!("Upsert rows failed: {e:?}"),
-                            }
-                        });
-                    }
+                if icons::button(ui, svg::FLOPPY_DISK, "Save Current View to DB").on_hover_text("Save all currently visible files to the library and add them to the active collection").clicked() {
+                    self.sync_view();
+                    let rows: Vec<crate::database::Thumbnail> = self.view.rows(&self.table).filter(|r| r.file_type != "<DIR>").cloned().collect();
+                    self.save_rows_to_library(rows);
                 }
 
                 if !self.last_scan_rows.is_empty() {

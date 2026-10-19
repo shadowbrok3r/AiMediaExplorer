@@ -322,6 +322,6 @@ mod tests {
 
     #[test]
     fn the_failures_command_is_the_smart_scope() {
-        assert_eq!(failed_thumbs_command().log_json(), r#"{"cmd":"open_scope","scope":"smart:failed-thumbs","target":"new_tab"}"#);
+        assert_eq!(failed_thumbs_command().log_json(), r#"{"cmd":"open_scope","scope":"smart:failed-thumbs","target":"current"}"#);
     }
 }

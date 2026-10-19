@@ -2,7 +2,6 @@
 
 use eframe::egui::*;
 
-use super::super::table::ExplorerMode;
 use crate::icons::{self, svg};
 
 const ROW_HEIGHT: f32 = 22.0;
@@ -64,6 +63,10 @@ pub fn first_visible(widths: &[f32], sep: f32, overflow_w: f32, avail: f32) -> u
 impl super::super::FileExplorer {
     /// Draws the clickable path under the toolbar; a click opens that folder.
     pub fn breadcrumbs(&mut self, ui: &mut Ui) {
+        if !self.nav.scope.is_filesystem() {
+            self.scope_label(ui);
+            return;
+        }
         let crumbs = crumbs(&self.current_path);
         if crumbs.is_empty() {
             return;
@@ -81,21 +84,35 @@ impl super::super::FileExplorer {
                 });
             });
         ui.ctx().data_mut(|d| d.insert_temp(layout_id(), recorded));
-        if let Some(target) = open {
-            self.open_crumb(target);
+        if let Some((target, new_tab)) = open {
+            if new_tab {
+                crate::command::send(crate::command::AppCommand::open_in_new_tab(super::super::scope::nav::scope_for_path(&target)));
+            } else {
+                self.open_crumb(target);
+            }
         }
     }
 
     /// Opens `target` the way a breadcrumb click does.
     pub fn open_crumb(&mut self, target: String) {
-        self.push_history(target);
-        if self.viewer.mode == ExplorerMode::Database {
-            self.db_offset = 0;
-            self.db_last_batch_len = 0;
-            self.load_database_rows();
-        } else {
-            self.populate_current_directory();
+        if let Err(reason) = self.open_scope(super::super::scope::nav::scope_for_path(&target)) {
+            crate::ui::dialogs::toast(egui_toast::ToastKind::Error, reason);
         }
+    }
+
+    /// Names the scope under the toolbar when it is not a place on disk.
+    fn scope_label(&mut self, ui: &mut Ui) {
+        Panel::top("file_explorer_breadcrumbs").exact_size(ROW_HEIGHT).show_separator_line(false).show(ui, |ui| {
+            ui.horizontal_centered(|ui| {
+                ui.add_space(ui.spacing().item_spacing.x);
+                let title = self.nav.title.clone().unwrap_or_else(|| self.nav.scope.default_title());
+                ui.label(RichText::new(title).strong());
+                if !self.nav.rows_only {
+                    ui.label(RichText::new(self.nav.scope.format()).weak());
+                }
+                ui.label(RichText::new(format!("{} items", self.table.len())).weak());
+            });
+        });
     }
 }
 
@@ -109,7 +126,7 @@ fn crumb_width(ui: &Ui, label: &str) -> f32 {
 }
 
 /// Lays the crumbs out left to right inside the remaining width and returns the one clicked.
-fn crumb_row(ui: &mut Ui, crumbs: &[Crumb], recorded: &mut CrumbLayout) -> Option<String> {
+fn crumb_row(ui: &mut Ui, crumbs: &[Crumb], recorded: &mut CrumbLayout) -> Option<(String, bool)> {
     let item = ui.spacing().item_spacing.x;
     let caret = icons::IconSize::Sm.px(ui);
     let sep = caret + item * 2.0;
@@ -121,8 +138,9 @@ fn crumb_row(ui: &mut Ui, crumbs: &[Crumb], recorded: &mut CrumbLayout) -> Optio
     if first > 0 {
         let (response, _) = containers::menu::MenuButton::new("...").ui(ui, |ui| {
             for crumb in &crumbs[..first] {
-                if ui.button(&crumb.label).clicked() {
-                    open = Some(crumb.target.clone());
+                let item = ui.button(&crumb.label);
+                if item.clicked() || item.middle_clicked() {
+                    open = Some((crumb.target.clone(), item.middle_clicked() || ui.input(|i| i.modifiers.command)));
                     ui.close();
                 }
             }
@@ -133,8 +151,8 @@ fn crumb_row(ui: &mut Ui, crumbs: &[Crumb], recorded: &mut CrumbLayout) -> Optio
     for (i, crumb) in crumbs.iter().enumerate().skip(first) {
         let response = ui.selectable_label(false, crumb_text(&crumb.label));
         recorded.shown.push((response.rect, crumb.target.clone()));
-        if response.clicked() {
-            open = Some(crumb.target.clone());
+        if response.clicked() || response.middle_clicked() {
+            open = Some((crumb.target.clone(), response.middle_clicked() || ui.input(|i| i.modifiers.command)));
         }
         if i + 1 < crumbs.len() {
             svg::CARET_RIGHT.show_tinted(ui, caret, ui.visuals().weak_text_color());
@@ -291,7 +309,28 @@ mod tests {
         let (rect, _) = l.shown.iter().find(|(_, t)| *t == b).expect("the b crumb");
         row.click(rect.center());
         assert_eq!(row.ex.current_path, b);
-        assert_eq!(row.ex.back_stack.last().map(String::as_str), Some(deep.as_str()));
+        assert_eq!(row.ex.scope(), &crate::command::Scope::Folder(b.clone()));
+        assert!(row.ex.can_go_back(), "the folder that was shown stays one step back");
+    }
+
+    #[test]
+    fn a_middle_click_on_a_crumb_asks_for_a_new_tab_and_leaves_the_tab_alone() {
+        let _serial = crate::command::bus::testing::serial();
+        let dir = tempfile::tempdir().unwrap();
+        let deep = dir.path().join("a").join("b");
+        std::fs::create_dir_all(&deep).unwrap();
+        let deep = deep.display().to_string();
+        let mut row = Row::new(&deep, 1400.0);
+        let l = row.layout();
+        let a = crumbs(&deep).into_iter().find(|c| c.label == "a").unwrap().target;
+        let (rect, _) = l.shown.iter().find(|(_, t)| *t == a).expect("the a crumb");
+        let pos = rect.center();
+        let press = |pressed| Event::PointerButton { pos, button: PointerButton::Middle, pressed, modifiers: Modifiers::NONE };
+        row.frame(vec![Event::PointerMoved(pos), press(true), press(false)]);
+        row.settle();
+        let asked = crate::command::bus::testing::take_matching(|c| matches!(c, crate::command::AppCommand::OpenScope { scope: crate::command::Scope::Folder(p), target: crate::command::Target::NewTab, .. } if *p == a));
+        assert_eq!(asked.len(), 1);
+        assert_eq!(row.ex.current_path, deep, "this tab stays where it was");
     }
 
     #[test]

@@ -12,6 +12,7 @@ pub mod thumbnails;
 pub mod logical_groups;
 pub mod collections;
 pub mod collections_migration;
+pub mod scope_queries;
 pub mod filter_groups;
 pub mod cached_scans;
 pub mod assistant_chat;

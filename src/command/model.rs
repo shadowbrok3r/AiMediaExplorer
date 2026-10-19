@@ -14,9 +14,9 @@ use crate::ui::file_table::FilterRequest;
 #[serde(rename_all = "snake_case")]
 pub enum Target {
     /// Replace what the focused tab shows.
+    #[default]
     Current,
     /// A new tab that takes focus.
-    #[default]
     NewTab,
     /// A new tab behind the focused one.
     Background,
@@ -144,6 +144,39 @@ pub enum DevtoolsWindow {
     RowStore,
     Collections,
     Video,
+    Scope,
+}
+
+/// A move through the history of the focused tab, or the load it is showing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NavOp {
+    Back,
+    Forward,
+    Up,
+    Home,
+    /// Read the current scope again.
+    Refresh,
+    /// Load the next page of a search.
+    LoadMore,
+    /// Stop the load in flight.
+    Cancel,
+}
+
+impl NavOp {
+    pub const ALL: [NavOp; 7] = [Self::Back, Self::Forward, Self::Up, Self::Home, Self::Refresh, Self::LoadMore, Self::Cancel];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Back => "Back",
+            Self::Forward => "Forward",
+            Self::Up => "Up",
+            Self::Home => "Home",
+            Self::Refresh => "Refresh",
+            Self::LoadMore => "Load more",
+            Self::Cancel => "Cancel load",
+        }
+    }
 }
 
 /// Rows that already exist in memory, shown in a new tab.
@@ -209,6 +242,10 @@ pub enum AppCommand {
     OpenDevtools { window: DevtoolsWindow },
     /// Open the task list popover of the status bar.
     ShowTaskCenter,
+    /// Move the focused tab through its history or its load.
+    Navigate { op: NavOp },
+    /// Open the database at the configured folder; the retry of a failed start.
+    ConnectDatabase,
 }
 
 impl AppCommand {
@@ -228,6 +265,8 @@ impl AppCommand {
             Self::FocusPath { .. } => "focus_path",
             Self::OpenDevtools { .. } => "open_devtools",
             Self::ShowTaskCenter => "show_task_center",
+            Self::Navigate { .. } => "navigate",
+            Self::ConnectDatabase => "connect_database",
         }
     }
 
@@ -243,8 +282,13 @@ impl AppCommand {
         value.to_string()
     }
 
-    /// A scope opened in a new focused tab.
+    /// A scope shown in the focused tab.
     pub fn open(scope: Scope) -> Self {
+        Self::OpenScope { scope, target: Target::Current, title: None, recursive: false }
+    }
+
+    /// A scope opened in a new tab that takes focus.
+    pub fn open_in_new_tab(scope: Scope) -> Self {
         Self::OpenScope { scope, target: Target::NewTab, title: None, recursive: false }
     }
 }
@@ -261,9 +305,6 @@ impl From<FilterRequest> for AppCommand {
         match req {
             FilterRequest::OpenPath { title, path, recursive, background } => {
                 Self::OpenScope { scope: Scope::Folder(path), target: target(background), title: Some(title), recursive }
-            }
-            FilterRequest::OpenDatabaseAll { title, background } => {
-                Self::OpenScope { scope: Scope::Library, target: target(background), title: Some(title), recursive: false }
             }
             FilterRequest::NewTab { title, origin_path, background, .. } if title.starts_with("Image Edit") => {
                 Self::OpenTool { tool: Tool::ImageEdit, path: origin_path, target: target(background) }
@@ -322,6 +363,10 @@ mod tests {
             AppCommand::FocusPath { path: "/a".into() },
             AppCommand::OpenDevtools { window: DevtoolsWindow::CommandLog },
             AppCommand::ShowTaskCenter,
+            AppCommand::Navigate { op: NavOp::Back },
+            AppCommand::Navigate { op: NavOp::LoadMore },
+            AppCommand::ConnectDatabase,
+            AppCommand::OpenDevtools { window: DevtoolsWindow::Scope },
         ]
     }
 
@@ -367,7 +412,7 @@ mod tests {
                 parsed.insert(cmd.name());
             }
         }
-        for name in ["open_scope", "open_rows", "open_tool", "run", "show_settings", "attach_to_assistant", "refine", "toast", "task_update", "clear_selection", "focus_path", "open_devtools", "show_task_center"] {
+        for name in ["open_scope", "open_rows", "open_tool", "run", "show_settings", "attach_to_assistant", "refine", "toast", "task_update", "clear_selection", "focus_path", "open_devtools", "show_task_center", "navigate", "connect_database"] {
             assert!(parsed.contains(name), "the docs have no example for {name}");
         }
     }
@@ -375,7 +420,7 @@ mod tests {
     #[test]
     fn optional_fields_default_when_missing() {
         let cmd: AppCommand = serde_json::from_str(r#"{"cmd":"open_scope","scope":"lib:all"}"#).unwrap();
-        assert!(matches!(cmd, AppCommand::OpenScope { target: Target::NewTab, title: None, recursive: false, .. }));
+        assert!(matches!(cmd, AppCommand::OpenScope { target: Target::Current, title: None, recursive: false, .. }));
         let settings: AppCommand = serde_json::from_str(r#"{"cmd":"show_settings"}"#).unwrap();
         assert!(matches!(settings, AppCommand::ShowSettings { section: None }));
     }
@@ -408,8 +453,6 @@ mod tests {
     fn legacy_requests_map_onto_commands() {
         let path = AppCommand::from(FilterRequest::OpenPath { title: "Scan: /a".into(), path: "/a".into(), recursive: true, background: true });
         assert!(matches!(path, AppCommand::OpenScope { scope: Scope::Folder(ref p), target: Target::Background, recursive: true, title: Some(ref t) } if p == "/a" && t == "Scan: /a"));
-        let all = AppCommand::from(FilterRequest::OpenDatabaseAll { title: "Entire Database".into(), background: false });
-        assert!(matches!(all, AppCommand::OpenScope { scope: Scope::Library, target: Target::NewTab, .. }));
         let edit = AppCommand::from(FilterRequest::NewTab {
             title: "Image Edit".into(),
             rows: vec![],
@@ -450,11 +493,32 @@ mod tests {
     }
 
     #[test]
+    fn navigation_commands_use_the_documented_json() {
+        let nav: AppCommand = serde_json::from_str(r#"{"cmd":"navigate","op":"load_more"}"#).unwrap();
+        assert!(matches!(nav, AppCommand::Navigate { op: NavOp::LoadMore }));
+        assert!(serde_json::from_str::<AppCommand>(r#"{"cmd":"navigate","op":"sideways"}"#).is_err());
+        assert!(serde_json::from_str::<AppCommand>(r#"{"cmd":"navigate"}"#).is_err());
+        let connect: AppCommand = serde_json::from_str(r#"{"cmd":"connect_database"}"#).unwrap();
+        assert!(matches!(connect, AppCommand::ConnectDatabase));
+        for op in NavOp::ALL {
+            assert!(!op.label().is_empty());
+            assert_eq!(serde_json::from_value::<NavOp>(serde_json::to_value(op).unwrap()).unwrap(), op);
+        }
+    }
+
+    #[test]
+    fn a_scope_opens_in_the_focused_tab_unless_a_new_tab_is_asked_for() {
+        assert!(matches!(AppCommand::open(Scope::Library), AppCommand::OpenScope { target: Target::Current, .. }));
+        assert!(matches!(AppCommand::open_in_new_tab(Scope::Library), AppCommand::OpenScope { target: Target::NewTab, .. }));
+        assert_eq!(Target::default(), Target::Current);
+    }
+
+    #[test]
     fn the_runner_reads_json_lists_and_scope_strings() {
         assert!(matches!(parse_input(r#" {"cmd":"clear_selection"} "#).unwrap()[..], [AppCommand::ClearSelection]));
         assert_eq!(parse_input(r#"[{"cmd":"clear_selection"},{"cmd":"show_task_center"}]"#).unwrap().len(), 2);
         let scope = parse_input("tag:sunset").unwrap();
-        assert!(matches!(&scope[..], [AppCommand::OpenScope { scope: Scope::Tag(t), target: Target::NewTab, .. }] if t == "sunset"));
+        assert!(matches!(&scope[..], [AppCommand::OpenScope { scope: Scope::Tag(t), target: Target::Current, .. }] if t == "sunset"));
         assert!(parse_input("   ").is_err());
         assert!(parse_input("{").unwrap_err().starts_with("bad command"));
         assert!(parse_input("gibberish").is_err());

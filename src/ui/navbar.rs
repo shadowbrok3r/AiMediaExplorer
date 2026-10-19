@@ -1,4 +1,4 @@
-use crate::{icons::{self, svg}, theme::{chrome, controls::MenuButton}, ui::{dialogs, status::{self, GlobalStatusIndicator}, tabs::TABS}};
+use crate::{icons::{self, svg}, theme::{chrome, controls::MenuButton}, ui::{dialogs, status::{self, GlobalStatusIndicator}, tabs::TabKind}};
 use eframe::egui::*;
 use egui_dock::SurfaceIndex;
 
@@ -16,24 +16,19 @@ impl crate::app::SmartMediaApp {
     fn file_menu_items(&mut self, ui: &mut Ui) {
         icons::menu_button(ui, svg::AME_DATABASE, "Database", |ui| {
             if icons::button(ui, svg::AME_THUMBNAIL_GRID, "View Entire Database").on_hover_text("Show all thumbnails from all directories").clicked() {
-                crate::app::OPEN_TAB_REQUESTS
-                    .lock()
-                    .unwrap()
-                    .push(crate::ui::file_table::FilterRequest::OpenDatabaseAll { title: "Entire Database".to_string(), background: false });
+                crate::command::send(crate::command::AppCommand::open(crate::command::Scope::Library));
             }
             if icons::button(ui, svg::AME_REFINE, "Refine (AI, DB-only)").on_hover_text("Open AI Refinements panel to generate proposals from the database").clicked() {
-                self.focus_or_open_tab("AI Refinements");
+                self.focus_or_open_tab(TabKind::Refine);
                 ui.close();
             }
             if icons::button(ui, svg::AME_CATEGORY, "Group by Categories").on_hover_text("Show virtual folders for each category").clicked() {
                 let ex = self.context.active_explorer();
-                ex.viewer.mode = super::file_table::table::ExplorerMode::Database;
                 ex.load_virtual_categories_view();
                 ui.close();
             }
             if icons::button(ui, svg::TAG, "Group by Tags").on_hover_text("Show virtual folders for each tag").clicked() {
                 let ex = self.context.active_explorer();
-                ex.viewer.mode = super::file_table::table::ExplorerMode::Database;
                 ex.load_virtual_tags_view();
                 ui.close();
             }
@@ -167,17 +162,16 @@ impl crate::app::SmartMediaApp {
         }
 
         // allow certain tabs to be toggled
-        for tab in TABS {
-            if icons::selectable_button(ui, tab_icon(tab), self.context.open_tabs.contains(tab), tab)
+        for tab in TabKind::TOGGLED {
+            if icons::selectable_button(ui, tab_icon(&tab), self.context.open_tabs.contains(&tab), tab.menu_label())
                 .clicked()
             {
-                if let Some(index) = self.tree.find_tab(&tab.to_string()) {
+                if let Some(index) = self.tree.find_tab(&tab) {
                     self.tree.remove_tab(index);
-                    self.context.open_tabs.remove(tab);
+                    self.context.open_tabs.remove(&tab);
                 } else {
-                    self.tree[SurfaceIndex::main()]
-                        .push_to_focused_leaf(tab.to_string());
-                    self.context.open_tabs.insert(tab.to_string());
+                    self.tree[SurfaceIndex::main()].push_to_focused_leaf(tab);
+                    self.context.open_tabs.insert(tab);
                 }
 
                 ui.close();
@@ -244,6 +238,10 @@ impl crate::app::SmartMediaApp {
                 crate::ui::devtools::toggle_video(ui.ctx());
                 ui.close();
             }
+            if icons::button(ui, svg::AME_FOLDER_TREE, "Scope").clicked() {
+                crate::ui::devtools::toggle_scope(ui.ctx());
+                ui.close();
+            }
         });
 
         ui.separator();
@@ -254,21 +252,17 @@ impl crate::app::SmartMediaApp {
     pub fn status_bar(&mut self, ui: &mut Ui) {
         icons::gallery::show_window(ui.ctx());
 
-        let owner = self
-            .context
-            .active_tab_title
-            .clone()
-            .unwrap_or_else(|| crate::app::MAIN_EXPLORER_TAB.to_string());
+        let owner = self.context.active_owner();
         crate::ui::taskbar::show(ui, self.context.active_explorer(), &owner);
     }
 }
 
-/// Icon of a dockable tab by title.
-fn tab_icon(tab: &str) -> icons::Icon {
+/// Icon of a dockable tab.
+fn tab_icon(tab: &TabKind) -> icons::Icon {
     match tab {
-        "File Explorer" => svg::FOLDER_OPEN,
-        "Logs" => svg::TERMINAL_WINDOW,
-        "AI Refinements" => svg::AME_REFINE,
+        TabKind::Browser { .. } => svg::FOLDER_OPEN,
+        TabKind::Logs => svg::TERMINAL_WINDOW,
+        TabKind::Refine => svg::AME_REFINE,
         _ => svg::TABS,
     }
 }

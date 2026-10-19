@@ -319,6 +319,8 @@ pub enum AttentionKind {
     ArchivePassword,
     FailedThumbs,
     ModelError,
+    /// The library database could not be opened.
+    Database,
 }
 
 /// `3s`, `2m 05s` or `1h 02m`.

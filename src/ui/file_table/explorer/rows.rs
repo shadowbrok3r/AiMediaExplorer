@@ -17,18 +17,9 @@ use crate::ui::file_table::table::{ExplorerMode, TabAction, cells};
 /// How long a row keeps the focus before its on-demand work (archive thumbnail, CLIP check) starts.
 const FOCUS_SETTLE: Duration = Duration::from_millis(150);
 
-/// No-op stand-in for the removed position index.
-#[derive(Default)]
-pub struct RetiredIndex;
-
-impl RetiredIndex {
-    pub fn clear(&mut self) {}
-}
-
 /// Bookkeeping between the selection, the view and the rest of the explorer.
 #[derive(Default)]
 pub struct RowSync {
-    mirrored: Option<u64>,
     preview: Option<PathKey>,
     settle: Option<(PathKey, Instant)>,
     stats_key: Option<(u64, u64)>,
@@ -104,13 +95,9 @@ impl FileExplorer {
         outcome
     }
 
-    /// Mirrors the selection into `viewer.selected`, follows the preview target and refreshes the selection counts.
+    /// Follows the preview target and refreshes the selection counts.
     fn settle_selection(&mut self) {
         let revision = self.selection.revision();
-        if self.row_sync.mirrored != Some(revision) {
-            self.viewer.selected = self.selection.keys().iter().filter_map(|k| self.table.get_by_key(k)).map(|r| r.path.clone()).collect();
-            self.row_sync.mirrored = Some(revision);
-        }
         let target = self.selection.preview_target().cloned();
         if target != self.row_sync.preview {
             if let Some(row) = target.as_ref().and_then(|k| self.table.get_by_key(k)) {
@@ -163,11 +150,8 @@ impl FileExplorer {
                 self.viewer.requested_tabs.push(TabAction::OpenCategory(rest.trim_end_matches('/').to_string()));
             } else if let Some(rest) = row.path.strip_prefix("tag://") {
                 self.viewer.requested_tabs.push(TabAction::OpenTag(rest.trim_end_matches('/').to_string()));
-            } else if self.viewer.mode == ExplorerMode::Database {
-                self.set_path(row.path);
-            } else {
-                self.push_history(row.path);
-                self.populate_current_directory();
+            } else if let Err(reason) = self.open_scope(super::super::scope::nav::scope_for_path(&row.path)) {
+                crate::ui::dialogs::toast(egui_toast::ToastKind::Error, reason);
             }
             return;
         }

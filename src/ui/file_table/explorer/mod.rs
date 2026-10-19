@@ -4,10 +4,12 @@ use std::{path::PathBuf, time::Duration};
 
 pub mod navigation;
 pub mod backup;
+pub mod persist;
 pub mod rows;
 
 impl crate::ui::file_table::FileExplorer {
     pub fn populate_current_directory(&mut self) {
+        self.sync_fs_scope();
         // Support virtual archive navigation via scheme://<fs>!/<internal>
         if let Some((scheme, archive_path, internal)) = parse_any_virtual_path(&self.current_path) {
             self.viewer.showing_similarity = false;
@@ -101,6 +103,7 @@ impl crate::ui::file_table::FileExplorer {
                         }
                     },
                 }
+                self.note_listing_done();
                 return;
             }
         }
@@ -169,10 +172,42 @@ fn normalize_prefix(internal: &str) -> String {
 
 // Parse any supported virtual path: <scheme>://<archive>!/<internal>
 pub fn parse_any_virtual_path(v: &str) -> Option<(String,String,String)> {
-    if let Some((scheme, rest)) = v.split_once("://") {
-        if let Some((archive, internal)) = rest.split_once('!') {
-            return Some((scheme.to_string(), archive.trim_matches('/').to_string(), internal.trim_start_matches('/').to_string()));
-        }
+    crate::command::scope::split_virtual(v)
+}
+
+/// The virtual path that opens the archive file at `path`: tar family, 7z or zip by name.
+pub fn archive_scope(path: &str) -> crate::command::Scope {
+    if parse_any_virtual_path(path).is_some() {
+        return crate::command::Scope::Archive(path.to_string());
     }
-    None
+    let lower = path.to_ascii_lowercase();
+    let ext = std::path::Path::new(&lower).extension().and_then(|e| e.to_str()).unwrap_or_default().to_string();
+    let tar_family = ["tar", "gz", "bz", "bz2", "xz"].contains(&ext.as_str())
+        || [".tgz", ".tbz", ".tbz2", ".txz", ".tar.gz", ".tar.bz2", ".tar.xz"].iter().any(|s| lower.ends_with(s));
+    let scheme = if tar_family { "tar" } else if ext == "7z" { "7z" } else { "zip" };
+    crate::command::Scope::Archive(format!("{scheme}://{path}!/"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::command::Scope;
+
+    #[test]
+    fn archives_open_with_the_scheme_their_name_asks_for() {
+        assert_eq!(archive_scope("/p/a.zip"), Scope::Archive("zip:///p/a.zip!/".into()));
+        assert_eq!(archive_scope("/p/a.7z"), Scope::Archive("7z:///p/a.7z!/".into()));
+        for name in ["a.tar", "a.tgz", "a.tar.gz", "a.tar.bz2", "a.tar.xz", "a.txz", "A.TAR.GZ"] {
+            assert_eq!(archive_scope(&format!("/p/{name}")), Scope::Archive(format!("tar:///p/{name}!/")), "{name}");
+        }
+        assert_eq!(archive_scope("/p/a.rar"), Scope::Archive("zip:///p/a.rar!/".into()));
+        assert_eq!(archive_scope("zip:///p/a.zip!/in/"), Scope::Archive("zip:///p/a.zip!/in/".into()));
+    }
+
+    #[test]
+    fn virtual_paths_split_into_scheme_archive_and_inner_path() {
+        assert_eq!(parse_any_virtual_path("zip:///data/a.zip!/x/y"), Some(("zip".into(), "/data/a.zip".into(), "x/y".into())));
+        assert_eq!(parse_any_virtual_path(r"7z://C:\x\a.7z!/"), Some(("7z".into(), r"C:\x\a.7z".into(), String::new())));
+        assert_eq!(parse_any_virtual_path("/plain/folder"), None);
+    }
 }

@@ -81,9 +81,9 @@ pub struct FileTableViewer {
     // Requests to open tabs based on user clicks in cells
     #[serde(skip)]
     pub requested_tabs: Vec<TabAction>,
-    // Read-only projection of the selection for readers outside the table.
+    // Library and disk badges of the rows
     #[serde(skip)]
-    pub selected: std::collections::HashSet<String>,
+    pub badges: crate::ui::file_table::scope::Badges,
 }
 
 // Actions requested from table cells
@@ -120,7 +120,7 @@ impl FileTableViewer {
             types_show_dirs: true,
             requested_tabs: Vec::new(),
             archive_passwords: HashMap::new(),
-            selected: std::collections::HashSet::new(),
+            badges: Default::default(),
         }
     }
 

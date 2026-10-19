@@ -10,7 +10,9 @@ use super::columns::Col;
 use super::details::DetailsEvent;
 use super::{FileTableViewer, TabAction};
 use crate::Thumbnail;
+use crate::icons::svg;
 use crate::ui::file_table::rows::{RowKind, SortValue};
+use crate::ui::file_table::scope::Badge;
 use crate::ui::file_table::thumbs::{ThumbView, Tier};
 
 /// Whether a CLIP embedding is known for the row, by path or by content hash.
@@ -76,6 +78,23 @@ fn color_for_tag(tag: &str) -> Color32 {
     Color32::from_rgb(r / 2 + 64, g / 2 + 64, b / 2 + 64)
 }
 
+/// Name of a file with a badge for whether it is in the library, and whether the indexed file is still on disk.
+fn name_cell(ui: &mut Ui, viewer: &FileTableViewer, row: &Thumbnail) {
+    if is_dir(row) || row.path.is_empty() {
+        return plain(ui, format!(" {}", row.filename));
+    }
+    let badge = viewer.badges.badge(&row.path);
+    let (icon, tint) = match badge {
+        Badge::Indexed => (svg::DATABASE, crate::theme::success(ui)),
+        Badge::NotIndexed => (svg::CIRCLE_DASHED, ui.visuals().weak_text_color()),
+        Badge::Offline => (svg::CLOUD_SLASH, crate::theme::warn(ui)),
+    };
+    ui.horizontal(|ui| {
+        ui.add(icon.image(13.0).tint(tint)).on_hover_text(format!("{}: {}", badge.label(), badge.detail()));
+        ui.add(Label::new(format!("{}", row.filename)).selectable(false).truncate());
+    });
+}
+
 /// Thumbnail column: folder and archive icons, or the texture from the thumbnail service.
 fn thumb_cell(ui: &mut Ui, viewer: &FileTableViewer, row: &Thumbnail) {
     ui.vertical_centered_justified(|ui| {
@@ -107,7 +126,7 @@ fn thumb_cell(ui: &mut Ui, viewer: &FileTableViewer, row: &Thumbnail) {
 pub fn draw_cell(ui: &mut Ui, viewer: &FileTableViewer, col: Col, row: &Thumbnail, events: &mut Vec<DetailsEvent>) {
     match col {
         Col::Thumb => thumb_cell(ui, viewer, row),
-        Col::Name => plain(ui, format!(" {}", row.filename)),
+        Col::Name => name_cell(ui, viewer, row),
         Col::Path => {
             ui.add(Label::new(&row.path).selectable(false).truncate()).on_hover_text(&row.path);
         }

@@ -149,7 +149,6 @@ impl super::FileExplorer {
                                             // Jump current table to this path
                                             if Button::new("Go").small().ui(ui).on_hover_text("Jump current tab to this path").clicked() {
                                                 let path = access.path.to_string_lossy().to_string();
-                                                self.viewer.mode = super::table::ExplorerMode::FileSystem;
                                                 self.set_path(path);
                                             }
                                         });

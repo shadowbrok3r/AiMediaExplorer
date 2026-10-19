@@ -3,28 +3,32 @@
 use std::time::Instant;
 
 use super::dispatch::{CommandError, CommandResult, CommandSink};
-use super::model::{ActionId, DevtoolsWindow, RowsTab, Section, Selector, Target, ToastLevel, Tool};
-use super::scope::{Scope, SmartView};
+use super::model::{ActionId, DevtoolsWindow, NavOp, RowsTab, Section, Selector, Target, ToastLevel, Tool};
+use super::scope::Scope;
 use crate::app::SmartMediaApp;
 use crate::status::{CLIP_STATUS, GlobalStatusIndicator, StatusState};
 use crate::tasks::{TaskEvent, TaskId};
 use crate::ui::file_table::FileExplorer;
+use crate::ui::file_table::scope::nav::check_openable;
+use crate::ui::tabs::{BrowserId, TabKind};
 
 /// Most files `Open` and `Reveal` act on at once.
 const OPEN_LIMIT: usize = 20;
 
 impl SmartMediaApp {
-    fn open_explorer_tab(&mut self, title: &str, background: bool, build: impl FnOnce(&mut FileExplorer)) -> String {
-        let title = crate::ui::tabs::uniquify_title(&self.context.open_tabs, title);
-        self.open_tab(&title, background);
+    /// Adds a browser tab whose explorer `build` sets up; returns its id and title.
+    fn open_browser_tab(&mut self, background: bool, build: impl FnOnce(&mut FileExplorer) -> Result<(), String>) -> Result<(BrowserId, String), CommandError> {
         let mut explorer = FileExplorer::new(true);
-        build(&mut explorer);
-        self.context.filtered_tabs.insert(title.clone(), explorer);
-        title
+        build(&mut explorer).map_err(CommandError::not_found)?;
+        let id = BrowserId::next();
+        let title = explorer.tab_title();
+        self.context.filtered_tabs.insert(id, explorer);
+        self.open_tab(TabKind::browser(id), background);
+        Ok((id, title))
     }
 
-    fn open_tool_tab(&mut self, tab: &str, background: bool) {
-        if self.context.open_tabs.contains(tab) {
+    fn open_tool_tab(&mut self, tab: TabKind, background: bool) {
+        if self.context.open_tabs.contains(&tab) {
             if !background {
                 self.focus_or_open_tab(tab);
             }
@@ -33,83 +37,52 @@ impl SmartMediaApp {
         }
     }
 
-    /// Rows of a tag or category fetched in the background, then shown in a new tab through the bus.
-    fn open_fetched(&self, title: String, background: bool, origin: String, fetch: impl std::future::Future<Output = anyhow::Result<Vec<crate::database::Thumbnail>>> + Send + 'static) {
-        tokio::spawn(async move {
-            match fetch.await {
-                Ok(rows) => super::send(super::AppCommand::OpenRows(RowsTab { title, rows, origin_path: Some(origin), background, ..Default::default() })),
-                Err(e) => super::send(super::AppCommand::Toast { kind: ToastLevel::Error, text: format!("{title}: {e}") }),
-            }
-        });
+    /// Brings the tab of the active explorer to the front, reopening the main one when it was closed.
+    fn focus_active_browser(&mut self) {
+        let kind = self.context.active_kind();
+        self.focus_or_open_tab(kind);
     }
 }
 
 impl CommandSink for SmartMediaApp {
     fn open_scope(&mut self, scope: &Scope, target: Target, title: Option<&str>, recursive: bool) -> CommandResult {
-        let title = title.map(str::to_string).unwrap_or_else(|| scope.default_title());
-        let background = target == Target::Background;
-        match scope {
-            Scope::Folder(path) | Scope::Archive(path) => {
-                if target == Target::Current {
-                    self.context.active_explorer().init_open_path(path, recursive);
-                    return Ok(format!("showing {path} in the focused tab"));
+        check_openable(scope).map_err(CommandError::not_found)?;
+        match target {
+            Target::Current => {
+                self.focus_active_browser();
+                let explorer = self.context.active_explorer();
+                explorer.open_scope_recursive(scope.clone(), recursive).map_err(CommandError::not_found)?;
+                if let Some(title) = title {
+                    explorer.nav.title = Some(title.to_string());
                 }
-                let opened = self.open_explorer_tab(&title, background, |ex| ex.init_open_path(path, recursive));
+                Ok(format!("showing {scope} in the focused tab"))
+            }
+            Target::NewTab | Target::Background => {
+                let (_, opened) = self.open_browser_tab(target == Target::Background, |ex| {
+                    ex.start_at(scope.clone(), recursive)?;
+                    if let Some(title) = title {
+                        ex.nav.title = Some(title.to_string());
+                    }
+                    Ok(())
+                })?;
                 Ok(format!("opened tab '{opened}'"))
             }
-            Scope::Library => {
-                if target == Target::Current {
-                    let ex = self.context.active_explorer();
-                    ex.viewer.mode = crate::ui::file_table::table::ExplorerMode::Database;
-                    ex.load_all_database_rows();
-                    return Ok("showing the library in the focused tab".to_string());
-                }
-                let opened = self.open_explorer_tab(&title, background, |ex| {
-                    ex.viewer.mode = crate::ui::file_table::table::ExplorerMode::Database;
-                    ex.load_all_database_rows();
-                });
-                Ok(format!("opened tab '{opened}'"))
-            }
-            Scope::Tag(tag) => {
-                let tag = tag.clone();
-                self.open_fetched(title.clone(), background, format!("tag:{tag}"), async move { crate::database::Thumbnail::fetch_by_tag(&tag).await });
-                Ok(format!("loading '{title}'"))
-            }
-            Scope::Category(category) => {
-                let category = category.clone();
-                self.open_fetched(title.clone(), background, format!("cat:{category}"), async move { crate::database::Thumbnail::fetch_by_category(&category).await });
-                Ok(format!("loading '{title}'"))
-            }
-            Scope::Smart(SmartView::FailedThumbs) => {
-                let failed: Vec<(String, String)> = std::iter::once(&self.context.file_explorer)
-                    .chain(self.context.filtered_tabs.values())
-                    .flat_map(|ex| ex.failed_thumbs.iter().cloned())
-                    .collect();
-                if failed.is_empty() {
-                    return Err(CommandError::not_found("no thumbnails have failed"));
-                }
-                let title = format!("Failed thumbnails ({})", failed.len());
-                self.open_rows(RowsTab { title, rows: failed_thumb_rows(&failed), background, ..Default::default() })
-            }
-            other => Err(CommandError::unsupported(format!("no loader for {} scopes yet", scope_kind(other)))),
         }
     }
 
     fn open_rows(&mut self, tab: RowsTab) -> CommandResult {
-        let RowsTab { title, rows, showing_similarity, similar_scores, origin_path, background } = tab;
+        let RowsTab { title, rows, showing_similarity, similar_scores, origin_path: _, background } = tab;
         let count = rows.len();
-        let opened = self.open_explorer_tab(&title, background, |ex| {
-            ex.set_rows(rows);
+        let (_, opened) = self.open_browser_tab(background, |ex| {
+            ex.show_rows(Some(title), rows);
             if showing_similarity {
                 ex.viewer.showing_similarity = true;
                 if let Some(scores) = similar_scores {
                     ex.viewer.similar_scores = scores;
                 }
-                if let Some(origin) = origin_path {
-                    ex.current_path = origin;
-                }
             }
-        });
+            Ok(())
+        })?;
         Ok(format!("opened tab '{opened}' with {count} rows"))
     }
 
@@ -118,9 +91,10 @@ impl CommandSink for SmartMediaApp {
         if let (Tool::ImageEdit, Some(path)) = (tool, path) {
             self.context.image_edit.open_with_path(path);
         }
+        let kind = TabKind::from(tool);
         match tool {
-            Tool::Refinements | Tool::Logs => self.focus_or_open_tab(tool.tab_title()),
-            Tool::ImageEdit => self.open_tool_tab(tool.tab_title(), background),
+            Tool::Refinements | Tool::Logs => self.focus_or_open_tab(kind),
+            Tool::ImageEdit => self.open_tool_tab(kind, background),
         }
         Ok(format!("opened {}", tool.tab_title()))
     }
@@ -130,12 +104,16 @@ impl CommandSink for SmartMediaApp {
         match on {
             Selector::Paths(paths) => paths.clone(),
             Selector::Selection => {
-                let mut paths: Vec<String> = ex.viewer.selected.iter().cloned().collect();
+                ex.sync_view();
+                let mut paths: Vec<String> = ex.selected_rows().iter().map(|r| r.path.clone()).collect();
                 paths.sort();
                 paths
             }
             Selector::Focus => Some(ex.current_thumb.path.clone()).filter(|p| !p.is_empty()).into_iter().collect(),
-            Selector::View => ex.table.iter().filter(|r| r.file_type != "<DIR>").map(|r| r.path.clone()).collect(),
+            Selector::View => {
+                ex.sync_view();
+                ex.view.rows(&ex.table).filter(|r| r.file_type != "<DIR>").map(|r| r.path.clone()).collect()
+            }
         }
     }
 
@@ -194,7 +172,7 @@ impl CommandSink for SmartMediaApp {
     fn refine(&mut self, paths: Vec<String>) -> CommandResult {
         let count = paths.len();
         crate::ui::refine::REFINE_SELECTION_REQUESTS.lock().unwrap_or_else(|e| e.into_inner()).push(paths);
-        self.focus_or_open_tab(Tool::Refinements.tab_title());
+        self.focus_or_open_tab(TabKind::Refine);
         Ok(format!("refining {count} files"))
     }
 
@@ -209,19 +187,22 @@ impl CommandSink for SmartMediaApp {
 
     fn clear_selection(&mut self) -> CommandResult {
         let ex = self.context.active_explorer();
-        let count = ex.viewer.selected.len();
-        ex.viewer.selected.clear();
+        ex.sync_view();
+        let count = ex.selection_count();
+        ex.clear_selection();
         Ok(format!("cleared {count} selected"))
     }
 
     fn focus_path(&mut self, path: &str) -> CommandResult {
         let ex = self.context.active_explorer();
-        let Some(row) = ex.table.iter().find(|r| r.path == path).cloned() else {
+        if !ex.table.contains_path(path) {
             return Err(CommandError::not_found(format!("{path} is not in the focused tab")));
-        };
-        ex.current_thumb = row;
-        ex.viewer.selected.clear();
-        ex.viewer.selected.insert(path.to_string());
+        }
+        ex.sync_view();
+        ex.select_paths([path]);
+        if ex.selection_count() == 0 {
+            return Err(CommandError::not_found(format!("{path} is hidden by the filters of the focused tab")));
+        }
         Ok(format!("focused {path}"))
     }
 
@@ -233,6 +214,35 @@ impl CommandSink for SmartMediaApp {
     fn show_task_center(&mut self) -> CommandResult {
         crate::ui::taskbar::set_center_open(&self.egui_ctx, true);
         Ok("task center opened".to_string())
+    }
+
+    fn navigate(&mut self, op: NavOp) -> CommandResult {
+        self.focus_active_browser();
+        let ex = self.context.active_explorer();
+        let moved = match op {
+            NavOp::Back => ex.go_back(),
+            NavOp::Forward => ex.go_forward(),
+            NavOp::Up => ex.go_up(),
+            NavOp::Home => ex.go_home(),
+            NavOp::LoadMore => ex.load_more(),
+            NavOp::Refresh => {
+                ex.reload_scope();
+                true
+            }
+            NavOp::Cancel => {
+                ex.cancel_load();
+                true
+            }
+        };
+        if moved { Ok(format!("{}: now at {}", op.label(), ex.scope())) } else { Err(CommandError::invalid(format!("{} has nowhere to go from {}", op.label(), ex.scope()))) }
+    }
+
+    fn connect_database(&mut self) -> CommandResult {
+        if crate::database::is_connected() {
+            return Ok("the database is already connected".to_string());
+        }
+        let path = self.context.connect_database();
+        Ok(format!("opening the database at {path}"))
     }
 }
 
@@ -253,20 +263,4 @@ pub fn failed_thumb_rows(failed: &[(String, String)]) -> Vec<crate::database::Th
             row
         })
         .collect()
-}
-
-fn scope_kind(scope: &Scope) -> &'static str {
-    match scope {
-        Scope::Folder(_) => "folder",
-        Scope::Archive(_) => "archive",
-        Scope::Library => "library",
-        Scope::Recent => "recent",
-        Scope::Collection(_) => "collection",
-        Scope::Tag(_) => "tag",
-        Scope::Category(_) => "category",
-        Scope::Semantic(_) => "semantic",
-        Scope::Similar(_) => "similar",
-        Scope::Scan(_) => "scan",
-        Scope::Smart(_) => "smart",
-    }
 }

@@ -49,6 +49,7 @@ pub struct DetailsView {
     /// Rows that fit the table body, as of the last frame.
     pub page_rows: usize,
     scroll_to: Option<usize>,
+    scroll_to_min: bool,
     scroll_top: bool,
     kb_active: bool,
     frame_ms: VecDeque<f32>,
@@ -58,7 +59,7 @@ pub struct DetailsView {
 
 impl Default for DetailsView {
     fn default() -> Self {
-        Self { prefs: DetailsPrefs::default(), page_rows: 8, scroll_to: None, scroll_top: false, kb_active: false, frame_ms: VecDeque::new(), drawn_rows: 0, rects: Vec::new() }
+        Self { prefs: DetailsPrefs::default(), page_rows: 8, scroll_to: None, scroll_to_min: false, scroll_top: false, kb_active: false, frame_ms: VecDeque::new(), drawn_rows: 0, rects: Vec::new() }
     }
 }
 
@@ -90,6 +91,17 @@ impl DetailsView {
     /// Scrolls the view position `pos` into sight on the next frame.
     pub fn scroll_to(&mut self, pos: usize) {
         self.scroll_to = Some(pos);
+    }
+
+    /// Scrolls so that view position `pos` is the first row shown on the next frame.
+    pub fn scroll_to_top_row(&mut self, pos: usize) {
+        self.scroll_to = Some(pos);
+        self.scroll_to_min = true;
+    }
+
+    /// View position of the first row laid out in the last frame.
+    pub fn first_visible(&self) -> Option<usize> {
+        self.rects.iter().map(|(pos, _)| *pos).min()
     }
 
     /// Jumps to the first row on the next frame.
@@ -160,6 +172,7 @@ impl DetailsView {
         let widest = cols.iter().map(|c| c.width().initial).sum::<f32>() + spacing_x * (cols.len() as f32 + 1.0) + 16.0;
         let content_w = ui.available_width().max(widest);
         let scroll_to = self.scroll_to.take();
+        let scroll_to_align = std::mem::take(&mut self.scroll_to_min).then_some(Align::Min);
         let scroll_top = std::mem::take(&mut self.scroll_top);
         let mut drawn = 0usize;
         let mut rects = std::mem::take(&mut self.rects);
@@ -179,7 +192,7 @@ impl DetailsView {
                     .min_scrolled_height(0.0)
                     .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible);
                 if let Some(pos) = scroll_to {
-                    builder = builder.scroll_to_row(pos, None).animate_scrolling(false);
+                    builder = builder.scroll_to_row(pos, scroll_to_align).animate_scrolling(false);
                 }
                 if scroll_top {
                     builder = builder.vertical_scroll_offset(0.0);
@@ -293,7 +306,7 @@ fn row_menu(ui: &mut Ui, input: &DetailsInputs<'_>, key: &PathKey, row: &Thumbna
     let targets = menu_targets(input, key, row);
     ui.label(RichText::new(if targets.rows == 1 { "1 item".to_string() } else { format!("{} items", targets.rows) }).weak());
     ui.separator();
-    for (action, enabled) in menu_entries(input.viewer.mode, targets) {
+    for (action, enabled) in menu_entries(targets) {
         let button = icons::button_widget(ui, action.icon(), action.label());
         if ui.add_enabled(enabled, button).clicked() {
             events.push(DetailsEvent::Menu(action));
