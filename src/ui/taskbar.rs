@@ -174,6 +174,7 @@ pub fn show(ui: &mut Ui, ex: &mut FileExplorer, owner: &str) {
 /// Draws the bar with an explicit task view, meter readings and time.
 pub fn show_with(ui: &mut Ui, ex: &mut FileExplorer, owner: &str, view: &TaskView, metrics: SystemMetrics, now: Instant) {
     let ctx = ui.ctx().clone();
+    ex.sync_view();
     let m = crate::theme::metrics(&ctx);
     let mut actions: Vec<BarAction> = Vec::new();
     let mut anchor: Option<Response> = None;

@@ -2,7 +2,6 @@ use crate::{ScanEnvelope, Thumbnail};
 use crossbeam::channel::{Receiver, Sender};
 use eframe::egui::*;
 use egui::style::StyleModifier;
-use egui_data_table::Renderer;
 use humansize::DECIMAL;
 use serde::Serialize;
 use std::sync::Arc as StdArc;
@@ -16,9 +15,13 @@ pub mod menus;
 pub mod preview_pane;
 pub mod quick_access_pane;
 pub mod receive;
+#[path = "../../rows/mod.rs"]
+pub mod rows;
 pub mod table;
 #[path = "../../thumbs/mod.rs"]
 pub mod thumbs;
+
+pub use explorer::rows::{ExplorerViewStats, view_stats};
 
 /// Database pages kept in memory per explorer.
 const DB_PAGE_CACHE_MAX: usize = 3;
@@ -102,9 +105,17 @@ pub struct VideoFrame {
 #[derive(Serialize)]
 pub struct FileExplorer {
     #[serde(skip)]
-    pub table: egui_data_table::DataTable<Thumbnail>,
+    pub table: rows::RowStore<Thumbnail>,
     #[serde(skip)]
-    pub table_index: std::collections::HashMap<String, usize>,
+    pub table_index: explorer::rows::RetiredIndex,
+    #[serde(skip)]
+    pub view: rows::ViewIndex,
+    #[serde(skip)]
+    pub selection: rows::Selection,
+    #[serde(skip)]
+    pub details: table::details::DetailsView,
+    #[serde(skip)]
+    row_sync: explorer::rows::RowSync,
     pub viewer: FileTableViewer,
     batch_size: usize,
     files: Vec<Thumbnail>,
@@ -335,7 +346,11 @@ impl FileExplorer {
 
         let mut this = Self {
             table: Default::default(),
-            table_index: std::collections::HashMap::new(),
+            table_index: Default::default(),
+            view: Default::default(),
+            selection: Default::default(),
+            details: Default::default(),
+            row_sync: Default::default(),
             viewer: FileTableViewer::new(
                 thumbnail_tx.clone(),
                 ai_update_tx,
@@ -608,18 +623,11 @@ impl FileExplorer {
                         self.viewer.thumbs.new_scope(self.viewer.scope);
                         // If we have this page cached, swap it in; else trigger a load
                         if let Some(rows) = self.db_page_cache.get(&target_page).cloned() {
-                            self.table.clear();
-                            self.table_index.clear();
-                            for r in rows.into_iter() {
-                                let idx = self.table.len();
-                                self.table_index.insert(r.path.clone(), idx);
-                                self.table.push(r);
-                            }
+                            self.table.replace_all(rows);
                             self.db_last_batch_len = self.table.len();
                             self.db_loading = false;
                         } else {
                             self.table.clear();
-                            self.table_index.clear();
                             self.db_loading_page = Some(target_page);
                             if self.db_all_view {
                                 self.load_all_database_rows();
@@ -638,18 +646,11 @@ impl FileExplorer {
                         self.db_current_page = target_page;
                         self.viewer.thumbs.new_scope(self.viewer.scope);
                         if let Some(rows) = self.db_page_cache.get(&target_page).cloned() {
-                            self.table.clear();
-                            self.table_index.clear();
-                            for r in rows.into_iter() {
-                                let idx = self.table.len();
-                                self.table_index.insert(r.path.clone(), idx);
-                                self.table.push(r);
-                            }
+                            self.table.replace_all(rows);
                             self.db_last_batch_len = self.table.len();
                             self.db_loading = false;
                         } else {
                             self.table.clear();
-                            self.table_index.clear();
                             self.db_loading_page = Some(target_page);
                             if self.db_all_view {
                                 self.load_all_database_rows();
@@ -723,36 +724,7 @@ impl FileExplorer {
                 });
                 ui.separator();
             }
-            // Check if we have a single empty default row and remove it
-            if self.table.len() == 1 {
-                let should_remove_empty = self
-                    .table
-                    .iter()
-                    .next()
-                    .map(|row| {
-                        row.filename.is_empty()
-                            && row.path.is_empty()
-                            && row.size == 0
-                            && row.file_type.is_empty()
-                            && row.thumbnail_b64.is_none()
-                    })
-                    .unwrap_or(false);
-
-                if should_remove_empty {
-                    self.table.clear();
-                    self.table_index.clear();
-                }
-            }
-
-            Renderer::new(&mut self.table, &mut self.viewer)
-                .with_style_modify(|s| {
-                    s.scroll_bar_visibility = scroll_area::ScrollBarVisibility::AlwaysVisible;
-                    s.single_click_edit_mode = true;
-                    s.table_row_height = Some(75.0);
-                    s.auto_shrink = [false, false].into();
-                    crate::theme::table_style::apply(ui.ctx(), s);
-                })
-                .ui(ui);
+            self.details_panel(ui);
 
             // Modal password prompt (appears at end of scans or when browsing encrypted archives)
             if self.show_zip_modal {
@@ -962,9 +934,9 @@ impl FileExplorer {
             }
 
             // Summary inline (counts) if selection active
-            if !self.viewer.selected.is_empty() {
+            if !self.selection.is_empty() {
                 ui.separator();
-                ui.label(format!("Selected: {}", self.viewer.selected.len()));
+                ui.label(format!("Selected: {}", self.selection.len()));
             }
 
             if self.viewer.mode == table::ExplorerMode::Database && !self.viewer.showing_similarity
@@ -987,9 +959,9 @@ impl FileExplorer {
         self.viewer.thumbs.record_ui_time(started.elapsed());
     }
 
-    /// Number of selected file rows in the current table.
+    /// Number of selected rows in the current table.
     pub fn selection_count(&self) -> usize {
-        self.viewer.selected.len()
+        self.selection.len()
     }
 
     pub fn append_more_similar(&mut self) {
@@ -1148,7 +1120,6 @@ impl FileExplorer {
         // Build filtered+sorted snapshot first
         self.apply_recursive_filter_and_sort();
         self.table.clear();
-        self.table_index.clear();
         let total_rows = self.recursive_filtered_rows.len();
         // Defensive recompute & clamp.
         if self.recursive_page_size == 0 {
@@ -1181,11 +1152,7 @@ impl FileExplorer {
             end
         );
         self.viewer.thumbs.new_scope(self.viewer.scope);
-        for row in self.recursive_filtered_rows[start..end].iter().cloned() {
-            let idx = self.table.len();
-            self.table_index.insert(row.path.clone(), idx);
-            self.table.push(row);
-        }
+        self.table.bulk_load(self.recursive_filtered_rows[start..end].iter().cloned());
         // Ask for a repaint on next frame (we don't hold a ctx here)
         self.repaint_next = true;
     }

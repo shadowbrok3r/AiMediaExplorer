@@ -164,7 +164,8 @@ async fn stats_are_recomputed_only_when_the_view_changes() {
         draw(&ctx, 1000.0, &mut ex, "cache", &view, now);
     }
     assert_eq!(stats_computes(&ctx, "cache"), 2, "a new row is one recompute");
-    ex.viewer.selected.insert("/p/new.jpg".to_string());
+    ex.sync_view();
+    ex.select_paths(["/p/new.jpg"]);
     for _ in 0..3 {
         draw(&ctx, 1000.0, &mut ex, "cache", &view, now);
     }
@@ -175,7 +176,8 @@ async fn stats_are_recomputed_only_when_the_view_changes() {
 async fn the_selection_appears_in_the_bar_with_its_size() {
     let ctx = test_ctx();
     let mut ex = explorer();
-    ex.viewer.selected.insert("/p/c.mp4".to_string());
+    ex.sync_view();
+    ex.select_paths(["/p/c.mp4"]);
     let view = view_of(&TaskRegistry::new());
     let shapes = settle(&ctx, 1200.0, &mut ex, "selection", &view, Instant::now());
     let all: Vec<String> = texts(&shapes).into_iter().map(|(t, _)| t).collect();

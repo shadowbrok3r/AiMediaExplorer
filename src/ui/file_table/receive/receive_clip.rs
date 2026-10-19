@@ -27,6 +27,7 @@ impl crate::ui::file_table::FileExplorer {
                     self.viewer.clip_presence_hashes.remove(h);
                 }
             }
+            self.row_sync.clip_gen += 1;
             ctx.request_repaint();
         }
         if !self.clip_embedding_rx.is_empty() {

@@ -36,9 +36,6 @@ impl crate::ui::file_table::FileExplorer {
                             let lp = r.path.to_ascii_lowercase();
                             !terms.iter().any(|t| lp.contains(t))
                         });
-                        // Rebuild index after retain
-                        self.table_index.clear();
-                        for (i, r) in self.table.iter().enumerate() { self.table_index.insert(r.path.clone(), i); }
                     }
                 }
                 
@@ -128,9 +125,6 @@ impl crate::ui::file_table::FileExplorer {
                             let lp = r.path.to_ascii_lowercase();
                             !terms.iter().any(|t| lp.contains(t))
                         });
-                        // Rebuild index after retain
-                        self.table_index.clear();
-                        for (i, r) in self.table.iter().enumerate() { self.table_index.insert(r.path.clone(), i); }
                     }
                 }
             });
@@ -376,10 +370,7 @@ impl crate::ui::file_table::FileExplorer {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     if ui.button("Restore Last Scan").on_hover_text("Restore last recursive scan results").clicked() {
-                        self.table.clear();
-                        for r in self.last_scan_rows.clone().into_iter() {
-                            self.table.push(r);
-                        }
+                        self.table.replace_all(self.last_scan_rows.iter().cloned());
                         self.viewer.showing_similarity = false;
                         self.viewer.similar_scores.clear();
                         self.scan_done = true;
@@ -451,11 +442,6 @@ impl crate::ui::file_table::FileExplorer {
             }
             true
         });
-        // Rebuild the fast path index after retain changes indices
-        self.table_index.clear();
-        for (i, r) in self.table.iter().enumerate() {
-            self.table_index.insert(r.path.clone(), i);
-        }
     }
 
 }

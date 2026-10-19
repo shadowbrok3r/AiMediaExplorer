@@ -8,7 +8,6 @@ impl super::FileExplorer {
         self.viewer.similar_scores.clear();
         self.db_loading = true;
         self.table.clear();
-        self.table_index.clear();
         self.viewer.thumbs.new_scope(self.viewer.scope);
         self.pending_thumb_rows.clear();
         self.viewer.clip_presence.clear();
@@ -40,7 +39,6 @@ impl super::FileExplorer {
         self.viewer.similar_scores.clear();
         self.db_loading = true;
         self.table.clear();
-        self.table_index.clear();
         self.viewer.thumbs.new_scope(self.viewer.scope);
         self.pending_thumb_rows.clear();
         self.viewer.clip_presence.clear();
@@ -97,7 +95,6 @@ impl super::FileExplorer {
         // When offset is zero we are (re)loading fresh page; clear existing rows
         if self.db_offset == 0 {
             self.table.clear();
-            self.table_index.clear();
             self.viewer.thumbs.new_scope(self.viewer.scope);
             self.pending_thumb_rows.clear();
             // Reset CLIP presence caches for a fresh page
@@ -137,7 +134,6 @@ impl super::FileExplorer {
         // Reset similarity state and table caches when starting fresh
         if self.db_offset == 0 {
             self.table.clear();
-            self.table_index.clear();
             self.viewer.thumbs.new_scope(self.viewer.scope);
             self.pending_thumb_rows.clear();
             self.viewer.clip_presence.clear();

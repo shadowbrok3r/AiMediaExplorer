@@ -1,20 +1,25 @@
-use egui::{Button, Color32, CornerRadius, FontId, Image, KeyboardShortcut, RichText, ScrollArea, TextureOptions, Widget};
-use std::{borrow::Cow, collections::HashMap, path::Path, sync::Arc};
-use egui_data_table::{
-    viewer::{default_hotkeys, CustomActionContext, CustomActionEditor, RowCodec, UiActionContext}, CustomMenuItem, RowViewer, SelectionSnapshot, UiAction
-};
-use egui_extras::Column as TableColumnConfig;
+//! Viewer state of an explorer tab and the details view built on it.
+
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
+
 use crossbeam::channel::Sender;
-use humansize::DECIMAL;
 use serde::Serialize;
 
-use crate::{ui::file_table::AIUpdate, Thumbnail, UiSettings};
-use crate::ui::file_table::thumbs::{ScopeId, ThumbPresence, ThumbService, ThumbView, Tier, alloc_scope};
-use codec::ThumbCodec;
+use crate::ui::file_table::AIUpdate;
+use crate::ui::file_table::rows::thumbnail::{DIR_TYPE, short_extension, with_lowercase};
+use crate::ui::file_table::thumbs::{ScopeId, ThumbPresence, ThumbService, alloc_scope};
+use crate::{Thumbnail, UiSettings};
 
-pub mod codec;
+pub mod actions;
+pub mod cells;
+pub mod columns;
+pub mod details;
+pub mod keys;
+
 #[cfg(test)]
-mod cell_tests;
+mod details_tests;
 
 #[derive(Default, Copy, Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ExplorerMode {
@@ -35,10 +40,6 @@ impl ExplorerMode {
 #[derive(Serialize)]
 pub struct FileTableViewer {
     pub filter: String,
-    pub row_protection: bool,
-    #[serde(skip)]
-    pub hotkeys: Vec<(KeyboardShortcut, UiAction)>,
-    pub show_hotkeys: bool,
     #[serde(skip)]
     thumbnail_tx: Sender<Thumbnail>,
     #[serde(skip)]
@@ -75,28 +76,31 @@ pub struct FileTableViewer {
     pub types_show_videos: bool,
     // Archive passwords for accessing encrypted archives
     #[serde(skip)]
-    pub archive_passwords: std::collections::HashMap<String, String>,
+    pub archive_passwords: HashMap<String, String>,
     pub types_show_dirs: bool,
     // Requests to open tabs based on user clicks in cells
     #[serde(skip)]
     pub requested_tabs: Vec<TabAction>,
+    // Read-only projection of the selection for readers outside the table.
     #[serde(skip)]
     pub selected: std::collections::HashSet<String>,
 }
 
 // Actions requested from table cells
 #[derive(Clone, Debug)]
-pub enum TabAction { OpenCategory(String), OpenTag(String), OpenSimilar(String), OpenArchive(String) }
+pub enum TabAction {
+    OpenCategory(String),
+    OpenTag(String),
+    OpenSimilar(String),
+    OpenArchive(String),
+}
 
 impl FileTableViewer {
     pub fn new(thumbnail_tx: Sender<Thumbnail>, ai_update_tx: Sender<AIUpdate>, clip_embedding_tx: Sender<crate::ClipEmbeddingRow>) -> Self {
-        let (ui_settings, settings_gen) = crate::settings::new_mirror();
+        let (ui_settings, settings_gen): (UiSettings, u64) = crate::settings::new_mirror();
         let thumbs = crate::ui::file_table::thumbs::service();
         Self {
             filter: Default::default(),
-            row_protection: false,
-            hotkeys: vec![],
-            show_hotkeys: false,
             thumb_cache: ThumbPresence::new(thumbs.clone()),
             thumbs,
             scope: alloc_scope(),
@@ -115,36 +119,9 @@ impl FileTableViewer {
             types_show_videos: true,
             types_show_dirs: true,
             requested_tabs: Vec::new(),
-            archive_passwords: std::collections::HashMap::new(),
+            archive_passwords: HashMap::new(),
             selected: std::collections::HashSet::new(),
         }
-    }
-
-    /// Thumbnail column: folder and archive icons, or the texture from the thumbnail service.
-    fn thumb_cell(&mut self, ui: &mut egui::Ui, row: &Thumbnail) {
-        ui.vertical_centered_justified(|ui| {
-            let size = ui.available_size();
-            let mips = TextureOptions::default().with_mipmap_mode(Some(egui::TextureFilter::Linear));
-            if row.file_type == "<DIR>" {
-                egui::Image::new(eframe::egui::include_image!("../../../../assets/Icons/folder.png")).fit_to_exact_size(size).texture_options(mips).ui(ui);
-            } else if row.file_type == "<ARCHIVE>" {
-                egui::Image::new(eframe::egui::include_image!("../../../../assets/Icons/zip.png")).fit_to_exact_size(size).texture_options(mips).ui(ui);
-            } else {
-                let distance = (ui.max_rect().center().y - ui.clip_rect().center().y).abs();
-                let view = if row.path.is_empty() { ThumbView::Missing } else { self.thumbs.request(self.scope, &row.path, Tier::Thumb, distance) };
-                match view {
-                    ThumbView::Ready { id, size: tex_size } => {
-                        Image::from_texture(egui::load::SizedTexture::new(id, tex_size)).fit_to_exact_size(size).ui(ui);
-                    }
-                    ThumbView::Pending => {
-                        ui.weak("...");
-                    }
-                    ThumbView::Missing => {
-                        egui::Image::new(eframe::egui::include_image!("../../../../assets/Icons/broken_link.png")).fit_to_exact_size(size).texture_options(mips).ui(ui);
-                    }
-                }
-            }
-        });
     }
 
     /// Refreshes the read-only settings mirror when the store changed.
@@ -152,888 +129,221 @@ impl FileTableViewer {
         crate::settings::sync_mirror(&mut self.ui_settings, &mut self.settings_gen)
     }
 
-    // Immutable helper to check if a row passes current viewer filters
+    /// The row filter for the current text and type toggles, prepared once for many rows.
+    pub fn row_filter(&self) -> RowFilter {
+        let needle = if self.filter.trim().is_empty() { String::new() } else { self.filter.to_lowercase() };
+        RowFilter { show_images: self.types_show_images, show_videos: self.types_show_videos, show_dirs: self.types_show_dirs, ascii: needle.is_ascii(), needle }
+    }
+
+    /// Whether a row passes the current type toggles and search text.
     pub fn row_passes_filter(&self, row: &Thumbnail) -> bool {
-        match self.mode {
-            ExplorerMode::FileSystem | ExplorerMode::Database => {
-                // Apply simple type visibility (view-only) before text search
-                if row.file_type == "<DIR>" && !self.types_show_dirs { return false; }
-                if row.file_type != "<DIR>" {
-                    let ext_opt = if row.path.starts_with("zip://") {
-                        std::path::Path::new(&row.filename)
-                            .extension()
-                            .and_then(|e| e.to_str())
-                            .map(|s| s.to_ascii_lowercase())
-                    } else {
-                        std::path::Path::new(&row.path)
-                            .extension()
-                            .and_then(|e| e.to_str())
-                            .map(|s| s.to_ascii_lowercase())
-                    };
-                    if let Some(ext) = ext_opt {
-                        if crate::is_image(ext.as_str()) && !self.types_show_images { return false; }
-                        if crate::is_video(ext.as_str()) && !self.types_show_videos { return false; }
-                    }
-                }
-                if self.filter.trim().is_empty() { return true; }
-                let f = self.filter.to_lowercase();
-                let tags_join = row.tags.join(",");
-                row.filename.to_lowercase().contains(&f)
-                    || row.file_type.to_lowercase().contains(&f)
-                    || row.path.to_lowercase().contains(&f)
-                    || tags_join.to_lowercase().contains(&f)
-                    || row
-                        .category
-                        .as_ref()
-                        .map(|s| s.to_lowercase().contains(&f))
-                        .unwrap_or(false)
-            }
-        }
+        self.row_filter().matches(row)
+    }
+
+    /// Changes whenever [`row_filter`](Self::row_filter) may answer differently for the same rows.
+    pub fn filter_signature(&self) -> u64 {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (&self.filter, self.types_show_images, self.types_show_videos, self.types_show_dirs, self.mode as u8).hash(&mut h);
+        h.finish()
     }
 }
 
-/* ----------------------------------------------------------------------------------------------
- *  Thumbnail Table Implementation
- *  Base Columns (both modes):
- *   0 Thumbnail (placeholder / future image)
- *   1 Name       (filename)
- *   2 Path       (path)
- *   3 Category   (category)
- *   4 Tags       (comma separated)
- *   5 Modified   (filesystem modified; in DB mode shows modified if present else '-')
- *   6 Size       (bytes -> human)
- *   7 Type       (file_type)
- *
- *  Extra Columns (Database mode only):
- *   8 Hash       (content hash if present)
- *   9 DB Created (row creation timestamp)
- * ------------------------------------------------------------------------------------------- */
+/// Type toggles and search text, ready to test rows against.
+#[derive(Clone, Debug)]
+pub struct RowFilter {
+    show_images: bool,
+    show_videos: bool,
+    show_dirs: bool,
+    needle: String,
+    ascii: bool,
+}
 
-impl RowViewer<Thumbnail> for FileTableViewer {
-    fn try_create_codec(&mut self, _copy_full_row: bool) -> Option<impl RowCodec<Thumbnail>> { Some(ThumbCodec) }
-
-    fn num_columns(&mut self) -> usize {
-        // New base ordering (FS):
-        // 0 Thumb, 1 Name, 2 Path, 3 Size, 4 Type, 5 CLIP, 6 Modified, 7 DB Created, 8 Category, 9 Tags
-        // New base ordering (DB): same + 10 Hash
-        let base = match self.mode { ExplorerMode::FileSystem => 10, ExplorerMode::Database => 11 };
-        if self.showing_similarity { base + 1 } else { base }
+fn contains_ci(hay: &str, needle: &str, ascii: bool) -> bool {
+    if needle.is_empty() {
+        return true;
     }
-
-    fn column_name(&mut self, column: usize) -> std::borrow::Cow<'static, str> {
-        let names_fs = [
-            "", "Name", "Path", "Size", "Type", "CLIP", "Modified", "DB Created", "Category", "Tags",
-        ]; // 10
-        let names_db = [
-            "", "Name", "Path", "Size", "Type", "CLIP", "Modified", "DB Created", "Category", "Tags", "Hash",
-        ]; // 11
-        let mut vec: Vec<Cow<'static, str>> = match self.mode {
-            ExplorerMode::FileSystem => names_fs.iter().map(|s| (*s).into()).collect(),
-            ExplorerMode::Database => names_db.iter().map(|s| (*s).into()).collect(),
-        };
-        if self.showing_similarity { vec.push("Similarity".into()); }
-        vec[column].clone()
+    if ascii && hay.is_ascii() {
+        let (h, n) = (hay.as_bytes(), needle.as_bytes());
+        return n.len() <= h.len() && h.windows(n.len()).any(|w| w.eq_ignore_ascii_case(n));
     }
+    hay.to_lowercase().contains(needle)
+}
 
-    fn is_sortable_column(&mut self, column: usize) -> bool { column < self.num_columns() }
-
-    fn row_filter_hash(&mut self) -> &impl std::hash::Hash { &self.filter }
-
-    fn filter_row(&mut self, row: &Thumbnail) -> bool { self.row_passes_filter(row) }
-
-    fn hotkeys(&mut self, context: &UiActionContext) -> Vec<(KeyboardShortcut, UiAction)> {
-        let hot = default_hotkeys(context);
-        self.hotkeys.clone_from(&hot);
-        hot
-    }
-
-    fn is_editable_cell(&mut self, _column: usize, _row: usize, _row_value: &Thumbnail) -> bool { false }
-
-    fn show_cell_view(&mut self, ui: &mut egui::Ui, row: &Thumbnail, column: usize) {
-        // CLIP is now column 5. Similarity (if shown) is appended at the end.
-        let clip_idx = 5usize;
-        if column == clip_idx {
-            let has_by_path = self.clip_presence.contains(&row.path);
-            let has_by_hash = row
-                .hash
-                .as_ref()
-                .map(|h| self.clip_presence_hashes.contains(h))
-                .unwrap_or(false);
-            let has = has_by_path || has_by_hash;
-            ui.label(if has { "Yes" } else { "No" });
+impl RowFilter {
+    pub fn matches(&self, row: &Thumbnail) -> bool {
+        let is_dir = row.file_type == DIR_TYPE;
+        if is_dir && !self.show_dirs {
+            return false;
         }
-        let similarity_idx = if self.showing_similarity {
-            match self.mode { ExplorerMode::FileSystem => 10, ExplorerMode::Database => 11 }
-        } else { usize::MAX };
-        if column == similarity_idx {
-            if let Some(score) = self.similar_scores.get(&row.path) {
-                ui.label(format!("{score:.4}"));
+        if !is_dir {
+            let source = if row.path.starts_with("zip://") { &row.filename } else { &row.path };
+            if let Some(ext) = short_extension(source) {
+                let hidden = with_lowercase(ext, |lower| (crate::is_image(lower) && !self.show_images) || (crate::is_video(lower) && !self.show_videos));
+                if hidden {
+                    return false;
+                }
+            }
+        }
+        if self.needle.is_empty() {
+            return true;
+        }
+        let (n, a) = (self.needle.as_str(), self.ascii);
+        contains_ci(&row.filename, n, a)
+            || contains_ci(&row.file_type, n, a)
+            || contains_ci(&row.path, n, a)
+            || (!row.tags.is_empty() && contains_ci(&row.tags.join(","), n, a))
+            || row.category.as_deref().is_some_and(|c| contains_ci(c, n, a))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(path: &str, file_type: &str) -> Thumbnail {
+        let mut t = Thumbnail::default();
+        t.path = path.into();
+        t.filename = path.rsplit(['/', '\\']).next().unwrap_or(path).into();
+        t.file_type = file_type.into();
+        t
+    }
+
+    fn filter(text: &str, images: bool, videos: bool, dirs: bool) -> RowFilter {
+        let needle = if text.trim().is_empty() { String::new() } else { text.to_lowercase() };
+        RowFilter { show_images: images, show_videos: videos, show_dirs: dirs, ascii: needle.is_ascii(), needle }
+    }
+
+    /// The previous filter, kept as the reference for the prepared one.
+    fn legacy(text: &str, images: bool, videos: bool, dirs: bool, row: &Thumbnail) -> bool {
+        if row.file_type == "<DIR>" && !dirs {
+            return false;
+        }
+        if row.file_type != "<DIR>" {
+            let ext_opt = if row.path.starts_with("zip://") {
+                std::path::Path::new(&row.filename).extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase())
             } else {
-                ui.label("-");
+                std::path::Path::new(&row.path).extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase())
+            };
+            if let Some(ext) = ext_opt {
+                if crate::is_image(ext.as_str()) && !images {
+                    return false;
+                }
+                if crate::is_video(ext.as_str()) && !videos {
+                    return false;
+                }
             }
         }
-        match column {
-            0 => self.thumb_cell(ui, row),
-            1 => {
-                // Name (make the label clickable so row click registers)
-                let _ = ui.add(
-                    egui::Label::new(format!(" {}", &row.filename))
-                        .sense(egui::Sense::click()),
-                );
-            }
-            2 => {
-                // Path or DB key depending on mode (make clickable to trigger selection)
-                match self.mode {
-                    ExplorerMode::FileSystem => {
-                        let _ = ui.add(egui::Label::new(&row.path).sense(egui::Sense::click()));
-                    }
-                    ExplorerMode::Database => {
-                        let _ = ui.add(egui::Label::new(&row.path).sense(egui::Sense::click()));
-                    }
-                };
-            }
-            3 => {
-                // Size
-                if row.size == 0 {
-                    ui.label("-");
-                } else {
-                    ui.label(humansize::format_size(row.size, DECIMAL));
-                }
-            }
-            4 => {
-                // Type
-                ui.label(RichText::new(&row.file_type).font(FontId::monospace(11.)));
-            }
-            6 => {
-                // Modified mm/dd/yyyy (or '-')
-                use chrono::Datelike;
-                if let Some(m) = &row.modified {
-                    ui.label(format!("{}/{}/{}", m.month(), m.day(), m.year()));
-                } else {
-                    ui.label("-");
-                }
-            }
-            7 => {
-                // DB Created date
-                if let Some(c) = &row.db_created {
-                    use chrono::Datelike;
-                    ui.label(format!("{}/{}/{}", c.month(), c.day(), c.year()));
-                } else {
-                    ui.label("-");
-                }
-            }
-            8 => {
-                ui.vertical_centered_justified(|ui| {
-                    // Category (click to open in new tab)
-                    if let Some(cat) = row.category.as_ref() {
-                        let resp = ui.button(egui::RichText::new(cat).underline());
-                        if resp.clicked() {
-                            self.requested_tabs.push(TabAction::OpenCategory(cat.clone()));
-                        }
-                    } else {
-                        ui.label("-");
-                    }
-                });
-            }
-            9 => {
-                // Tags as chips
-                if row.tags.is_empty() {
-                    ui.label("-");
-                } else {
-                    ScrollArea::vertical().show(ui, |ui| {
-                        for tag in &row.tags {
-                            let color = color_for_tag(tag);
-                            let txt = format!("{}", tag);
-                            let _ = Button::new(txt).fill(color).corner_radius(CornerRadius::same(4)).ui(ui);
-                        }
-                    });
-                }
-            }
-            10 => {
-                // Hash (DB mode only)
-                ui.label(row.hash.as_deref().unwrap_or("-"));
-            }
-            _ => {},
-        };
+        if text.trim().is_empty() {
+            return true;
+        }
+        let f = text.to_lowercase();
+        let tags_join = row.tags.join(",");
+        row.filename.to_lowercase().contains(&f)
+            || row.file_type.to_lowercase().contains(&f)
+            || row.path.to_lowercase().contains(&f)
+            || tags_join.to_lowercase().contains(&f)
+            || row.category.as_ref().map(|s| s.to_lowercase().contains(&f)).unwrap_or(false)
     }
 
-    fn show_cell_editor(
-        &mut self,
-        ui: &mut egui::Ui,
-        row: &mut Thumbnail,
-        column: usize,
-    ) -> Option<egui::Response> {
-        // No data to set for CLIP/Similarity columns
-        let clip_idx = 5usize;
-        let similarity_idx = if self.showing_similarity {
-            match self.mode { 
-                ExplorerMode::FileSystem => 10, 
-                ExplorerMode::Database => 11 
-            }
-        } else {
-            usize::MAX 
-        };
-
-        if column == clip_idx || column == similarity_idx { 
-            return None; 
-        }
-
-        match column {
-            0 => {
-                self.thumb_cell(ui, row);
-                None
-            }
-            9 => {
-                let mut response = None;
-                ScrollArea::vertical().show(ui, |ui| {
-                    for tag in &row.tags {
-                        let color = color_for_tag(tag);
-                        let txt = format!("{}", tag);
-                        let resp = Button::new(txt).fill(color).corner_radius(CornerRadius::same(4)).ui(ui);
-                        if resp.hovered() {
-                            response = Some(resp.clone());
-                            ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
-                        }
-                        if resp.clicked() {
-                            self.requested_tabs.push(TabAction::OpenTag(tag.clone()));
-                            response = Some(resp);
-                        }
-                    }
-                });
-
-                response
-            }
-            8 => {
-                if let Some(cat) = row.category.as_ref() {
-                    let resp = ui.button(egui::RichText::new(cat).underline());
-                    if resp.clicked() {
-                        self.requested_tabs.push(TabAction::OpenCategory(cat.clone()));
-                    }
-                    Some(resp)
-                } else {
-                    ui.label("-");
-                    None
-                }
-            }
-            // Non-editable columns
-            _ => None,
+    #[test]
+    fn type_toggles_hide_images_videos_and_folders_independently() {
+        let img = row("/a/x.jpg", "jpg");
+        let vid = row("/a/y.mp4", "mp4");
+        let dir = row("/a/d", "<DIR>");
+        let txt = row("/a/t.txt", "txt");
+        let arc = row("/a/z.zip", "<ARCHIVE>");
+        assert!(!filter("", false, true, true).matches(&img));
+        assert!(filter("", false, true, true).matches(&vid));
+        assert!(!filter("", true, false, true).matches(&vid));
+        assert!(!filter("", true, true, false).matches(&dir));
+        for hidden in [filter("", false, false, false)] {
+            assert!(hidden.matches(&txt) && hidden.matches(&arc), "other files and archives are never hidden by the type toggles");
         }
     }
 
-    fn on_cell_view_response(
-        &mut self,
-        row: &Thumbnail,
-        column: usize,
-        resp: &egui::Response,
-    ) -> Option<Box<Thumbnail>> {
-        match column {
-            2 => {
-                if resp.hovered() { resp.clone().on_hover_text(&row.path); }
-                if resp.clicked() {
-                    // Mirror main click behavior: preview + thumb generation
-                    if self.mode != ExplorerMode::Database {
-                        if !self.thumbs.has_thumb(&row.path) {
-                            if row.path.starts_with("zip://") || row.path.starts_with("7z://") || row.path.starts_with("tar://") {
-                                let path = row.path.clone();
-                                let thumbnail_tx = self.thumbnail_tx.clone();
-                                let row_clone = row.clone();
-                                let archive_passwords = self.archive_passwords.clone();
-                                tokio::spawn(async move {
-                                    if let Some(scheme_end) = path.find("://") {
-                                        if let Some(internal_start) = path.find("!/") {
-                                            let scheme = &path[..scheme_end];
-                                            let archive_path = &path[scheme_end + 3..internal_start];
-                                            let internal_path = &path[internal_start + 2..];
-                                            let filename = std::path::Path::new(internal_path).file_name().and_then(|n| n.to_str()).unwrap_or(internal_path);
-                                            let internal_dir = std::path::Path::new(internal_path).parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
-                                            let password = archive_passwords.get(archive_path).map(|s| s.as_str());
-                                            match crate::utilities::archive::extract_and_generate_thumbnail_blocking(scheme.to_string(), archive_path.to_string(), internal_dir, filename.to_string(), password.map(|s| s.to_string())).await {
-                                                Ok(Some(thumb_b64)) => {
-                                                    let thumb = Thumbnail { thumbnail_b64: Some(thumb_b64), ..row_clone };
-                                                    let _ = thumbnail_tx.try_send(thumb);
-                                                }
-                                                Ok(None) => {}
-                                                Err(err) => {
-                                                    let es = err.to_string();
-                                                    if es.contains("PasswordRequired") {
-                                                        let mut t = Thumbnail::default();
-                                                        t.path = archive_path.to_string();
-                                                        t.file_type = "<PASSWORD_REQUIRED>".to_string();
-                                                        let _ = thumbnail_tx.try_send(t);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                });
-                            }
-                        }
-                    }
-                    let _ = self.thumbnail_tx.try_send(row.clone());
-                }
-            }
-            8 => {
-                if let Some(cat) = row.category.as_ref() {
-                    if resp.clicked() {
-                        log::info!("Clicked on: {cat}");
-                        self.requested_tabs.push(TabAction::OpenCategory(cat.clone()));
-                    }
-                }
-            }
-            9 => {
-                for tag in &row.tags {
-                    if resp.clicked() {
-                        log::info!("Clicked on: {tag}");
-                        self.requested_tabs.push(TabAction::OpenTag(tag.clone()));
-                    }
-                }
-            }
-            _ => {
-                if resp.clicked() {
-                    // Handle virtual folder rows first (category/tag views)
-                    if row.file_type == "<DIR>" {
-                        if let Some(rest) = row.path.strip_prefix("cat://") {
-                            let cat = rest.trim_end_matches('/').to_string();
-                            self.requested_tabs.push(TabAction::OpenCategory(cat));
-                            return None;
-                        }
-                        if let Some(rest) = row.path.strip_prefix("tag://") {
-                            let tag = rest.trim_end_matches('/').to_string();
-                            self.requested_tabs.push(TabAction::OpenTag(tag));
-                            return None;
-                        }
-                    }
-                    if self.mode == ExplorerMode::Database {
-                        // In DB mode, disable on-demand generation attempts (no filesystem walk triggers)
-                    } else {
-                        if !self.thumbs.has_thumb(&row.path) {
-                            // Check if this is a virtual archive path
-                            if row.path.starts_with("zip://") 
-                                || row.path.starts_with("7z://") 
-                                || row.path.starts_with("tar://") 
-                            {
-                                log::info!("Getting thumbnail for {}", row.path);
-                                // For virtual archive paths, use async extraction-based thumbnail generation
-                                let path = row.path.clone();
-                                let thumbnail_tx = self.thumbnail_tx.clone();
-                                let row_clone = row.clone();
-                                let archive_passwords = self.archive_passwords.clone();
-                                tokio::spawn(async move {
-                                    // Parse the virtual path: scheme://archive_path!/internal_path
-                                    if let Some(scheme_end) = path.find("://") {
-                                        log::info!("scheme_end: {scheme_end}");
-                                        if let Some(internal_start) = path.find("!/") {
-                                            log::info!("internal_start: {internal_start}");
-                                            let scheme = &path[..scheme_end];
-                                            let archive_path = &path[scheme_end + 3..internal_start];
-                                            let internal_path = &path[internal_start + 2..];
-                                            log::info!("internal_path: {internal_path}");
-                                            // Extract filename from internal path
-                                            let filename = std::path::Path::new(internal_path)
-                                                .file_name()
-                                                .and_then(|n| n.to_str())
-                                                .unwrap_or(internal_path);
-                                            
-                                            // Get directory part of internal path
-                                            let internal_dir = std::path::Path::new(internal_path)
-                                                .parent()
-                                                .map(|p| p.to_string_lossy().to_string())
-                                                .unwrap_or_default();
-                                            
-                                            // Look up the stored password for this archive
-                                            let password = archive_passwords.get(archive_path).map(|s| s.as_str());
-                                            
-                                            match crate::utilities::archive::extract_and_generate_thumbnail_blocking(
-                                                scheme.to_string(), archive_path.to_string(), internal_dir, filename.to_string(), password.map(|s| s.to_string())
-                                            ).await {
-                                                Ok(Some(thumb_b64)) => {
-                                                    let thumb = Thumbnail {
-                                                        thumbnail_b64: Some(thumb_b64),
-                                                        ..row_clone
-                                                    };
-                                                    let _ = thumbnail_tx.try_send(thumb);
-                                                }
-                                                Ok(None) => {
-                                                    log::warn!("No thumbnail generated for archive file: {}", path);
-                                                }
-                                                Err(err) => {
-                                                    let es = err.to_string();
-                                                    if es.contains("PasswordRequired") {
-                                                        // queue modal via control thumbnail
-                                                        let mut t = Thumbnail::default();
-                                                        t.path = archive_path.to_string();
-                                                        t.file_type = "<PASSWORD_REQUIRED>".to_string();
-                                                        let _ = thumbnail_tx.try_send(t);
-                                                    } else {
-                                                        log::warn!("Failed to generate thumbnail for archive file: {}: {}", path, es);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                });
-                            }
-                        }
-                    }
-                    // If clicking an archive (zip), request to open virtual view
-                    if let Some(ext) = std::path::Path::new(&row.path)
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .map(|s| s.to_ascii_lowercase()) 
-                    {
-                        if ext == "zip" || row.file_type == "<ARCHIVE>" { 
-                            self.requested_tabs.push(TabAction::OpenArchive(row.path.clone()));
-                        }
-                    } else if row.file_type == "<ARCHIVE>" {
-                        self.requested_tabs.push(TabAction::OpenArchive(row.path.clone()));
-                    }
-                    log::info!("Showing new thumbnail: {}", row.path);
-                    // Always notify selection so preview can reflect current row
-                    let _ = self.thumbnail_tx.try_send(row.clone());
-                    // Skip embedding generation for virtual paths inside zip
-                    if !row.path.starts_with("zip://") 
-                        && !row.path.starts_with("tar://") 
-                        && !row.path.starts_with("7z://") 
-                    {
-                        let tx = self.clip_embedding_tx.clone();
-                        let thumb = row.clone();
-                        tokio::spawn(async move {
-                            let row = thumb.get_embedding().await.unwrap_or_default();
-                            let _ = tx.try_send(row);
-                        });
+    #[test]
+    fn zip_entries_take_their_type_from_the_file_name() {
+        let mut entry = row("zip:///x/a.zip!/inner/pic.png", "png");
+        entry.filename = "pic.png".into();
+        assert!(!filter("", false, true, true).matches(&entry));
+        assert!(filter("", true, true, true).matches(&entry));
+    }
+
+    #[test]
+    fn the_search_text_matches_name_type_path_tags_and_category_ignoring_case() {
+        let mut r = row("/pics/Holiday/IMG_001.JPG", "jpg");
+        r.tags = vec!["Beach".into(), "sun".into()];
+        r.category = Some("Travel".into());
+        for hit in ["img_001", "holiday", "JPG", "beach", "SUN", "travel", "beach,sun"] {
+            assert!(filter(hit, true, true, true).matches(&r), "{hit}");
+        }
+        for miss in ["mountain", "img_002", "snow"] {
+            assert!(!filter(miss, true, true, true).matches(&r), "{miss}");
+        }
+        assert!(filter("   ", true, true, true).matches(&r), "blank text is no filter");
+    }
+
+    #[test]
+    fn non_ascii_text_still_matches_case_insensitively() {
+        let r = row("/fotos/ÜBER/straße.jpg", "jpg");
+        assert!(filter("über", true, true, true).matches(&r));
+        assert!(filter("STRASSE", true, true, true).matches(&r) == legacy("STRASSE", true, true, true, &r));
+        assert!(filter("ß", true, true, true).matches(&r));
+    }
+
+    #[test]
+    fn the_prepared_filter_agrees_with_the_previous_one() {
+        let paths = ["/a/x.jpg", "/a/Y.PNG", "/a/clip.MP4", "/a/notes.txt", "/a/d", "zip:///z.zip!/in/p.png", "C:\\pics\\q.JPEG", "/a/.hidden", "/a/noext", "/ü/é.jpg"];
+        let types = ["jpg", "<DIR>", "<ARCHIVE>", "txt", ""];
+        let texts = ["", "x", "PNG", "clip", "a/", "é", "tag1", "cat", "j,t", " "];
+        let mut n = 0;
+        for p in paths {
+            for t in types {
+                let mut r = row(p, t);
+                r.tags = vec!["Tag1".into(), "two".into()];
+                r.category = Some("Cat".into());
+                for text in texts {
+                    for flags in 0..8u8 {
+                        let (i, v, d) = (flags & 1 != 0, flags & 2 != 0, flags & 4 != 0);
+                        assert_eq!(filter(text, i, v, d).matches(&r), legacy(text, i, v, d, &r), "{p} {t} {text:?} {flags}");
+                        n += 1;
                     }
                 }
             }
         }
-        None
+        assert!(n > 1000);
     }
 
-    fn set_cell_value(&mut self, src: &Thumbnail, dst: &mut Thumbnail, column: usize) {
-        match column {
-            0 => dst.thumbnail_b64 = src.thumbnail_b64.clone(),
-            1 => dst.filename = src.filename.clone(),
-            2 => dst.path = src.path.clone(),
-            3 => dst.size = src.size,
-            4 => dst.file_type = src.file_type.clone(),
-            6 => dst.modified = src.modified.clone(),
-            7 => dst.db_created = src.db_created.clone(),
-            8 => dst.category = src.category.clone(),
-            9 => dst.tags = src.tags.clone(),
-            10 => if self.mode == ExplorerMode::Database { dst.hash = src.hash.clone(); },
-            _ => {},
-        }
+    #[test]
+    fn contains_ci_handles_edges() {
+        assert!(contains_ci("anything", "", true));
+        assert!(!contains_ci("ab", "abc", true));
+        assert!(contains_ci("xxABCxx", "abc", true));
+        assert!(contains_ci("ÄBC", "äbc", false));
     }
 
-    fn compare_cell(&self, l: &Thumbnail, r: &Thumbnail, column: usize) -> std::cmp::Ordering {
-        use std::cmp::Ordering::*;
-        // Special columns: CLIP (5), Similarity (last if present)
-        if column == 5 {
-            // CLIP presence (Yes before No), considering both path and hash presence
-            let l_has = self.clip_presence.contains(&l.path)
-                || l.hash.as_ref().map(|h| self.clip_presence_hashes.contains(h)).unwrap_or(false);
-            let r_has = self.clip_presence.contains(&r.path)
-                || r.hash.as_ref().map(|h| self.clip_presence_hashes.contains(h)).unwrap_or(false);
-            let sl = l_has as u8;
-            let sr = r_has as u8;
-            return sr.cmp(&sl);
-        }
-        let similarity_idx = if self.showing_similarity {
-            match self.mode { ExplorerMode::FileSystem => 10, ExplorerMode::Database => 11 }
-        } else { usize::MAX };
-        if column == similarity_idx {
-            let sl = self.similar_scores.get(&l.path).copied().unwrap_or(f32::MIN);
-            let sr = self.similar_scores.get(&r.path).copied().unwrap_or(f32::MIN);
-            return sr.partial_cmp(&sl).unwrap_or(Equal);
-        }
-        match column {
-            0 => Equal, // thumbnail not sortable
-            1 => l.filename.cmp(&r.filename),
-            2 => l.path.cmp(&r.path),
-            3 => l.size.cmp(&r.size),
-            4 => l.file_type.cmp(&r.file_type),
-            6 => l.modified.cmp(&r.modified),
-            7 => l.db_created.cmp(&r.db_created),
-            8 => l.category.cmp(&r.category),
-            9 => l.tags.join(",").cmp(&r.tags.join(",")),
-            10 => l.hash.cmp(&r.hash),
-            _ => Equal,
-        }
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_filter_signature_changes_with_every_input_of_the_filter() {
+        let (a, _) = crossbeam::channel::unbounded();
+        let (b, _) = crossbeam::channel::unbounded();
+        let (c, _) = crossbeam::channel::unbounded();
+        let mut v = FileTableViewer::new(a, b, c);
+        let base = v.filter_signature();
+        assert_eq!(v.filter_signature(), base);
+        let mut seen = vec![base];
+        v.filter = "fox".into();
+        seen.push(v.filter_signature());
+        v.types_show_images = false;
+        seen.push(v.filter_signature());
+        v.types_show_videos = false;
+        seen.push(v.filter_signature());
+        v.types_show_dirs = false;
+        seen.push(v.filter_signature());
+        v.mode = ExplorerMode::Database;
+        seen.push(v.filter_signature());
+        let mut unique = seen.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), seen.len());
     }
-
-    fn new_empty_row(&mut self) -> Thumbnail {
-        Thumbnail::default()
-    }
-
-    fn on_highlight_change(&mut self, highlighted: &[&Thumbnail], unhighlighted: &[&Thumbnail]) {
-        for row in unhighlighted.iter().filter(|r| r.file_type != "<DIR>") {
-            self.selected.remove(&row.path);
-        }
-        for row in highlighted.iter().filter(|r| r.file_type != "<DIR>") {
-            self.selected.insert(row.path.to_string());
-        }
-        // Send one selection event (last highlighted row) to open the preview pane via receiver
-        if let Some(row) = highlighted.iter().rev().find(|r| r.file_type != "<DIR>") {
-            let _ = self.thumbnail_tx.try_send((*row).clone());
-        }
-    }
-
-    fn column_render_config(&mut self, column: usize, _is_editing: bool) -> TableColumnConfig {
-        let base = TableColumnConfig::auto();
-        match column {
-            0 => base.at_least(75.).at_most(100.).resizable(true),  // thumbnail
-            1 => base.at_least(160.).clip(true).resizable(true),            // name
-            2 => base.at_least(220.).clip(true).resizable(true),            // path
-            3 => base.at_least(70.).at_most(90.),                  // size
-            4 => base.at_least(50.).at_most(60.),                  // type
-            5 => base.at_least(50.).at_most(60.),                  // CLIP
-            6 => base.at_least(100.).at_most(120.),                // modified
-            7 => base.at_least(100.).at_most(120.),                // db created
-            8 => base.at_least(110.).at_most(140.).resizable(true),// category
-            9 => base.at_least(140.).clip(true).resizable(true),           // tags
-            10 => base.at_least(140.).at_most(200.).clip(true),    // hash (DB)
-            _ => base,
-        }
-    }
-
-    // --- Custom context menu & actions ---
-    fn custom_context_menu_items(
-        &mut self,
-        _context: &UiActionContext,
-        selection: &SelectionSnapshot<'_, Thumbnail>,
-    ) -> Vec<CustomMenuItem> {
-        let has_dirs = selection
-            .selected_rows
-            .iter()
-            .any(|(_, r)| r.file_type == "<DIR>" && !r.path.is_empty());
-        let mut items = vec![
-            CustomMenuItem::new(
-                "generate_description", 
-                "Generate Description"
-            )
-            .icon("⚡")
-            .enabled(true),
-            CustomMenuItem::new(
-                "regenerate_description",
-                "Regenerate Description (overwrite)"
-            ).icon("♻").enabled(true),
-            CustomMenuItem::new(
-                "generate_clip_embeddings", 
-                "Generate CLIP Embedding"
-            )
-            .icon("⚡")
-            .enabled(true),
-            CustomMenuItem::new(
-                "regenerate_clip_embedding",
-                "Regenerate CLIP Embedding"
-            ).icon("♻").enabled(true),
-            CustomMenuItem::new(
-                "add_selection_to_group",
-                "Add selection to active group"
-            )
-            .icon("➕")
-            .enabled(true),
-            CustomMenuItem::new(
-                "remove_selection_from_group",
-                "Remove selection from active group"
-            )
-            .icon("➖")
-            .enabled(true),
-            CustomMenuItem::new(
-                "open_selection_in_new_tab",
-                "Open selection in new tab"
-            )
-            .icon("🗂")
-            .enabled(true),
-            CustomMenuItem::new(
-                "exclude_dirs_from_scan",
-                "Exclude selected directories from recursive scans"
-            )
-            .icon("🚫")
-            .enabled(has_dirs),
-            CustomMenuItem::new(
-                "find_similar",
-                "Find Similar (CLIP)"
-            ).icon("🔍").enabled(!selection.selected_rows.is_empty()),
-            CustomMenuItem::new(
-                "refine_selection",
-                "Refine Selection"
-            ).icon("🛠").enabled(!selection.selected_rows.is_empty()),
-            // Future: rerank actions (category / tags) can be added once sorting hook in FileExplorer is exposed.
-        ];
-        // In Database mode, allow attaching to chat window
-        if self.mode == ExplorerMode::Database {
-            let can_attach = !selection.selected_rows.is_empty();
-            items.push(
-                CustomMenuItem::new(
-                    "attach_to_chat_window",
-                    "Attach to chat window"
-                ).icon("📎").enabled(can_attach)
-            );
-        }
-        items
-    }
-
-    fn on_custom_action_ex(
-        &mut self,
-        action_id: &'static str,
-        ctx: &CustomActionContext<'_, Thumbnail>,
-        _editor: &mut CustomActionEditor<Thumbnail>,
-    ) {
-        match action_id {
-            "attach_to_chat_window" => {
-                // Collect file paths from selected rows (skip directories)
-                let paths: Vec<String> = ctx
-                    .selection
-                    .selected_rows
-                    .iter()
-                    .filter(|(_, r)| r.file_type != "<DIR>")
-                    .map(|(_, r)| r.path.clone())
-                    .collect();
-                if !paths.is_empty() {
-                    crate::ui::assistant::request_attach_to_chat(paths);
-                }
-            }
-            "open_selection_in_new_tab" => {
-                // Build a title from first selected name and count
-                let rows: Vec<crate::database::Thumbnail> = ctx
-                    .selection
-                    .selected_rows
-                    .iter()
-                    .map(|(_, r)| (*r).clone())
-                    .collect();
-                let first = rows[0].filename.clone();
-                let count = rows.len();
-                let title = if count == 1 { format!("Selected: {}", first) } else { format!("Selected ({}) - {}", count, first) };
-                crate::app::OPEN_TAB_REQUESTS
-                    .lock()
-                    .unwrap()
-                    .push(crate::ui::file_table::FilterRequest::NewTab { title, rows, showing_similarity: false, similar_scores: None, origin_path: None, background: false });
-            }
-            "generate_description" => {
-                let engine = std::sync::Arc::new(crate::ai::GLOBAL_AI_ENGINE.clone());
-                let prompt = self.ui_settings.ai_prompt_template.clone();
-                // editor..set_cell(row_id, NAME, r)
-                for (_, row) in ctx.selection.selected_rows.iter() {
-                    if row.path.starts_with("zip://") || row.path.starts_with("tar://") || row.path.starts_with("7z://") { continue; }
-                    if self.bulk_cancel_requested { break; }
-                    if row.file_type == "<DIR>" { continue; }
-                    if let Some(ext) = Path::new(&row.path).extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()) { if !crate::is_image(ext.as_str()) { continue; } } else { continue; }
-                    // Respect size bounds from UiSettings
-                    if let Some(minb) = self.ui_settings.db_min_size_bytes { if row.size < minb { continue; } }
-                    if let Some(maxb) = self.ui_settings.db_max_size_bytes { if row.size > maxb { continue; } }
-                    // Respect overwrite setting: skip if existing data and overwrite disabled
-                    let overwrite = self.ui_settings.overwrite_descriptions;
-                    if !overwrite && (row.caption.is_some() || row.description.is_some()) { continue; }
-                    let path_str = row.path.clone();
-                    let path_str_clone = path_str.clone();
-                    let tx_updates = self.ai_update_tx.clone();
-                    let prompt_clone = prompt.clone();
-                    let eng = engine.clone();
-                    tokio::spawn(async move {
-                        eng.stream_vision_description(Path::new(&path_str_clone), &prompt_clone, move |interim, final_opt| {
-                            if let Some(vd) = final_opt {
-                                let _ = tx_updates.try_send(crate::ui::file_table::AIUpdate::Final {
-                                    path: path_str.clone(),
-                                    description: vd.description.clone(),
-                                    caption: Some(vd.caption.clone()),
-                                    category: if vd.category.trim().is_empty() { None } else { Some(vd.category.clone()) },
-                                    tags: vd.tags.clone(),
-                                });
-                            } else {
-                                let _ = tx_updates.try_send(crate::ui::file_table::AIUpdate::Interim { path: path_str.clone(), text: interim.to_string() });
-                            }
-                        }).await;
-                    });
-                }
-            }
-            "regenerate_description" => {
-                let engine = std::sync::Arc::new(crate::ai::GLOBAL_AI_ENGINE.clone());
-                let prompt = self.ui_settings.ai_prompt_template.clone();
-                for (_, row) in ctx.selection.selected_rows.iter() {
-                    if row.file_type == "<DIR>" { continue; }
-                    if let Some(ext) = Path::new(&row.path).extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()) { if !crate::is_image(ext.as_str()) { continue; } } else { continue; }
-                    let path_str = row.path.clone();
-                    let path_str_clone = path_str.clone();
-                    let tx_updates = self.ai_update_tx.clone();
-                    let prompt_clone = prompt.clone();
-                    let eng = engine.clone();
-                    tokio::spawn(async move {
-                        eng.stream_vision_description(Path::new(&path_str_clone), &prompt_clone, move |interim, final_opt| {
-                            if let Some(vd) = final_opt {
-                                let _ = tx_updates.try_send(crate::ui::file_table::AIUpdate::Final {
-                                    path: path_str.clone(),
-                                    description: vd.description.clone(),
-                                    caption: Some(vd.caption.clone()),
-                                    category: if vd.category.trim().is_empty() { None } else { Some(vd.category.clone()) },
-                                    tags: vd.tags.clone(),
-                                });
-                            } else {
-                                let _ = tx_updates.try_send(crate::ui::file_table::AIUpdate::Interim { path: path_str.clone(), text: interim.to_string() });
-                            }
-                        }).await;
-                    });
-                }
-            }
-            "generate_clip_embeddings" => {
-                for (_, row) in ctx.selection.selected_rows.clone() {
-                    if row.path.starts_with("zip://") || row.path.starts_with("tar://") || row.path.starts_with("7z://") { continue; }
-                    let path = row.path.clone();
-                    // Skip if outside size bounds
-                    if let Some(minb) = self.ui_settings.db_min_size_bytes { if row.size < minb { continue; } }
-                    if let Some(maxb) = self.ui_settings.db_max_size_bytes { if row.size > maxb { continue; } }
-                    let thumb = row.clone();
-                    let tx = self.clip_embedding_tx.clone();
-                    tokio::spawn(async move {
-                        // Ensure engine and model are ready
-                        let _ = crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await;
-                        let added = crate::ai::GLOBAL_AI_ENGINE.clip_generate_for_paths(&[path.clone()]).await?;
-                        let _ = tx.try_send(thumb.get_embedding().await?);
-                        log::info!("[CLIP] Manual per-item generation: added {added} for {path}");
-                        Ok::<(), anyhow::Error>(())
-                    });
-                }
-            }
-            "regenerate_clip_embedding" => {
-                for (_, row) in ctx.selection.selected_rows.clone() {
-                    if row.file_type == "<DIR>" { continue; }
-                    let path = row.path.clone();
-                    let thumb = row.clone();
-                    let tx = self.clip_embedding_tx.clone();
-                    tokio::spawn(async move {
-                        let _ = crate::ai::GLOBAL_AI_ENGINE.ensure_clip_engine().await;
-                        // Force re-generation by not checking existing presence
-                        let _ = crate::ai::GLOBAL_AI_ENGINE.clip_generate_for_paths(&[path.clone()]).await?;
-                        let _ = tx.try_send(thumb.get_embedding().await?);
-                        Ok::<(), anyhow::Error>(())
-                    });
-                }
-            }
-            "add_selection_to_group" => {
-                if let Some(group_name) = crate::ui::file_table::active_group_name() {
-                    // Collect paths -> upsert and associate
-                    let rows: Vec<crate::database::Thumbnail> = ctx
-                        .selection
-                        .selected_rows
-                        .iter()
-                        .map(|(_, r)| (*r).clone())
-                        .filter(|r| r.file_type != "<DIR>")
-                        .collect();
-                    tokio::spawn(async move {
-                        if let Ok(ids) = crate::database::upsert_rows_and_get_ids(rows).await {
-                            if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&group_name).await {
-                                let _ = crate::database::LogicalGroup::add_thumbnails(&g.id, &ids).await;
-                            }
-                        }
-                    });
-                } else {
-                    log::warn!("No active logical group; cannot add selection");
-                }
-            }
-            "remove_selection_from_group" => {
-                if let Some(group_name) = crate::ui::file_table::active_group_name() {
-                    let paths: Vec<String> = ctx
-                        .selection
-                        .selected_rows
-                        .iter()
-                        .map(|(_, r)| r.path.clone())
-                        .filter(|p| !p.is_empty())
-                        .collect();
-                    tokio::spawn(async move {
-                        if let Ok(Some(g)) = crate::database::LogicalGroup::get_by_name(&group_name).await {
-                            // Load ids for given paths
-                            let mut ids: Vec<surrealdb::types::RecordId> = Vec::new();
-                            for p in paths.into_iter() {
-                                if let Ok(Some(id)) = crate::Thumbnail::get_thumbnail_id_by_path(&p).await {
-                                    ids.push(id);
-                                }
-                            }
-                            // Remove each id
-                            for id in ids.iter() {
-                                let _ = crate::database::LogicalGroup::remove_thumbnail(&g.id, id).await;
-                            }
-                        }
-                    });
-                } else {
-                    log::warn!("No active logical group; cannot remove selection");
-                }
-            }
-            "exclude_dirs_from_scan" => {
-                // Collect selected directory paths
-                let mut add: Vec<String> = ctx
-                    .selection
-                    .selected_rows
-                    .iter()
-                    .filter_map(|(_, r)| if r.file_type == "<DIR>" { Some(r.path.clone()) } else { None })
-                    .filter(|p| !p.trim().is_empty())
-                    .collect();
-                if add.is_empty() { return; }
-                crate::settings::update("table:exclude-dirs", |s| {
-                    let dirs = s.excluded_dirs.get_or_insert_with(Vec::new);
-                    for p in add.drain(..) {
-                        if !dirs.contains(&p) {
-                            dirs.push(p);
-                        }
-                    }
-                });
-                self.sync_settings();
-                log::info!("Added selected directories to excluded_dirs for recursive scans");
-            }
-            "find_similar" => {
-                if let Some((_, first)) = ctx.selection.selected_rows.first() {
-                    let origin = first.path.clone();
-                    // Request embedding and open a similarity tab via AIUpdate path used elsewhere
-                    let tx_updates = self.ai_update_tx.clone();
-                    tokio::spawn(async move {
-                        if let Ok(Some(thumb)) = crate::Thumbnail::get_thumbnail_by_path(&origin).await {
-                            if let Ok(embed_row) = thumb.clone().get_embedding().await {
-                                let embed_vec = embed_row.embedding.clone();
-                                if embed_vec.is_empty() { return; }
-                                if let Ok(hits) = crate::database::ClipEmbeddingRow::find_similar_by_embedding(&embed_vec, 256, 256, 0).await {
-                                    let mut rows_out = Vec::new();
-                                    let mut scores_out = std::collections::HashMap::new();
-                                    for hit in hits.into_iter() {
-                                        if hit.path == origin { continue; }
-                                        let t = if let Some(t) = hit.thumb_ref { t } else { crate::Thumbnail::get_thumbnail_by_path(&hit.path).await.unwrap_or(None).unwrap_or_default() };
-                                        // Convert distance (lower better) to similarity (higher better)
-                                        let cosine_sim = 1.0 - hit.dist; // if dist = 1 - cos_sim
-                                        let norm_sim = ((cosine_sim + 1.0) / 2.0).clamp(0.0, 1.0); // map [-1,1] -> [0,1]
-                                        rows_out.push(t.clone());
-                                        scores_out.insert(hit.path.clone(), norm_sim);
-                                        if rows_out.len() >= 96 { break; }
-                                    }
-                                    let mut results = Vec::with_capacity(rows_out.len());
-                                    for t in rows_out.into_iter() { 
-                                        let score = scores_out.get(&t.path).copied();
-                                        results.push(crate::ui::file_table::SimilarResult { thumb: t, created: None, updated: None, similarity_score: score, clip_similarity_score: score });
-                                    }
-                                    let _ = tx_updates.try_send(crate::ui::file_table::AIUpdate::SimilarResults { origin_path: origin.clone(), results });
-                                }
-                            }
-                        }
-                    });
-                }
-            }
-            "refine_selection" => {
-                // Collect paths (non-dirs)
-                let paths: Vec<String> = ctx.selection.selected_rows.iter().filter(|(_, r)| r.file_type != "<DIR>").map(|(_, r)| r.path.clone()).collect();
-                if !paths.is_empty() { crate::ui::refine::request_refine_for_paths(paths); }
-            }
-            _ => {},
-        }
-    }
-}
-
-/* ------------------------------------------- Helpers ------------------------------------------ */
-
-fn color_for_tag(tag: &str) -> Color32 {
-    // Simple stable hash -> color mapping
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    tag.hash(&mut h);
-    let v = h.finish();
-    let r = (v & 0xFF) as u8;
-    let g = ((v >> 8) & 0xFF) as u8;
-    let b = ((v >> 16) & 0xFF) as u8;
-    Color32::from_rgb(r / 2 + 64, g / 2 + 64, b / 2 + 64)
 }

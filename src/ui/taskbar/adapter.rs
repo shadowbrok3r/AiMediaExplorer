@@ -1,17 +1,13 @@
 //! The only place the status bar and the task sources read an explorer: swap these functions when the view model changes.
 
-use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 
 use super::view_stats::{FilterChip, FilterKind, Signature, ViewStats};
 use crate::UiSettings;
 use crate::app::SmartMediaContext;
-use crate::database::Thumbnail;
 use crate::tasks::{AppProbe, ExplorerProbe};
 use crate::ui::file_table::FileExplorer;
 
-/// Selections up to this size are hashed in full for the change signature.
-const SELECTION_HASH_LIMIT: usize = 256;
 const NAME_MAX_CHARS: usize = 18;
 
 fn hash_of(value: &(impl Hash + ?Sized)) -> u64 {
@@ -23,26 +19,14 @@ fn hash_of(value: &(impl Hash + ?Sized)) -> u64 {
 /// Cheap fingerprint of the explorer state the stats depend on; it never walks the rows.
 pub fn view_signature(ex: &FileExplorer) -> Signature {
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    ex.table.len().hash(&mut h);
-    ex.table.first().map(|r| r.path.as_str()).hash(&mut h);
-    ex.table.last().map(|r| r.path.as_str()).hash(&mut h);
+    (ex.view.revision(), ex.selection.revision()).hash(&mut h);
     ex.current_path.hash(&mut h);
     ex.viewer.filter.hash(&mut h);
     (ex.viewer.types_show_images, ex.viewer.types_show_videos, ex.viewer.types_show_dirs).hash(&mut h);
     (ex.viewer.mode as u8, ex.viewer.showing_similarity).hash(&mut h);
     (ex.is_recursive_scan(), ex.recursive_total_filtered(), ex.recursive_total_unfiltered()).hash(&mut h);
-    selection_signature(&ex.viewer.selected, &ex.current_thumb.path).hash(&mut h);
     crate::settings::store().generation().hash(&mut h);
     h.finish()
-}
-
-/// Order-independent hash of a small selection; for a large one its size and the focused path.
-fn selection_signature(selected: &HashSet<String>, focus: &str) -> u64 {
-    if selected.len() <= SELECTION_HASH_LIMIT {
-        selected.iter().fold(selected.len() as u64, |acc, p| acc ^ hash_of(p.as_str()))
-    } else {
-        hash_of(&(selected.len(), focus))
-    }
 }
 
 /// True while the explorer still receives rows from a scan.
@@ -50,22 +34,23 @@ pub fn is_streaming(ex: &FileExplorer) -> bool {
     ex.file_scan_progress > 0.0 && !ex.scan_done
 }
 
-/// Stats of the explorer's view; walks the rows once, so callers go through the cache.
+/// Stats of the explorer's view as of its last sync; reads no rows.
 pub fn compute_view_stats(ex: &FileExplorer) -> ViewStats {
-    let tally = tally(ex.table.iter(), |r| ex.viewer.row_passes_filter(r), &ex.viewer.selected);
-    let (shown, total) = if ex.is_recursive_scan() { (ex.recursive_total_filtered(), ex.recursive_total_unfiltered()) } else { (tally.visible, ex.table.len()) };
+    let cached = crate::ui::file_table::view_stats(ex);
+    let rows = cached.rows;
+    let (shown, total) = if ex.is_recursive_scan() { (ex.recursive_total_filtered(), ex.recursive_total_unfiltered()) } else { (rows.visible, rows.total) };
     let filters = crate::settings::store().read(|s| {
         active_filters(s, &ex.viewer.filter, ex.viewer.types_show_images, ex.viewer.types_show_videos, ex.viewer.types_show_dirs)
     });
     ViewStats {
         items: shown,
         hidden: total.saturating_sub(shown),
-        images: tally.images,
-        videos: tally.videos,
-        dirs: tally.dirs,
-        total_bytes: tally.total_bytes,
-        selected: tally.selected,
-        selected_bytes: tally.selected_bytes,
+        images: rows.images,
+        videos: rows.videos,
+        dirs: rows.dirs,
+        total_bytes: rows.total_size,
+        selected: cached.selection.count.saturating_sub(cached.selection.dirs),
+        selected_bytes: cached.selection.size,
         filters,
     }
 }
@@ -102,69 +87,6 @@ pub fn app_probe(ctx: &mut SmartMediaContext) -> AppProbe {
     let mut explorers = vec![explorer_probe(crate::app::MAIN_EXPLORER_TAB, &ctx.file_explorer)];
     explorers.extend(ctx.filtered_tabs.iter().map(|(title, ex)| explorer_probe(title, ex)));
     AppProbe { explorers, image_edit_cancel: ctx.image_edit.cancel_handle() }
-}
-
-/// Counts of one pass over the rows.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Tally {
-    pub visible: usize,
-    pub images: usize,
-    pub videos: usize,
-    pub dirs: usize,
-    pub total_bytes: u64,
-    pub selected: usize,
-    pub selected_bytes: u64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Kind {
-    Image,
-    Video,
-    Other,
-}
-
-fn kind_of(path: &str) -> Kind {
-    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
-    let Some((stem, ext)) = name.rsplit_once('.') else { return Kind::Other };
-    if stem.is_empty() || ext.is_empty() || ext.len() > 8 {
-        return Kind::Other;
-    }
-    let mut buf = [0u8; 8];
-    for (slot, b) in buf.iter_mut().zip(ext.bytes()) {
-        *slot = b.to_ascii_lowercase();
-    }
-    match std::str::from_utf8(&buf[..ext.len()]) {
-        Ok(lower) if crate::is_image(lower) => Kind::Image,
-        Ok(lower) if crate::is_video(lower) => Kind::Video,
-        _ => Kind::Other,
-    }
-}
-
-/// One pass over `rows`: `passes` is the view filter; selected rows are counted whether or not they pass it.
-pub fn tally<'a>(rows: impl Iterator<Item = &'a Thumbnail>, passes: impl Fn(&Thumbnail) -> bool, selected: &HashSet<String>) -> Tally {
-    let mut t = Tally::default();
-    for r in rows {
-        let is_dir = r.file_type == "<DIR>";
-        let kind = if is_dir { Kind::Other } else { kind_of(&r.path) };
-        if passes(r) {
-            t.visible += 1;
-            if is_dir {
-                t.dirs += 1;
-            } else {
-                t.total_bytes = t.total_bytes.saturating_add(r.size);
-                match kind {
-                    Kind::Image => t.images += 1,
-                    Kind::Video => t.videos += 1,
-                    Kind::Other => {}
-                }
-            }
-        }
-        if !selected.is_empty() && !is_dir && selected.contains(&r.path) {
-            t.selected += 1;
-            t.selected_bytes = t.selected_bytes.saturating_add(r.size);
-        }
-    }
-    t
 }
 
 fn fmt_bytes(b: u64) -> String {
@@ -218,6 +140,7 @@ pub fn active_filters(s: &UiSettings, search: &str, show_images: bool, show_vide
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::database::Thumbnail;
 
     fn row(path: &str, kind: &str, size: u64) -> Thumbnail {
         let mut t = Thumbnail::default();
@@ -236,34 +159,6 @@ mod tests {
             row("/p/notes.txt", "txt", 7),
             row("/p/sub", "<DIR>", 0),
         ]
-    }
-
-    #[test]
-    fn kind_detection_ignores_case_and_dotfiles() {
-        assert_eq!(kind_of("/x/A.JPG"), Kind::Image);
-        assert_eq!(kind_of("C:\\x\\clip.MP4"), Kind::Video);
-        assert_eq!(kind_of("/x/.png"), Kind::Other);
-        assert_eq!(kind_of("/x/noext"), Kind::Other);
-        assert_eq!(kind_of("/x/file."), Kind::Other);
-        assert_eq!(kind_of("/x/a.verylongextension"), Kind::Other);
-    }
-
-    #[test]
-    fn one_pass_counts_kinds_sizes_and_the_selection() {
-        let rows = sample_rows();
-        let selected: HashSet<String> = ["/p/b.png".to_string(), "/p/c.mp4".to_string(), "/p/sub".to_string()].into();
-        let t = tally(rows.iter(), |_| true, &selected);
-        assert_eq!((t.visible, t.images, t.videos, t.dirs, t.total_bytes), (5, 2, 1, 1, 4307));
-        assert_eq!((t.selected, t.selected_bytes), (2, 4200), "folders are never counted as selected");
-    }
-
-    #[test]
-    fn the_view_filter_limits_the_visible_counts_but_not_the_selection() {
-        let rows = sample_rows();
-        let selected: HashSet<String> = ["/p/c.mp4".to_string()].into();
-        let t = tally(rows.iter(), |r| r.file_type != "mp4", &selected);
-        assert_eq!((t.visible, t.videos), (4, 0));
-        assert_eq!(t.selected, 1);
     }
 
     #[test]
@@ -294,33 +189,19 @@ mod tests {
         assert_eq!(chips[0].label, "Search: a very long sea...");
     }
 
-    #[test]
-    fn the_selection_signature_sees_swapped_members_of_equal_size() {
-        let a: HashSet<String> = ["/a".to_string()].into();
-        let b: HashSet<String> = ["/b".to_string()].into();
-        assert_ne!(selection_signature(&a, ""), selection_signature(&b, ""));
-        assert_eq!(selection_signature(&a, ""), selection_signature(&a.clone(), ""));
-        assert_ne!(selection_signature(&HashSet::new(), ""), selection_signature(&a, ""));
-    }
-
-    #[test]
-    fn a_large_selection_is_fingerprinted_without_hashing_every_member() {
-        let big: HashSet<String> = (0..1000).map(|i| format!("/p/{i}")).collect();
-        let mut more = big.clone();
-        more.insert("/extra".into());
-        assert_ne!(selection_signature(&big, "/f"), selection_signature(&more, "/f"));
-        assert_ne!(selection_signature(&big, "/f"), selection_signature(&big, "/g"));
-    }
-
     #[tokio::test]
     async fn the_signature_moves_with_rows_selection_and_filters_and_not_with_idle_frames() {
         let mut ex = FileExplorer::new(true);
+        ex.sync_view();
         let idle = view_signature(&ex);
+        ex.sync_view();
         assert_eq!(view_signature(&ex), idle);
         ex.table.push(row("/p/a.jpg", "jpg", 1));
+        ex.sync_view();
         let one_row = view_signature(&ex);
         assert_ne!(one_row, idle);
-        ex.viewer.selected.insert("/p/a.jpg".into());
+        ex.select_paths(["/p/a.jpg"]);
+        ex.sync_view();
         let selected = view_signature(&ex);
         assert_ne!(selected, one_row);
         ex.viewer.filter = "cat".into();
@@ -333,10 +214,12 @@ mod tests {
         for r in sample_rows() {
             ex.table.push(r);
         }
-        ex.viewer.selected.insert("/p/b.png".into());
+        ex.sync_view();
+        ex.select_paths(["/p/b.png", "/p/sub"]);
+        ex.sync_view();
         let stats = compute_view_stats(&ex);
         assert_eq!((stats.images, stats.videos, stats.dirs), (2, 1, 1));
-        assert_eq!((stats.selected, stats.selected_bytes), (1, 200));
+        assert_eq!((stats.selected, stats.selected_bytes), (1, 200), "folders are never counted as selected");
         assert_eq!(stats.items + stats.hidden, ex.table.len());
     }
 

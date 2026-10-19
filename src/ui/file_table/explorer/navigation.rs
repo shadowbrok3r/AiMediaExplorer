@@ -24,7 +24,6 @@ impl crate::ui::file_table::FileExplorer {
         self.viewer.showing_similarity = false;
         self.viewer.similar_scores.clear();
     self.table.clear();
-    self.table_index.clear();
         if recursive {
             self.recursive_scan = true;
             self.scan_done = false;
@@ -84,9 +83,7 @@ impl crate::ui::file_table::FileExplorer {
     self.viewer.thumbs.new_scope(self.viewer.scope);
     crate::ui::file_table::thumbs::adopt_legacy(&self.viewer.thumbs, &mut rows);
     self.viewer.thumbs.note_rows(rows.iter().filter(|r| r.file_type != "<DIR>").map(|r| r.path.clone()).collect());
-    self.table.clear();
-    self.table_index.clear();
-    for r in rows.into_iter() { let idx = self.table.len(); self.table_index.insert(r.path.clone(), idx); self.table.push(r); }
+    self.table.replace_all(rows);
     }
 
     pub fn push_history(&mut self, new_path: String) {
@@ -151,7 +148,6 @@ impl crate::ui::file_table::FileExplorer {
                 self.push_history(new_path);
                 self.populate_current_directory();
             }
-            let _ = self.thumbnail_tx.try_send(self.current_thumb.clone());
             return;
         }
         if let Some(parent) = Path::new(&self.current_path).parent() {
@@ -162,7 +158,6 @@ impl crate::ui::file_table::FileExplorer {
                 self.db_last_batch_len = 0;
                 self.load_database_rows();
             } else { self.populate_current_directory(); }
-            let _ = self.thumbnail_tx.try_send(self.current_thumb.clone());
         }
     }
 
@@ -176,7 +171,6 @@ impl crate::ui::file_table::FileExplorer {
         } else {
             self.populate_current_directory();
         }
-        let _ = self.thumbnail_tx.try_send(self.current_thumb.clone());
     }
 
     pub fn refresh(&mut self) {

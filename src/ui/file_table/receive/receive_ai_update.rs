@@ -3,19 +3,13 @@ use std::path::PathBuf;
 use eframe::egui::Context;
 use crate::ui::file_table::AIUpdate;
 
-#[inline]
-fn paths_equivalent_windows(a: &str, b: &str) -> bool {
-    // Compare with '/' folded to '\\' and ASCII case folded (Windows semantics)
-    if a.is_empty() || b.is_empty() { return a == b; }
-    let fold = |c: u8| if c == b'/' { b'\\' } else { c.to_ascii_lowercase() };
-    a.len() == b.len() && a.bytes().zip(b.bytes()).all(|(x, y)| fold(x) == fold(y))
-}
+use crate::ui::file_table::rows::key::{KeyPolicy, paths_equivalent};
 
 fn find_row_loose<'a>(rows: &'a [crate::database::Thumbnail], path: &str) -> Option<&'a crate::database::Thumbnail> {
     // 1) Exact match (fast path)
     if let Some(r) = rows.iter().find(|r| r.path == path) { return Some(r); }
-    // 2) Windows-equivalent path match
-    if let Some(r) = rows.iter().find(|r| paths_equivalent_windows(&r.path, path)) { return Some(r); }
+    // 2) Platform-equivalent path match
+    if let Some(r) = rows.iter().find(|r| paths_equivalent(&r.path, path, KeyPolicy::NATIVE)) { return Some(r); }
     // 3) Fallback by filename + size (helps with duplicates across mounts when streaming source path differs)
     let fname = std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or("");
     rows.iter().find(|r| r.filename.eq_ignore_ascii_case(fname) && r.size > 0)
@@ -23,11 +17,11 @@ fn find_row_loose<'a>(rows: &'a [crate::database::Thumbnail], path: &str) -> Opt
 
 impl crate::ui::file_table::FileExplorer {
     // Table row for `path`: exact index hit first, then the loose scan without cloning the table.
-    fn follow_row(&mut self, path: &str) -> Option<crate::database::Thumbnail> {
-        if let Some(idx) = self.table_pos(path) {
-            return self.table.get(idx).cloned();
+    fn follow_row(&self, path: &str) -> Option<crate::database::Thumbnail> {
+        if let Some(row) = self.table.get_by_path(path) {
+            return Some(row.clone());
         }
-        find_row_loose(&self.table, path).cloned()
+        find_row_loose(self.table.rows(), path).cloned()
     }
 
     pub fn receive_ai_update(&mut self, ctx: &Context) {
@@ -38,7 +32,7 @@ impl crate::ui::file_table::FileExplorer {
                 AIUpdate::Interim { path, text } => {
                     // Auto-follow: always advance to the currently streaming image if enabled.
                     if self.follow_active_vision && !path.is_empty() {
-                        let need_follow = !paths_equivalent_windows(&self.current_thumb.path, &path);
+                        let need_follow = !paths_equivalent(&self.current_thumb.path, &path, KeyPolicy::NATIVE);
                         if need_follow {
                             if let Some(row) = self.follow_row(&path) {
                                 self.current_thumb = row;
@@ -56,7 +50,7 @@ impl crate::ui::file_table::FileExplorer {
                     tags,
                 } => {
                     if self.follow_active_vision && !path.is_empty() {
-                        let need_follow = !paths_equivalent_windows(&self.current_thumb.path, &path);
+                        let need_follow = !paths_equivalent(&self.current_thumb.path, &path, KeyPolicy::NATIVE);
                         if need_follow {
                             if let Some(row) = self.follow_row(&path) {
                                 self.current_thumb = row;
@@ -74,8 +68,8 @@ impl crate::ui::file_table::FileExplorer {
                     let caption_clone_for_row = caption.clone();
                     let category_clone_for_row = category.clone();
                     let tags_clone_for_row = tags.clone();
-                    let final_pos = self.table_pos(&path);
-                    if let Some(row) = final_pos.and_then(|idx| self.table.get_mut(idx)) {
+                    let final_pos = self.table.position(&path);
+                    if let Some(mut row) = final_pos.and_then(|idx| self.table.get_mut(idx)) {
                         if !desc_clone_for_row.trim().is_empty() {
                             row.description = Some(desc_clone_for_row.clone());
                         }
@@ -172,10 +166,7 @@ impl crate::ui::file_table::FileExplorer {
                     let same_origin = self.viewer.showing_similarity && (self.similarity_origin_path.as_deref() == Some(origin_path.as_str()) || self.current_path == origin_path);
                     if same_origin {
                         for r in results.into_iter() {
-                            if self.table_pos(&r.thumb.path).is_some() { continue; }
-                            let idx = self.table.len();
-                            self.table.push(r.thumb.clone());
-                            self.table_index.insert(r.thumb.path.clone(), idx);
+                            if self.table.insert_if_absent(r.thumb.clone()).is_none() { continue; }
                             if let Some(s) = r.clip_similarity_score.or(r.similarity_score) { self.viewer.similar_scores.insert(r.thumb.path.clone(), s); }
                         }
                         self.similarity_origin_path.get_or_insert(origin_path);

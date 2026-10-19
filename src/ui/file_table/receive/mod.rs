@@ -3,7 +3,6 @@ pub mod receive_scan;
 pub mod receive_thumbnail;
 pub mod receive_ai_update;
 pub mod receive_clip;
-mod row_lookup;
 #[cfg(test)]
 mod receive_tests;
 

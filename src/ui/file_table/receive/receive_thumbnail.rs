@@ -22,7 +22,6 @@ impl crate::ui::file_table::FileExplorer {
     }
 
     fn apply_thumbnail_message(&mut self, ctx: &eframe::egui::Context, mut thumbnail: crate::Thumbnail) {
-        // No more per-row <PAGE_DONE> path; page loads come via db_preload_rx
         // Pixels in the message go to the thumbnail service; the row itself carries none.
         crate::ui::file_table::thumbs::adopt_legacy_one(&self.viewer.thumbs, &mut thumbnail);
         log::debug!("Received: {}", thumbnail.filename);
@@ -35,6 +34,7 @@ impl crate::ui::file_table::FileExplorer {
             }
             self.active_zip_prompt = self.pending_zip_passwords.front().cloned();
             self.show_zip_modal = true;
+            return;
         }
 
         // If we receive fresh rows while showing similarity, clear that mode
@@ -48,41 +48,28 @@ impl crate::ui::file_table::FileExplorer {
                 // Navigate into directory
                 self.current_path = thumbnail.path.clone();
                 self.table.clear();
-                self.table_index.clear();
                 self.populate_current_directory();
-            } else {
-                log::debug!("Opening preview for: {}", thumbnail.filename);
-                self.current_thumb = thumbnail;
             }
-        } else {
-            // Database mode:
-            // If new row arriving from async DB load
-            if self.table_pos(&thumbnail.path).is_none() {
-                // New row arriving from async DB load
-                self.table.push(thumbnail.clone());
-                let idx = self.table.len() - 1;
-                self.table_index.insert(thumbnail.path.clone(), idx);
-                // Update paging tracking
-                self.db_last_batch_len += 1;
-                // Advance offset per item to allow incremental "Load More"
-                self.db_offset += 1;
+        } else if !thumbnail.path.is_empty() && !self.table.contains_path(&thumbnail.path) {
+            // Database mode: new row arriving from an async DB load
+            self.table.push(thumbnail.clone());
+            self.db_last_batch_len += 1;
+            // Advance offset per item to allow incremental "Load More"
+            self.db_offset += 1;
 
-                // Kick off a lightweight, per-row CLIP embedding presence check for this item
-                if thumbnail.file_type != "<DIR>" {
-                    let tx_clip = self.viewer.clip_embedding_tx.clone();
-                    let thumb = thumbnail.clone();
-                    // Skip if we already know we have an embedding for this path
-                    if !self.viewer.clip_presence.contains(&thumb.path) {
-                        tokio::spawn(async move {
-                            // Concurrency guard
-                            let _permit = EMBED_CHECK_SEM.clone().acquire_owned().await.ok();
-                            let embedding = thumb.get_embedding().await.unwrap_or_default();
-                            let _ = tx_clip.try_send(embedding);
-                        });
-                    }
+            // Kick off a lightweight, per-row CLIP embedding presence check for this item
+            if thumbnail.file_type != "<DIR>" {
+                let tx_clip = self.viewer.clip_embedding_tx.clone();
+                let thumb = thumbnail.clone();
+                // Skip if we already know we have an embedding for this path
+                if !self.viewer.clip_presence.contains(&thumb.path) {
+                    tokio::spawn(async move {
+                        // Concurrency guard
+                        let _permit = EMBED_CHECK_SEM.clone().acquire_owned().await.ok();
+                        let embedding = thumb.get_embedding().await.unwrap_or_default();
+                        let _ = tx_clip.try_send(embedding);
+                    });
                 }
-            } else {
-                self.current_thumb = thumbnail.clone();
             }
         }
     }

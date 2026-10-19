@@ -2262,19 +2262,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "egui-data-table"
-version = "0.11.0"
-source = "git+https://github.com/shadowbrok3r/egui-data-table?branch=egui-037#1af2ecfacec6b9058b78b967aba2c08303687f8c"
-dependencies = [
- "egui",
- "egui_extras",
- "itertools 0.14.0",
- "serde",
- "tap",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "egui-icon-pack"
 version = "0.1.0"
 source = "git+https://github.com/shadowbrok3r/egui-theme-kit?rev=d462da890f7abb6aa8b7d9cfcf6ab1ed1fc226de#d462da890f7abb6aa8b7d9cfcf6ab1ed1fc226de"
@@ -2307,7 +2294,6 @@ dependencies = [
  "directories",
  "eframe",
  "egui",
- "egui-data-table",
  "egui-toast",
  "egui_dock",
  "egui_extras",
@@ -8366,7 +8352,6 @@ dependencies = [
  "directories",
  "eframe",
  "egui",
- "egui-data-table",
  "egui-icon-pack",
  "egui-icon-pack-build",
  "egui-phosphor",
@@ -9525,12 +9510,6 @@ dependencies = [
  "core-foundation-sys",
  "libc",
 ]
-
-[[package]]
-name = "tap"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 
 [[package]]
 name = "tar"

@@ -89,8 +89,8 @@ async fn thumb_ready_queues_rows_for_persistence_and_rows_carry_no_pixels() {
     ex.receive_scan(&ctx);
     let queued: Vec<&str> = ex.pending_thumb_rows.iter().map(|r| r.path.as_str()).collect();
     assert_eq!(queued, [path_of(0), path_of(7), path_of(39)]);
-    assert!(pixel_free(&ex.table) && pixel_free(&ex.last_scan_rows) && pixel_free(&ex.pending_thumb_rows));
-    assert_eq!(ex.table_index.len(), ex.table.len());
+    assert!(pixel_free(ex.table.rows()) && pixel_free(&ex.last_scan_rows) && pixel_free(&ex.pending_thumb_rows));
+    ex.table.check_invariants().unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -118,21 +118,25 @@ async fn a_thumb_for_a_path_missing_from_a_shallow_table_adds_a_placeholder_row(
     assert_eq!(ex.table.len(), 1);
     assert_eq!(ex.table.iter().next().unwrap().path, path_of(5));
     assert_eq!(ex.pending_thumb_rows.len(), 1);
-    assert!(pixel_free(&ex.table));
+    assert!(pixel_free(ex.table.rows()));
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn stale_table_index_is_repaired_after_external_row_removal() {
+async fn lookups_stay_exact_after_rows_are_removed_from_the_table() {
     let ctx = Context::default();
     let mut ex = explorer(false, 5_000);
     send_batch(&ex, 30);
     ex.receive_scan(&ctx);
     let removed: std::collections::HashSet<String> = (0..10).map(path_of).collect();
     ex.table.retain(|r| !removed.contains(&r.path));
+    ex.table.check_invariants().unwrap();
     send_ready(&ex, 20);
+    send_ready(&ex, 3);
     ex.receive_scan(&ctx);
-    assert_eq!(ex.pending_thumb_rows.len(), 1);
-    assert_eq!(ex.pending_thumb_rows[0].path, path_of(20));
+    let queued: Vec<&str> = ex.pending_thumb_rows.iter().map(|r| r.path.as_str()).collect();
+    assert_eq!(queued.first().copied(), Some(path_of(20).as_str()));
+    assert_eq!(ex.table.len(), 21, "a removed row that gets a thumbnail is re-added as a placeholder");
+    ex.table.check_invariants().unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -150,7 +154,7 @@ async fn scan_messages_are_drained_within_the_frame_budget() {
     assert!(frames >= 2);
     assert!(ex.scan_rx.is_empty());
     assert_eq!(ex.table.len(), 3_000);
-    assert!(pixel_free(&ex.table) && pixel_free(&ex.last_scan_rows));
+    assert!(pixel_free(ex.table.rows()) && pixel_free(&ex.last_scan_rows));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -185,7 +189,7 @@ async fn thumbnail_channel_is_drained_with_a_budget_and_pixels_leave_the_rows() 
         frames += 1;
     }
     assert!(frames >= 5, "frames={frames}");
-    assert!(pixel_free(&ex.table));
+    assert!(pixel_free(ex.table.rows()));
     assert!(ex.current_thumb.thumbnail_b64.is_none(), "selection rows are stripped too");
 }
 

@@ -4,6 +4,7 @@ use std::{path::PathBuf, time::Duration};
 
 pub mod navigation;
 pub mod backup;
+pub mod rows;
 
 impl crate::ui::file_table::FileExplorer {
     pub fn populate_current_directory(&mut self) {
@@ -12,7 +13,6 @@ impl crate::ui::file_table::FileExplorer {
             self.viewer.showing_similarity = false;
             self.viewer.similar_scores.clear();
                 self.table.clear();
-                self.table_index.clear();
             self.files.clear();
 
             let reg = ArchiveRegistry::default();
@@ -28,9 +28,7 @@ impl crate::ui::file_table::FileExplorer {
                     Ok(entries) => {
                         for e in entries {
                             let t = entry_to_thumbnail(&scheme, &archive_path, &internal, e.clone());
-                                self.table.push(t.clone());
-                                let idx = self.table.len()-1;
-                                self.table_index.insert(t.path.clone(), idx);
+                                self.table.push(t);
                             
                             // For media files, schedule asynchronous thumbnail generation
                             let ext = std::path::Path::new(&e.name)
@@ -121,7 +119,6 @@ impl crate::ui::file_table::FileExplorer {
         self.last_scan_paths.clear();
         self.last_scan_root = Some(self.current_path.clone());
         self.table.clear();
-        self.table_index.clear();
         self.files.clear();
         let excluded: Vec<String> = self
             .excluded_terms

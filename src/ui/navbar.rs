@@ -232,6 +232,10 @@ impl crate::app::SmartMediaApp {
                 crate::ui::devtools::toggle_perf(ui.ctx());
                 ui.close();
             }
+            if icons::button(ui, svg::STACK, "Row store").clicked() {
+                crate::ui::devtools::toggle_row_store(ui.ctx());
+                ui.close();
+            }
         });
 
         ui.separator();

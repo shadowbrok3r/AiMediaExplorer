@@ -45,7 +45,7 @@ impl super::FileExplorer {
                 if icons::icon_button(ui, svg::ARROW_CLOCKWISE, "Refresh").clicked() { self.refresh(); }
                 if icons::icon_button(ui, svg::HOUSE_SIMPLE, "Home").clicked() { self.nav_home(); }
                 if self.viewer.mode == super::table::ExplorerMode::Database {
-                    if icons::icon_button(ui, svg::TRASH, "Double click to Clear Database Table").double_clicked() { self.table.clear(); self.table_index.clear(); }
+                    if icons::icon_button(ui, svg::TRASH, "Double click to Clear Database Table").double_clicked() { self.table.clear(); }
                 }
                 ui.separator();
                 let right_id = ui.id().with("navbar_right_width");
@@ -81,7 +81,6 @@ impl super::FileExplorer {
                                     self.viewer.showing_similarity = true;
                                     self.similarity_origin_path = Some(format!("query:{query}"));
                                     self.table.clear();
-                                    self.table_index.clear();
                                     let types_show_images = self.viewer.types_show_images;
                                     let types_show_videos = self.viewer.types_show_videos;
                                     let minb = self.viewer.ui_settings.db_min_size_bytes;

@@ -17,14 +17,7 @@ impl crate::ui::file_table::FileExplorer {
                     if p == current_page {
                         // Apply to table (fresh page swap)
                         self.viewer.thumbs.new_scope(self.viewer.scope);
-                        self.table.clear();
-                        self.table_index.clear();
-                        // Clamp to page size for safety
-                        for r in rows.iter().take(self.db_limit) {
-                            let idx = self.table.len();
-                            self.table_index.insert(r.path.clone(), idx);
-                            self.table.push(r.clone());
-                        }
+                        self.table.replace_all(rows.iter().take(self.db_limit).cloned());
                         self.db_last_batch_len = self.table.len();
                         self.db_offset = p * self.db_limit + self.db_last_batch_len;
                         // Cache page snapshot
@@ -49,9 +42,10 @@ impl crate::ui::file_table::FileExplorer {
                 self.db_lookup.insert(r.path.clone(), r);
             }
             // Merge DB-backed fields into any existing table rows that match by path
-            for row in self.table.iter_mut() {
-                if row.file_type == "<DIR>" { continue; }
-                if let Some(db_row) = self.db_lookup.get(&row.path) {
+            let lookup = &self.db_lookup;
+            self.table.for_each_mut(|row| {
+                if row.file_type == "<DIR>" { return; }
+                if let Some(db_row) = lookup.get(&row.path) {
                     // Prefer DB id and metadata
                     row.id = db_row.id.clone();
                     row.db_created = db_row.db_created.clone();
@@ -64,7 +58,7 @@ impl crate::ui::file_table::FileExplorer {
                     if row.modified.is_none() { row.modified = db_row.modified.clone(); }
                     if row.size == 0 { row.size = db_row.size; }
                 }
-            }
+            });
             // Keep current_thumb in sync as well
             if !self.current_thumb.path.is_empty() {
                 if let Some(db_row) = self.db_lookup.get(&self.current_thumb.path) {

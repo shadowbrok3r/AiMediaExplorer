@@ -1,4 +1,5 @@
 use std::time::{Duration, Instant};
+use crate::ui::file_table::rows::Upsert;
 use crate::utilities::filtering::FiltersExt;
 
 const SCAN_MSG_BUDGET: usize = 512;
@@ -64,13 +65,9 @@ impl crate::ui::file_table::FileExplorer {
                                 let start = self.recursive_current_page * self.recursive_page_size;
                                 let end = (start + self.recursive_page_size).min(self.last_scan_rows.len());
                                 if self.last_scan_rows.len()-1 >= start && self.last_scan_rows.len()-1 < end {
-                                    let idx = self.table.len();
-                                    self.table_index.insert(row.path.clone(), idx);
                                     self.table.push(row);
                                 }
                             } else {
-                                let idx = self.table.len();
-                                self.table_index.insert(row.path.clone(), idx);
                                 self.table.push(row);
                             }
                             ctx.request_repaint();
@@ -90,13 +87,9 @@ impl crate::ui::file_table::FileExplorer {
                                         let start = self.recursive_current_page * self.recursive_page_size;
                                         let end = (start + self.recursive_page_size).min(self.last_scan_rows.len());
                                         if self.last_scan_rows.len()-1 >= start && self.last_scan_rows.len()-1 < end {
-                                            let idx = self.table.len();
-                                            self.table_index.insert(row.path.clone(), idx);
                                             self.table.push(row);
                                         }
                                     } else {
-                                        let idx = self.table.len();
-                                        self.table_index.insert(row.path.clone(), idx);
                                         self.table.push(row);
                                     }
                                 }
@@ -156,20 +149,12 @@ impl crate::ui::file_table::FileExplorer {
                             let start = self.recursive_current_page * self.recursive_page_size;
                             let end = (start + self.recursive_page_size).min(self.last_scan_rows.len());
                             if self.last_scan_rows.len() - 1 >= start && self.last_scan_rows.len() - 1 < end {
-                                let idx = self.table.len();
                                 self.table.push(row.clone());
-                                self.table_index.insert(row.path.clone(), idx);
                                 ctx.request_repaint();
                             }
                         } else {
                             // Non paginated path or below threshold
-                            if let Some(&idx) = self.table_index.get(&row.path) {
-                                if let Some(existing) = self.table.get_mut(idx) { *existing = row.clone(); }
-                            } else {
-                                let idx = self.table.len();
-                                self.table.push(row.clone());
-                                self.table_index.insert(row.path.clone(), idx);
-                            }
+                            self.table.upsert(row.clone());
                             ctx.request_repaint();
                         }
                         // Append to cached scan items buffer
@@ -359,14 +344,7 @@ impl crate::ui::file_table::FileExplorer {
                                 show_in_page = is_new_global && (self.last_scan_rows.len() - 1) >= start && (self.last_scan_rows.len() - 1) < end;
                             }
                             if show_in_page {
-                                if let Some(&idx) = self.table_index.get(&row_snapshot.path) {
-                                    if let Some(existing) = self.table.get_mut(idx) {
-                                        *existing = row_snapshot.clone();
-                                    }
-                                } else {
-                                    let idx = self.table.len();
-                                    self.table.push(row_snapshot.clone());
-                                    self.table_index.insert(row_snapshot.path.clone(), idx);
+                                if let Upsert::Inserted(_) = self.table.upsert(row_snapshot.clone()) {
                                     if self.recursive_scan { cached_paths.push(row_snapshot.path.clone()); }
                                 }
                                 need_repaint = true;
@@ -511,10 +489,8 @@ impl crate::ui::file_table::FileExplorer {
                 }
                 crate::utilities::scan::ScanMsg::ThumbReady { path, .. } => {
                     let key = path.to_string_lossy().to_string();
-                    if let Some(idx) = self.table_pos(&key) {
-                        if let Some(found) = self.table.get(idx) {
-                            self.pending_thumb_rows.push(found.clone());
-                        }
+                    if let Some(found) = self.table.get_by_path(&key) {
+                        self.pending_thumb_rows.push(found.clone());
                     } else {
                         // Path not yet present (likely due to message reordering).
                         // Do NOT inject into table during recursive scans to avoid page bleed; let Found/Batch add rows.
@@ -557,9 +533,7 @@ impl crate::ui::file_table::FileExplorer {
                                     parent_dir,
                                     logical_group: crate::LogicalGroup::default().id,
                                 };
-                                let idx = self.table.len();
                                 self.table.push(row.clone());
-                                self.table_index.insert(row.path.clone(), idx);
                                 self.pending_thumb_rows.push(row);
                                 log::debug!("Inserted placeholder row for missing ThumbReady: {}", key);
                             }

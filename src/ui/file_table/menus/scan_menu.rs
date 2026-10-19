@@ -9,7 +9,6 @@ impl crate::ui::file_table::FileExplorer {
         self.recursive_scan = true;
         self.scan_done = false;
         self.table.clear();
-        self.table_index.clear();
         self.last_scan_rows.clear();
         self.last_scan_paths.clear();
         self.last_scan_root = Some(self.current_path.clone());
@@ -58,7 +57,6 @@ impl crate::ui::file_table::FileExplorer {
                     self.recursive_scan = false;
                     self.scan_done = false;
                     self.table.clear();
-                    self.table_index.clear();
                     self.last_scan_rows.clear();
                     self.last_scan_paths.clear();
                     self.last_scan_root = Some(self.current_path.clone());
@@ -121,13 +119,7 @@ impl crate::ui::file_table::FileExplorer {
 
                 if !self.last_scan_rows.is_empty() {
                     if icons::button(ui, svg::ARROW_COUNTER_CLOCKWISE, "Return to Active Scan").on_hover_text("Restore the last recursive scan results without rescanning").clicked() {
-                        self.table.clear();
-                        self.table_index.clear();
-                        for r in self.last_scan_rows.clone().into_iter() {
-                            self.table.push(r.clone());
-                            let idx = self.table.len()-1;
-                            self.table_index.insert(r.path.clone(), idx);
-                        }
+                        self.table.replace_all(self.last_scan_rows.iter().cloned());
                         self.viewer.showing_similarity = false;
                         self.viewer.similar_scores.clear();
                         self.scan_done = true;

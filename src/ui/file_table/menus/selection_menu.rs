@@ -13,20 +13,11 @@ use crate::ui::file_table::table::ExplorerMode;
 /// Names listed in a confirmation before the rest are summarised as a count.
 const NAME_PREVIEW: usize = 5;
 
-/// Non-directory rows whose path is selected; an empty selection selects nothing.
-pub fn selected_file_rows<'a>(rows: impl IntoIterator<Item = &'a Thumbnail>, selected: &HashSet<String>) -> Vec<&'a Thumbnail> {
-    if selected.is_empty() {
-        return Vec::new();
-    }
-    rows.into_iter().filter(|r| r.file_type != "<DIR>" && selected.contains(&r.path)).collect()
-}
-
-/// Paths of selected directory rows.
-pub fn selected_dir_paths<'a>(rows: impl IntoIterator<Item = &'a Thumbnail>, selected: &HashSet<String>) -> Vec<String> {
-    if selected.is_empty() {
-        return Vec::new();
-    }
-    rows.into_iter().filter(|r| r.file_type == "<DIR>" && selected.contains(&r.path)).map(|r| r.path.clone()).collect()
+/// Splits selected rows into the file rows and the paths of the directory rows; no rows split into nothing.
+pub fn split_selection<'a>(selected: &[&'a Thumbnail]) -> (Vec<&'a Thumbnail>, Vec<String>) {
+    let files = selected.iter().copied().filter(|r| r.file_type != "<DIR>").collect();
+    let dirs = selected.iter().filter(|r| r.file_type == "<DIR>").map(|r| r.path.clone()).collect();
+    (files, dirs)
 }
 
 /// First `max` names joined, with a trailing "and N more".
@@ -82,11 +73,12 @@ impl crate::ui::file_table::FileExplorer {
                 ui.heading(RichText::new("Backup Files").underline().color(crate::theme::primary(ui)))
             );
 
-            let files = selected_file_rows(self.table.iter(), &self.viewer.selected);
+            self.sync_view();
+            let selected = self.selected_rows();
+            let (files, selected_dirs) = split_selection(&selected);
             let file_paths: Vec<String> = files.iter().map(|r| r.path.clone()).collect();
             let file_names: Vec<String> = files.iter().map(|r| r.filename.clone()).collect();
             let delete_plan = plan_delete(&files);
-            let selected_dirs = selected_dir_paths(self.table.iter(), &self.viewer.selected);
             let n = file_paths.len();
             let has_files = n > 0;
             let hint = if has_files { "Acts on the selected files only" } else { "Select files in the table first" };
@@ -207,11 +199,7 @@ impl crate::ui::file_table::FileExplorer {
     fn delete_rows_from_db(&mut self, plan: DeletePlan) {
         let removed: HashSet<String> = plan.paths.iter().cloned().collect();
         self.table.retain(|r| !removed.contains(&r.path));
-        self.table_index.clear();
-        for (i, r) in self.table.iter().enumerate() {
-            self.table_index.insert(r.path.clone(), i);
-        }
-        self.viewer.selected.retain(|p| !removed.contains(p));
+        self.sync_view();
         let (ids, paths) = (plan.ids, plan.paths);
         tokio::spawn(async move {
             match super::db_delete::delete_rows(ids, paths).await {
@@ -240,35 +228,27 @@ mod tests {
         t
     }
 
-    fn sel(paths: &[&str]) -> HashSet<String> {
-        paths.iter().map(|p| p.to_string()).collect()
+    #[test]
+    fn no_selected_rows_split_into_nothing_and_plan_no_delete() {
+        let (files, dirs) = split_selection(&[]);
+        assert!(files.is_empty() && dirs.is_empty());
+        assert!(plan_delete(&files).is_none());
     }
 
     #[test]
-    fn an_empty_selection_never_falls_back_to_all_rows() {
-        let rows = vec![row("/a/1.jpg", "jpg"), row("/a/2.jpg", "jpg")];
-        assert!(selected_file_rows(&rows, &HashSet::new()).is_empty());
-        assert!(plan_delete(&selected_file_rows(&rows, &HashSet::new())).is_none());
-    }
-
-    #[test]
-    fn only_selected_non_directory_rows_are_resolved() {
-        let rows = vec![row("/a/1.jpg", "jpg"), row("/a/2.jpg", "jpg"), row("/a/sub", "<DIR>"), row("/a/3.jpg", "jpg")];
-        let picked = selected_file_rows(&rows, &sel(&["/a/2.jpg", "/a/sub", "/gone/9.jpg"]));
-        let paths: Vec<_> = picked.iter().map(|r| r.path.as_str()).collect();
-        assert_eq!(paths, vec!["/a/2.jpg"], "directories and rows no longer in the table are dropped");
-    }
-
-    #[test]
-    fn selected_directories_are_resolved_separately() {
-        let rows = vec![row("/a/1.jpg", "jpg"), row("/a/sub", "<DIR>")];
-        assert_eq!(selected_dir_paths(&rows, &sel(&["/a/1.jpg", "/a/sub"])), vec!["/a/sub".to_string()]);
+    fn files_and_directories_are_split() {
+        let rows = vec![row("/a/1.jpg", "jpg"), row("/a/sub", "<DIR>"), row("/a/2.jpg", "jpg")];
+        let refs: Vec<&Thumbnail> = rows.iter().collect();
+        let (files, dirs) = split_selection(&refs);
+        let paths: Vec<_> = files.iter().map(|r| r.path.as_str()).collect();
+        assert_eq!(paths, vec!["/a/1.jpg", "/a/2.jpg"]);
+        assert_eq!(dirs, vec!["/a/sub".to_string()]);
     }
 
     #[test]
     fn the_delete_plan_carries_the_exact_selection() {
-        let rows = vec![row("/a/1.jpg", "jpg"), row("/a/2.jpg", "jpg"), row("/a/3.jpg", "jpg")];
-        let picked = selected_file_rows(&rows, &sel(&["/a/1.jpg", "/a/3.jpg"]));
+        let rows = vec![row("/a/1.jpg", "jpg"), row("/a/3.jpg", "jpg")];
+        let picked: Vec<&Thumbnail> = rows.iter().collect();
         let plan = plan_delete(&picked).expect("two rows selected");
         assert_eq!(plan.paths, vec!["/a/1.jpg".to_string(), "/a/3.jpg".to_string()]);
         assert_eq!(plan.names, vec!["1.jpg".to_string(), "3.jpg".to_string()]);
