@@ -460,6 +460,36 @@ fn the_filters_window_opens_by_command() {
 }
 
 #[test]
+fn a_scale_suite_starts_on_the_focused_tab_and_a_second_one_waits_for_the_first() {
+    use crate::ui::devtools::scale::bench::Suite;
+    let _guard = crate::ui::devtools::scale::CANCEL_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut rig = Rig::new();
+    let text = rig.app.scale_bench(Suite::Ui, None, Vec::new(), None).unwrap();
+    assert!(text.contains("ui run started"), "{text}");
+    assert!(rig.app.context.active_explorer().bench_running());
+    let err = rig.app.scale_bench(Suite::Scroll, None, Vec::new(), None).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Invalid);
+    assert!(err.message.contains("already"), "{err}");
+    crate::ui::devtools::scale::request_cancel();
+    let ctx = rig.app.egui_ctx.clone();
+    rig.app.context.active_explorer().run_bench(&ctx);
+    assert!(!rig.app.context.active_explorer().bench_running());
+}
+
+#[test]
+fn a_scale_suite_with_a_bad_duration_or_scope_is_refused_before_it_starts() {
+    use crate::ui::devtools::scale::bench::Suite;
+    let mut rig = Rig::new();
+    for seconds in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+        let err = rig.app.scale_bench(Suite::Scroll, Some(seconds), Vec::new(), None).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Invalid, "{seconds}");
+    }
+    let err = rig.app.scale_bench(Suite::Scopes, None, vec!["nonsense:1".into()], None).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Invalid);
+    assert!(!rig.app.context.active_explorer().bench_running());
+}
+
+#[test]
 fn the_view_command_sets_the_focused_tabs_mode_size_and_fit() {
     use crate::ui::file_table::table::view_mode::{TileFit, ViewMode};
     let mut rig = Rig::new();

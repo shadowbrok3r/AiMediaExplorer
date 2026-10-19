@@ -309,7 +309,7 @@ mod tests {
         let mut ex = FileExplorer::new(true);
         ex.start_at(Scope::Folder(dir.path().display().to_string()), false).unwrap();
         ex.open_scope(Scope::Folder(sub.display().to_string())).unwrap();
-        ex.nav.push_log(LoadRecord { scope: "lib:all".into(), kind: "library", rows: 1203, batches: 3, first_batch: Some(Duration::from_millis(12)), elapsed: Duration::from_millis(480), error: None, cancelled: false, total: Some(1203) });
+        ex.nav.push_log(LoadRecord { scope: "lib:all".into(), kind: "library", rows: 1203, batches: 3, first_batch: Some(Duration::from_millis(12)), elapsed: Duration::from_millis(480), stages: Default::default(), error: None, cancelled: false, total: Some(1203) });
         let snap = snapshot_of(&ex);
         assert_eq!((snap.kind, snap.position, snap.history.len()), ("folder", 1, 2));
         assert_eq!(snap.log.len(), 1);

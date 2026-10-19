@@ -9,6 +9,9 @@ use super::Thumbnail;
 use super::collections;
 use super::thumbnails::row_cols;
 use crate::command::SmartView;
+use counter::{Site, note};
+
+pub mod counter;
 
 /// Rows read per query.
 pub const PAGE: usize = 500;
@@ -43,6 +46,7 @@ pub async fn count_library<C: Connection>(db: &Surreal<C>) -> anyhow::Result<u64
     struct Count {
         n: i64,
     }
+    note(Site::ScopeMeta);
     let counts: Vec<Count> = db.query("SELECT count() AS n FROM thumbnails GROUP ALL").await?.take(0)?;
     Ok(counts.first().map_or(0, |c| c.n.max(0) as u64))
 }
@@ -85,6 +89,7 @@ async fn rows_after<C: Connection>(db: &Surreal<C>, condition: Condition<'_>, af
         clauses.push("path > $after");
     }
     let filter = if clauses.is_empty() { String::new() } else { format!("WHERE {}", clauses.join(" AND ")) };
+    note(Site::ScopePage);
     let mut query = db.query(format!("SELECT {} FROM thumbnails {filter} ORDER BY path LIMIT $limit", row_cols())).bind(("limit", limit as i64));
     if let Some(value) = condition.value() {
         query = query.bind(("value", value));
@@ -117,6 +122,7 @@ pub async fn category_page<C: Connection>(db: &Surreal<C>, category: &str, after
 
 /// The newest rows by creation time, newest first.
 pub async fn recent_rows<C: Connection>(db: &Surreal<C>, limit: usize) -> anyhow::Result<Vec<Thumbnail>> {
+    note(Site::ScopePage);
     let rows: Vec<Thumbnail> = db
         .query(format!("SELECT {} FROM thumbnails ORDER BY db_created DESC, path LIMIT $limit", row_cols()))
         .bind(("limit", limit as i64))
@@ -133,10 +139,25 @@ fn is_image_row(row: &Thumbnail) -> bool {
 pub async fn embedded_paths<C: Connection>(db: &Surreal<C>, paths: &[String]) -> anyhow::Result<HashSet<String>> {
     let mut present = HashSet::new();
     for chunk in paths.chunks(PAGE) {
+        note(Site::ScopeEmbedded);
         let found: Vec<String> = db.query("SELECT VALUE path FROM clip_embeddings WHERE path IN $paths").bind(("paths", chunk.to_vec())).await?.take(0)?;
         present.extend(found);
     }
     Ok(present)
+}
+
+/// Paths among `paths` that have a CLIP embedding, found by one scan of the path index over the range `paths` spans.
+pub async fn embedded_in_range<C: Connection>(db: &Surreal<C>, paths: &[String]) -> anyhow::Result<HashSet<String>> {
+    let (Some(lo), Some(hi)) = (paths.iter().min(), paths.iter().max()) else { return Ok(HashSet::new()) };
+    note(Site::ScopeEmbedded);
+    let found: Vec<String> = db
+        .query("SELECT VALUE path FROM clip_embeddings WHERE path >= $lo AND path <= $hi")
+        .bind(("lo", lo.clone()))
+        .bind(("hi", hi.clone()))
+        .await?
+        .take(0)?;
+    let wanted: HashSet<&str> = paths.iter().map(String::as_str).collect();
+    Ok(found.into_iter().filter(|p| wanted.contains(p.as_str())).collect())
 }
 
 /// Rows of a smart view read in path order until `want` rows matched or the library ended; `NoClip` and `Undescribed` keep images only.
@@ -176,6 +197,7 @@ pub async fn smart_page<C: Connection>(db: &Surreal<C>, view: SmartView, after: 
 /// A page of the paths and sizes of the library for the duplicate scan, in path order.
 pub async fn size_rows_page<C: Connection>(db: &Surreal<C>, after: Option<&str>, limit: usize) -> anyhow::Result<(Vec<SizeRow>, Option<String>)> {
     let filter = if after.is_some() { "WHERE size > 0 AND path > $after" } else { "WHERE size > 0" };
+    note(Site::ScopePage);
     let mut query = db.query(format!("SELECT path, size, hash FROM thumbnails {filter} ORDER BY path LIMIT $limit")).bind(("limit", limit as i64));
     if let Some(after) = after {
         query = query.bind(("after", after.to_string()));
@@ -187,6 +209,7 @@ pub async fn size_rows_page<C: Connection>(db: &Surreal<C>, after: Option<&str>,
 
 /// Record of the cached scan with UI scan id `scan_id`; the newest when ids repeat.
 pub async fn cached_scan<C: Connection>(db: &Surreal<C>, scan_id: u64) -> anyhow::Result<Option<RecordId>> {
+    note(Site::ScopeMeta);
     let found: Vec<RecordId> = db
         .query("SELECT VALUE id FROM cached_scans WHERE scan_id = $sid ORDER BY started DESC LIMIT 1")
         .bind(("sid", scan_id))
@@ -202,12 +225,14 @@ pub async fn cached_scan_title<C: Connection>(db: &Surreal<C>, scan: &RecordId) 
         title: Option<String>,
         root: String,
     }
+    note(Site::ScopeMeta);
     let rows: Vec<Named> = db.query("SELECT title, root FROM $id").bind(("id", scan.clone())).await?.take(0)?;
     Ok(rows.into_iter().next().map(|n| n.title.filter(|t| !t.trim().is_empty()).unwrap_or(n.root)))
 }
 
 /// A page of the paths a cached scan found, in the order they were recorded.
 pub async fn cached_scan_paths<C: Connection>(db: &Surreal<C>, scan: &RecordId, offset: usize, limit: usize) -> anyhow::Result<Vec<String>> {
+    note(Site::ScopePage);
     let paths: Vec<String> = db
         .query("SELECT VALUE path FROM cached_scan_items WHERE scan_ref = $r ORDER BY created, path LIMIT $l START $o")
         .bind(("r", scan.clone()))
@@ -220,11 +245,13 @@ pub async fn cached_scan_paths<C: Connection>(db: &Surreal<C>, scan: &RecordId, 
 
 /// Rows of `paths` that exist in the library, in the order of `paths`.
 pub async fn rows_of_paths<C: Connection>(db: &Surreal<C>, paths: &[String]) -> anyhow::Result<Vec<Thumbnail>> {
+    note(Site::ScopeLookup);
     collections::rows_for_paths(db, paths).await
 }
 
 /// The first stored CLIP embedding of `path`.
 pub async fn embedding_of<C: Connection>(db: &Surreal<C>, path: &str) -> anyhow::Result<Option<Vec<f32>>> {
+    note(Site::ScopeMeta);
     let found: Vec<Vec<f32>> = db.query("SELECT VALUE embedding FROM clip_embeddings WHERE path = $path").bind(("path", path.to_string())).await?.take(0)?;
     Ok(found.into_iter().find(|e| !e.is_empty()))
 }

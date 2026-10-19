@@ -32,11 +32,7 @@ impl crate::app::SmartMediaContext {
         }
 
         while let Ok((kind, msg)) = self.toast_rx.try_recv() {
-            self.toasts.add(egui_toast::Toast {
-                kind,
-                text: eframe::egui::RichText::new(msg).into(),
-                ..Default::default()
-            });
+            self.toasts.add(app_toast(kind, msg));
         }
 
         if crate::ui::settings::open_key_pressed(ctx) {
@@ -192,10 +188,52 @@ pub async fn track_database_open(path: &str, open: impl std::future::Future<Outp
     }
 }
 
+/// A toast that stays until it is clicked and draws no progress bar.
+fn app_toast(kind: egui_toast::ToastKind, text: impl Into<String>) -> egui_toast::Toast {
+    egui_toast::Toast { kind, text: eframe::egui::RichText::new(text.into()).into(), options: egui_toast::ToastOptions::default().show_progress(false), ..Default::default() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tasks::{AttentionKind, TaskKind, TaskState};
+
+    // The delay before the next frame that the last of thirty frames showing `toast` asks for.
+    fn repaint_delay_with(toast: egui_toast::Toast) -> std::time::Duration {
+        let ctx = crate::ui::test_support::test_ctx();
+        let mut toasts = egui_toast::Toasts::new().anchor(Align2::RIGHT_TOP, (-10.0, 10.0));
+        toasts.add(toast);
+        let mut delay = std::time::Duration::ZERO;
+        for frame in 0..30 {
+            let input = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))), time: Some(frame as f64 * 0.1), ..Default::default() };
+            let out = ctx.run_ui(input, |ui| toasts.show(ui));
+            delay = out.viewport_output.get(&ViewportId::ROOT).map(|v| v.repaint_delay).unwrap();
+            out.drop_without_applying_deltas();
+        }
+        delay
+    }
+
+    #[test]
+    fn a_waiting_toast_asks_for_no_frames_until_it_is_clicked() {
+        for kind in [egui_toast::ToastKind::Info, egui_toast::ToastKind::Success, egui_toast::ToastKind::Error] {
+            let delay = repaint_delay_with(app_toast(kind, "done"));
+            assert!(delay > std::time::Duration::from_secs(60), "{kind:?} keeps the application drawing: {delay:?}");
+        }
+    }
+
+    #[test]
+    fn the_default_toast_keeps_every_frame_coming_which_is_why_the_application_does_not_use_it() {
+        let default = egui_toast::Toast { text: "x".into(), ..Default::default() };
+        assert!(repaint_delay_with(default) < std::time::Duration::from_millis(100));
+    }
+
+    #[test]
+    fn an_application_toast_keeps_its_kind_and_text() {
+        let toast = app_toast(egui_toast::ToastKind::Warning, "careful");
+        assert_eq!(toast.kind, egui_toast::ToastKind::Warning);
+        assert_eq!(toast.text.text(), "careful");
+        assert!(!toast.options.show_progress);
+    }
 
     static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 

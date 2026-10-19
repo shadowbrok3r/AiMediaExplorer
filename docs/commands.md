@@ -63,7 +63,7 @@ Search scopes show the first page and a footer under the rows with **Load more**
 
 ### Badges
 
-Each file row shows a badge in the Name column: **Indexed** (in the library), **Not indexed** (on disk only) and **Offline** (in the library but missing on disk). The disk check runs in the background for rows that are drawn, once per file a minute, never over the whole view.
+Each file row shows a badge in the Name column: **Indexed** (in the library), **Not indexed** (on disk only) and **Offline** (in the library but missing on disk). The disk check runs in the background for tiles that stay drawn for a moment (a tile scrolled past fast is not checked), once per file a minute, never over the whole view.
 
 ## Commands
 
@@ -370,7 +370,7 @@ Selects the row of a path in the focused tab, which the inspector rail previews 
 
 ### open_devtools
 
-Opens a debug window: `theme_panel`, `settings_store`, `wizard`, `db_maintenance`, `legacy_import`, `thumb_storage`, `thumb_cache`, `tasks`, `command_log`, `perf`, `zeroclaw`, `zeroclaw_jobs`, `row_store`, `collections`, `query`, `browser_actions`, `video`, `scope`, `filters`, `grid`, `inspector`, `journal`, `workspace`, `refine`, `sidebar`, `actions`, `mcp_server`, `zeroclaw_usage`.
+Opens a debug window: `theme_panel`, `settings_store`, `wizard`, `db_maintenance`, `legacy_import`, `thumb_storage`, `thumb_cache`, `tasks`, `command_log`, `perf`, `zeroclaw`, `zeroclaw_jobs`, `row_store`, `collections`, `query`, `browser_actions`, `video`, `scope`, `filters`, `grid`, `scale`, `inspector`, `journal`, `workspace`, `refine`, `sidebar`, `actions`, `mcp_server`, `zeroclaw_usage`.
 
 The `scope` window takes a scope string and shows how it parses (kind, title, parent, whether a folder exists), opens it in the focused tab or a new one, steps back and forward, lists the history stack of the focused tab with the scroll row and selection saved in each entry, and shows the timing of its recent loads: rows, batches, time to the first batch and total time.
 
@@ -457,6 +457,33 @@ Switches the focused tab between the thumbnail grid and the details table, and s
 The command acts on the focused tab; in a `--run` list the tab opened by an earlier entry takes focus only after its first frame, so the main explorer is the one that changes. Devtools > Grid drives the same settings for the tab it shows.
 
 Keys in the grid: arrows move by tile and row, Page Up and Page Down by a screen, Home and End to the ends, Shift extends, Ctrl+A selects all, Enter opens, Space toggles the preview, Esc clears, plus and minus resize the tiles, Ctrl+wheel zooms, F9 switches Grid and Details, Ctrl+1 and Ctrl+2 pick one. Dragging over empty space selects with a band (hold Ctrl to add).
+
+### scale_bench
+
+Runs a scripted performance suite against the focused tab and measures every step: the frames it took (time between frames, time the interface took, CPU time of the frame), the database queries of the browser, the CPU use of the process and its memory. The result is the table of Devtools > Scale, a log entry, and with `report` a JSON file. A run drives the tab by itself, so nothing else should touch it meanwhile; a second run while one is going is an `invalid` error.
+
+```json
+{"cmd": "scale_bench", "suite": "scroll"}
+{"cmd": "scale_bench", "suite": "scopes", "scopes": ["lib:all", "tag:@top"], "report": "/tmp/scopes.json"}
+{"cmd": "scale_bench", "suite": "record", "seconds": 30}
+```
+
+| Field | Meaning |
+|---|---|
+| `suite` | `scroll` (default), `ui`, `scopes`, `record` or `all` |
+| `seconds` | Optional: how long the scroll of `scroll` takes from the first row to the last (default 10), or how long `record` measures (default 30) |
+| `scopes` | Optional: the scopes the `scopes` suite opens, each waited for until its rows are in (the `scroll`, `ui` and `record` suites open the scopes named here first); `tag:@top`, `cat:@top` and `col:@top` stand for the biggest tag, category and collection of the library. Without it: the library, recent, undescribed, untagged, the biggest tag, category and collection, and duplicates |
+| `report` | Optional: file the report is written to as JSON |
+
+| Suite | Steps |
+|---|---|
+| `scroll` | The shown rows scrolled from the first to the last five times: grid, details, grid, details and grid; the later passes show whether memory stays flat |
+| `ui` | Tile sizes 96, 256 and 160, sorting by name, size and modified and off, grid to details and back, two filter chips on and off, select all with the action bar showing, the Task Center open and closed, the selection cleared; each step is measured over 30 frames |
+| `scopes` | One load per scope; the step carries the load record of the tab: rows, batches, time to the first batch and total time |
+| `record` | Nothing is touched; the step shows how many frames the application draws by itself, its CPU use and its queries. Scopes named in `scopes` are opened and waited for first |
+| `all` | `scopes`, the library again with the Task Center showing and without, `scroll`, `ui` and 30 idle seconds |
+
+The report holds one entry per step with the frame count, frames per second, minimum, mean, median, 95th percentile and maximum of each frame series, the queries by call site, the CPU use in percent of one core, the resident memory and its peak, and the milestones of the start (`db_connected`, `db_ready`, `first_library_rows`, `library_loaded`) in seconds since the process started. `docs/scale.md` explains how to read it and lists the numbers this machine gives.
 
 ### inspector_toggle
 

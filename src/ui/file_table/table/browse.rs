@@ -21,6 +21,8 @@ pub struct Browse {
     pub captions: bool,
     pub badges: bool,
     band_base: Vec<PathKey>,
+    /// A scripted run of the Scale window driving this tab.
+    pub bench: Option<super::scale::Run>,
 }
 
 impl Default for Browse {
@@ -32,7 +34,7 @@ impl Default for Browse {
 impl Browse {
     /// A new tab's view state from the app-wide prefs.
     pub fn from_prefs(prefs: ViewPrefs) -> Self {
-        Self { mode: prefs.mode, grid: GridView::new(), tile: prefs.tile, fit: prefs.fit, captions: prefs.captions, badges: prefs.badges, band_base: Vec::new() }
+        Self { mode: prefs.mode, grid: GridView::new(), tile: prefs.tile, fit: prefs.fit, captions: prefs.captions, badges: prefs.badges, band_base: Vec::new(), bench: None }
     }
 
     pub fn style(&self) -> GridStyle {
@@ -54,14 +56,16 @@ impl Browse {
 impl FileExplorer {
     /// Draws the view strip and the rows as a grid or a table.
     pub fn browse_panel(&mut self, ui: &mut Ui) {
+        self.run_bench(ui.ctx());
         view_strip::show(ui, self);
         match self.browse.mode {
             ViewMode::Grid => self.grid_panel(ui),
             ViewMode::Details => self.details_panel(ui),
         }
+        self.observe_scale(ui.ctx());
         let ctx = ui.ctx();
         if view_mode::app_prefs_dirty() && !ctx.input(|i| i.pointer.any_down()) {
-            view_mode::flush_app_prefs();
+            view_mode::flush_app_prefs_in_background();
         }
     }
 

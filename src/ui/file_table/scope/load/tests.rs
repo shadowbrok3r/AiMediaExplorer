@@ -64,6 +64,52 @@ async fn the_library_streams_in_batches_with_progress_and_a_known_total() {
 }
 
 #[tokio::test]
+async fn pages_read_ahead_of_their_clip_checks_still_arrive_in_page_order() {
+    let db = db().await;
+    let expected = library(&db, BATCH * 4 + 77).await;
+    for i in (0..BATCH * 4 + 77).step_by(97) {
+        db.query("CREATE clip_embeddings SET path = $p, embedding = $e").bind(("p", path_of(i))).bind(("e", vec![0.25f32; 1024])).await.unwrap().check().unwrap();
+    }
+    let (batches, out) = load_scope(&db, Scope::Library).await;
+    assert_eq!(paths(&batches), expected, "every row once, in path order");
+    assert_eq!(batches.len(), 5);
+    let embedded: usize = batches.iter().map(|b| b.embedded.len()).sum();
+    assert_eq!(embedded, (0..BATCH * 4 + 77).step_by(97).count(), "each batch carries the presence of its own rows");
+    for batch in &batches {
+        assert!(batch.embedded.iter().all(|p| batch.rows.iter().any(|r| &r.path == p)));
+    }
+    assert!(out.stages.page > Duration::ZERO, "the page reads are timed");
+    assert!(out.stages.embed > Duration::ZERO, "the CLIP checks are timed");
+}
+
+#[tokio::test]
+async fn a_load_cancelled_with_checks_in_flight_ends_cleanly_and_a_new_one_works() {
+    let db = db().await;
+    library(&db, BATCH * 6).await;
+    let env = env();
+    let cancel = env.cancel.clone();
+    let out = run(&db, &Request::first(Scope::Library), &env, &mut |_| {
+        cancel.store(true, Ordering::Relaxed);
+        true
+    })
+    .await
+    .unwrap();
+    assert!(out.cancelled && out.rows == BATCH);
+    let (batches, again) = load_scope(&db, Scope::Library).await;
+    assert_eq!((paths(&batches).len(), again.cancelled), (BATCH * 6, false));
+}
+
+#[tokio::test]
+async fn the_no_clip_view_loads_without_asking_which_rows_have_embeddings() {
+    let db = db().await;
+    library(&db, 40).await;
+    let (batches, out) = load_scope(&db, Scope::Smart(SmartView::NoClip)).await;
+    assert_eq!(paths(&batches).len(), 40);
+    assert!(batches.iter().all(|b| b.embedded.is_empty()));
+    assert_eq!(out.stages.embed, Duration::ZERO, "no presence check ran");
+}
+
+#[tokio::test]
 async fn an_empty_library_loads_nothing_without_failing() {
     let db = db().await;
     let (batches, out) = load_scope(&db, Scope::Library).await;
@@ -375,7 +421,7 @@ fn rows_made_from_paths_carry_what_the_file_system_knows() {
 
 #[tokio::test]
 async fn waiting_for_a_database_that_never_connects_times_out_and_obeys_cancel() {
-    if crate::database::is_connected() {
+    if crate::database::is_ready() {
         return;
     }
     let cancel = AtomicBool::new(false);

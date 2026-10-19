@@ -168,8 +168,9 @@ pub fn save_to(path: &Path, prefs: &ViewPrefs) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let json = serde_json::to_string_pretty(&prefs.sanitized()).map_err(std::io::Error::other)?;
-    let tmp = path.with_extension("json.tmp");
+    let tmp = path.with_extension(format!("json.{}.tmp", WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
     std::fs::write(&tmp, json)?;
     std::fs::rename(&tmp, path)
 }
@@ -212,6 +213,20 @@ impl PrefsStore {
         edit(&mut self.prefs);
         self.prefs = self.prefs.sanitized();
         self.dirty |= self.prefs != before;
+    }
+
+    /// The path and prefs of a pending change, which then counts as handed over.
+    pub fn take_pending(&mut self) -> Option<(PathBuf, ViewPrefs)> {
+        if !self.dirty {
+            return None;
+        }
+        self.dirty = false;
+        self.path.clone().map(|path| (path, self.prefs))
+    }
+
+    /// Marks the prefs as not yet written.
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
     }
 
     /// Writes pending changes; a failed write is logged and retried by the next flush.
@@ -274,6 +289,44 @@ pub fn flush_app_prefs() -> bool {
     with_store(|s| s.flush())
 }
 
+/// Hands pending app-wide prefs to the writer thread; true when something was handed over.
+pub fn flush_app_prefs_in_background() -> bool {
+    match with_store(|s| s.take_pending()) {
+        Some((path, prefs)) => {
+            write_in_background(path, prefs);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Writes `prefs` to `path` on the writer thread; a newer write queued meanwhile replaces an older one.
+pub fn write_in_background(path: PathBuf, prefs: ViewPrefs) {
+    static WRITER: std::sync::OnceLock<crossbeam::channel::Sender<(PathBuf, ViewPrefs)>> = std::sync::OnceLock::new();
+    let tx = WRITER.get_or_init(|| {
+        let (tx, rx) = crossbeam::channel::unbounded::<(PathBuf, ViewPrefs)>();
+        let spawned = std::thread::Builder::new().name("view-prefs-writer".into()).spawn(move || {
+            while let Ok(mut job) = rx.recv() {
+                while let Ok(newer) = rx.try_recv() {
+                    job = newer;
+                }
+                if let Err(e) = save_to(&job.0, &job.1) {
+                    log::warn!("[view] cannot save {}: {e}", job.0.display());
+                    #[cfg(not(test))]
+                    global().lock().unwrap_or_else(|e| e.into_inner()).mark_dirty();
+                }
+            }
+        });
+        if let Err(e) = spawned {
+            log::warn!("[view] no writer thread: {e}");
+        }
+        tx
+    });
+    if tx.send((path.clone(), prefs)).is_err() {
+        let _ = save_to(&path, &prefs);
+    }
+}
+
 /// Whether app-wide prefs wait to be written.
 pub fn app_prefs_dirty() -> bool {
     with_store(|s| s.is_dirty())
@@ -302,7 +355,8 @@ mod tests {
         let prefs = ViewPrefs { mode: ViewMode::Details, tile: 212.0, fit: TileFit::Fit, captions: false, badges: false };
         save_to(&path, &prefs).unwrap();
         assert_eq!(load_from(&path), prefs);
-        assert!(!path.with_extension("json.tmp").exists(), "the temporary file is renamed away");
+        let left_over = std::fs::read_dir(path.parent().unwrap()).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".tmp")).count();
+        assert_eq!(left_over, 0, "the temporary file is renamed away");
     }
 
     #[test]
@@ -353,6 +407,67 @@ mod tests {
         assert!(store.is_dirty() && !path.exists());
         assert!(store.flush() && !store.is_dirty());
         assert_eq!(PrefsStore::open(Some(path)).prefs().mode, ViewMode::Details);
+    }
+
+    #[test]
+    fn writes_at_the_same_time_never_fail_and_leave_one_of_the_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(PREFS_FILE);
+        let writers: Vec<_> = (0..8)
+            .map(|t| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    for i in 0..50 {
+                        save_to(&path, &ViewPrefs { tile: 100.0 + (t * 50 + i) as f32 % 200.0, ..ViewPrefs::default() }).unwrap();
+                    }
+                })
+            })
+            .collect();
+        writers.into_iter().for_each(|w| w.join().unwrap());
+        let got = load_from(&path);
+        assert!((100.0..300.0).contains(&got.tile), "{}", got.tile);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1, "only the prefs file is left");
+    }
+
+    #[test]
+    fn a_pending_change_is_handed_over_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(PREFS_FILE);
+        let mut store = PrefsStore::open(Some(path.clone()));
+        assert_eq!(store.take_pending(), None, "nothing changed");
+        store.update(|p| p.tile = 200.0);
+        let (to, prefs) = store.take_pending().expect("a change is pending");
+        assert_eq!((to, prefs.tile), (path, 200.0));
+        assert!(!store.is_dirty());
+        assert_eq!(store.take_pending(), None, "it is handed over once");
+        store.mark_dirty();
+        assert!(store.is_dirty());
+    }
+
+    #[test]
+    fn a_store_without_a_path_hands_nothing_over() {
+        let mut store = PrefsStore::open(None);
+        store.update(|p| p.tile = 200.0);
+        assert_eq!(store.take_pending(), None);
+        assert!(!store.is_dirty());
+    }
+
+    #[test]
+    fn the_writer_thread_writes_the_newest_prefs_without_the_caller_waiting() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deep").join(PREFS_FILE);
+        for tile in [100.0, 150.0, 220.0] {
+            write_in_background(path.clone(), ViewPrefs { tile, ..ViewPrefs::default() });
+        }
+        let started = std::time::Instant::now();
+        let wanted = loop {
+            let got = load_from(&path);
+            if got.tile == 220.0 || started.elapsed() > std::time::Duration::from_secs(5) {
+                break got;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert_eq!(wanted.tile, 220.0, "the newest write wins");
     }
 
     #[test]

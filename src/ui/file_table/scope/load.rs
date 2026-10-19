@@ -1,5 +1,6 @@
 //! Scope loaders: stream the rows of a non-filesystem scope from the database in batches.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -17,6 +18,8 @@ use crate::database::scope_queries::{self as queries, PAGE, RECENT_LIMIT};
 
 /// Rows per batch sent to the view.
 pub const BATCH: usize = 500;
+/// CLIP checks of earlier pages that run while the next page is read.
+const CHECKS_IN_FLIGHT: usize = 4;
 /// Results one page of a semantic or similarity search holds.
 pub const SEARCH_PAGE: usize = 100;
 /// Effort of the nearest-neighbour search.
@@ -57,9 +60,20 @@ impl Request {
     }
 }
 
+/// Time a load spent waiting for each kind of query.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Stages {
+    /// Reading pages of rows.
+    pub page: Duration,
+    /// Checking which rows have a CLIP embedding.
+    pub embed: Duration,
+}
+
 /// Rows for the view with what the loader knows about them.
 #[derive(Clone, Debug, Default)]
 pub struct RowBatch {
+    /// Time the CLIP presence check of this batch took.
+    pub embed_time: Duration,
     pub rows: Vec<Thumbnail>,
     /// Similarity of rows to the query, for search scopes.
     pub scores: Vec<(String, f32)>,
@@ -83,6 +97,7 @@ pub struct Outcome {
     pub total: Option<u64>,
     pub first_batch: Option<Duration>,
     pub elapsed: Duration,
+    pub stages: Stages,
     pub cancelled: bool,
     /// Better name for the tab than the scope gives, such as the title of a cached scan.
     pub title: Option<String>,
@@ -127,6 +142,7 @@ impl<'a> Run<'a> {
         }
         self.out.rows += batch.rows.len();
         self.out.batches += 1;
+        self.out.stages.embed += batch.embed_time;
         self.out.first_batch.get_or_insert_with(|| self.started.elapsed());
         self.open = (self.emit)(batch);
         self.open
@@ -177,19 +193,41 @@ async fn rows_with_fallback<C: Connection>(db: &Surreal<C>, paths: &[String]) ->
 }
 
 async fn batch_of<C: Connection>(db: &Surreal<C>, rows: Vec<Thumbnail>) -> anyhow::Result<RowBatch> {
+    batch_with(db, rows, Presence::Lookup).await
+}
+
+/// How the CLIP presence of the rows of a batch is found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Presence {
+    /// Not at all.
+    Skip,
+    /// One index lookup per row.
+    Lookup,
+    /// One scan of the index over the range the rows span.
+    Range,
+}
+
+async fn batch_with<C: Connection>(db: &Surreal<C>, rows: Vec<Thumbnail>, presence: Presence) -> anyhow::Result<RowBatch> {
+    if presence == Presence::Skip {
+        return Ok(RowBatch { rows, ..Default::default() });
+    }
+    let started = Instant::now();
     let paths: Vec<String> = rows.iter().map(|r| r.path.clone()).collect();
-    let embedded = queries::embedded_paths(db, &paths).await?.into_iter().collect();
-    Ok(RowBatch { rows, embedded, ..Default::default() })
+    let found = match presence {
+        Presence::Range => queries::embedded_in_range(db, &paths).await?,
+        _ => queries::embedded_paths(db, &paths).await?,
+    };
+    Ok(RowBatch { rows, embedded: found.into_iter().collect(), embed_time: started.elapsed(), ..Default::default() })
 }
 
 fn progress(env: &Env, done: usize, total: Option<u64>) {
     (env.progress)(done as u64, total.unwrap_or(0));
 }
 
-/// Waits until the database handle is connected or `timeout` passes.
+/// Waits until the database is open with its namespace selected, or `timeout` passes.
 pub async fn wait_for_connection(cancel: &AtomicBool, timeout: Duration) -> bool {
     let until = Instant::now() + timeout;
-    while !crate::database::is_connected() {
+    while !crate::database::is_ready() {
         if cancel.load(Ordering::Relaxed) || Instant::now() >= until {
             return false;
         }
@@ -199,7 +237,7 @@ pub async fn wait_for_connection(cancel: &AtomicBool, timeout: Duration) -> bool
 }
 
 /// Loads the scope of `req`, calling `emit` with each batch; `emit` returns false to stop.
-pub async fn run<C: Connection>(db: &Surreal<C>, req: &Request, env: &Env, emit: &mut (dyn FnMut(RowBatch) -> bool + Send)) -> anyhow::Result<Outcome> {
+pub async fn run<C: Connection + 'static>(db: &Surreal<C>, req: &Request, env: &Env, emit: &mut (dyn FnMut(RowBatch) -> bool + Send)) -> anyhow::Result<Outcome> {
     let mut run = Run::new(emit);
     match &req.scope {
         Scope::Folder(_) | Scope::Archive(_) => anyhow::bail!("folders and archives are listed by the file scanner"),
@@ -236,36 +274,80 @@ pub async fn run<C: Connection>(db: &Surreal<C>, req: &Request, env: &Env, emit:
     Ok(run.finish(env))
 }
 
-async fn library<C: Connection>(db: &Surreal<C>, env: &Env, run: &mut Run<'_>) -> anyhow::Result<()> {
+async fn library<C: Connection + 'static>(db: &Surreal<C>, env: &Env, run: &mut Run<'_>) -> anyhow::Result<()> {
     let total = queries::count_library(db).await?;
     run.out.total = Some(total);
-    keyset(db, env, run, |after| async move { queries::library_page(db, after.as_deref(), BATCH).await }).await
+    stream_pages(db, env, run, Presence::Range, |after| async move { queries::library_page(db, after.as_deref(), BATCH).await }).await
 }
 
 /// Reads keyset pages until the last one, sending each as a batch.
-async fn keyset<C, F, Fut>(db: &Surreal<C>, env: &Env, run: &mut Run<'_>, mut page: F) -> anyhow::Result<()>
+async fn keyset<C, F, Fut>(db: &Surreal<C>, env: &Env, run: &mut Run<'_>, page: F) -> anyhow::Result<()>
 where
-    C: Connection,
+    C: Connection + 'static,
     F: FnMut(Option<String>) -> Fut,
     Fut: std::future::Future<Output = anyhow::Result<queries::KeysetPage>>,
 {
+    stream_pages(db, env, run, Presence::Lookup, page).await
+}
+
+/// A page read and how long it took.
+async fn timed<Fut>(read: Fut) -> (anyhow::Result<queries::KeysetPage>, Duration)
+where
+    Fut: std::future::Future<Output = anyhow::Result<queries::KeysetPage>>,
+{
+    let started = Instant::now();
+    let got = read.await;
+    (got, started.elapsed())
+}
+
+/// Sends keyset pages as batches in page order, reading ahead while up to [`CHECKS_IN_FLIGHT`] earlier pages are checked.
+async fn stream_pages<C, F, Fut>(db: &Surreal<C>, env: &Env, run: &mut Run<'_>, presence: Presence, mut page: F) -> anyhow::Result<()>
+where
+    C: Connection + 'static,
+    F: FnMut(Option<String>) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<queries::KeysetPage>>,
+{
+    let mut checks: VecDeque<tokio::task::JoinHandle<anyhow::Result<RowBatch>>> = VecDeque::new();
     let mut after: Option<String> = None;
-    loop {
-        if env.cancelled() {
-            return Ok(());
+    let mut reading = true;
+    let result = loop {
+        while reading && checks.len() < CHECKS_IN_FLIGHT && !env.cancelled() {
+            let (got, took) = timed(page(after.take())).await;
+            run.out.stages.page += took;
+            let queries::KeysetPage { rows, next } = match got {
+                Ok(got) => got,
+                Err(e) => break_with(&mut checks, e)?,
+            };
+            reading = next.is_some();
+            after = next;
+            let db = db.clone();
+            checks.push_back(tokio::spawn(async move { batch_with(&db, rows, presence).await }));
         }
-        let got = page(after.clone()).await?;
-        let last = got.is_last();
-        after = got.next.clone();
-        if !run.send(batch_of(db, got.rows).await?) {
-            return Ok(());
+        let Some(oldest) = checks.pop_front() else { break Ok(()) };
+        let waiting = Instant::now();
+        let mut batch = match oldest.await {
+            Ok(Ok(batch)) => batch,
+            Ok(Err(e)) => break Err(e),
+            Err(e) => break Err(anyhow::anyhow!("a page check stopped: {e}")),
+        };
+        if presence != Presence::Skip {
+            // Time the load waited for this check.
+            batch.embed_time = waiting.elapsed();
+        }
+        if !run.send(batch) || env.cancelled() {
+            break Ok(());
         }
         progress(env, run.out.rows, run.out.total);
-        if last {
-            return Ok(());
-        }
         tokio::task::yield_now().await;
-    }
+    };
+    checks.drain(..).for_each(|check| check.abort());
+    result
+}
+
+// Stops the checks that run and hands `error` on.
+fn break_with(checks: &mut VecDeque<tokio::task::JoinHandle<anyhow::Result<RowBatch>>>, error: anyhow::Error) -> anyhow::Result<queries::KeysetPage> {
+    checks.drain(..).for_each(|check| check.abort());
+    Err(error)
 }
 
 async fn collection<C: Connection>(db: &Surreal<C>, name: &str, env: &Env, run: &mut Run<'_>) -> anyhow::Result<()> {
@@ -319,7 +401,7 @@ async fn scan<C: Connection>(db: &Surreal<C>, id: u64, env: &Env, run: &mut Run<
     Ok(())
 }
 
-async fn smart<C: Connection>(db: &Surreal<C>, view: SmartView, env: &Env, run: &mut Run<'_>) -> anyhow::Result<()> {
+async fn smart<C: Connection + 'static>(db: &Surreal<C>, view: SmartView, env: &Env, run: &mut Run<'_>) -> anyhow::Result<()> {
     match view {
         SmartView::FailedThumbs => {
             let failed = failed::snapshot();
@@ -330,29 +412,7 @@ async fn smart<C: Connection>(db: &Surreal<C>, view: SmartView, env: &Env, run: 
             Ok(())
         }
         SmartView::Duplicates => duplicates_view(db, env, run).await,
-        SmartView::NoClip | SmartView::Undescribed | SmartView::Untagged => {
-            let mut after: Option<String> = None;
-            loop {
-                if env.cancelled() {
-                    return Ok(());
-                }
-                let page = queries::smart_page(db, view, after.as_deref(), BATCH).await?;
-                let last = page.is_last();
-                after = page.next.clone();
-                let mut batch = batch_of(db, page.rows).await?;
-                if view == SmartView::NoClip {
-                    batch.embedded.clear();
-                }
-                if !run.send(batch) {
-                    return Ok(());
-                }
-                progress(env, run.out.rows, None);
-                if last {
-                    return Ok(());
-                }
-                tokio::task::yield_now().await;
-            }
-        }
+        SmartView::NoClip | SmartView::Undescribed | SmartView::Untagged => stream_pages(db, env, run, if view == SmartView::NoClip { Presence::Skip } else { Presence::Lookup }, |after| async move { queries::smart_page(db, view, after.as_deref(), BATCH).await }).await,
     }
 }
 

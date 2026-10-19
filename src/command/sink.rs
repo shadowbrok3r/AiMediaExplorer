@@ -334,6 +334,14 @@ impl CommandSink for SmartMediaApp {
         Ok(format!("{} view with {:.0} px tiles", mode.label(), ex.browse.tile))
     }
 
+    fn scale_bench(&mut self, suite: crate::ui::devtools::scale::bench::Suite, seconds: Option<f32>, scopes: Vec<String>, report: Option<String>) -> CommandResult {
+        if seconds.is_some_and(|s| !s.is_finite() || s <= 0.0) {
+            return Err(CommandError::invalid("seconds must be a positive number"));
+        }
+        self.focus_active_browser();
+        self.context.active_explorer().start_bench(suite, seconds, &scopes, report.map(Into::into)).map_err(CommandError::invalid)
+    }
+
     fn inspector_toggle(&mut self, open: Option<bool>) -> CommandResult {
         let inspector = &mut self.context.inspector;
         let now_open = match open {

@@ -70,6 +70,49 @@ async fn all_pages(db: &Surreal<Db>, limit: usize, mut next: impl AsyncFnMut(&Su
     }
 }
 
+async fn add_embedding(db: &Surreal<Db>, path: &str) {
+    db.query("CREATE clip_embeddings SET path = $p, embedding = $e").bind(("p", path.to_string())).bind(("e", vec![0.5f32; 1024])).await.unwrap().check().unwrap();
+}
+
+#[tokio::test]
+async fn the_range_check_finds_what_the_lookup_finds_for_a_page_of_the_library() {
+    let db = db().await;
+    let sorted = library(&db, 60).await;
+    for path in sorted.iter().step_by(4) {
+        add_embedding(&db, path).await;
+    }
+    add_embedding(&db, "/lib/d0/orphan_without_a_row.jpg").await;
+    for page in sorted.chunks(25) {
+        let by_lookup = embedded_paths(&db, page).await.unwrap();
+        let by_range = embedded_in_range(&db, page).await.unwrap();
+        assert_eq!(by_range, by_lookup);
+        assert!(!by_range.contains("/lib/d0/orphan_without_a_row.jpg"), "paths outside the page are dropped");
+    }
+}
+
+#[tokio::test]
+async fn the_range_check_ignores_embeddings_of_rows_in_the_range_that_are_not_asked_about() {
+    let db = db().await;
+    let sorted = library(&db, 20).await;
+    for path in &sorted {
+        add_embedding(&db, path).await;
+    }
+    let asked = vec![sorted[2].clone(), sorted[17].clone()];
+    let found = embedded_in_range(&db, &asked).await.unwrap();
+    assert_eq!(found, asked.iter().cloned().collect::<HashSet<_>>());
+}
+
+#[tokio::test]
+async fn the_range_check_takes_unsorted_paths_and_no_paths() {
+    let db = db().await;
+    let sorted = library(&db, 10).await;
+    add_embedding(&db, &sorted[3]).await;
+    let mut shuffled = sorted.clone();
+    shuffled.reverse();
+    assert_eq!(embedded_in_range(&db, &shuffled).await.unwrap(), HashSet::from([sorted[3].clone()]));
+    assert!(embedded_in_range(&db, &[]).await.unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn the_library_streams_every_row_once_in_path_order() {
     let db = db().await;

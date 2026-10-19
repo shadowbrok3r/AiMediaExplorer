@@ -194,6 +194,7 @@ pub enum DevtoolsWindow {
     Scope,
     Filters,
     Grid,
+    Scale,
     Inspector,
     Journal,
     Workspace,
@@ -392,6 +393,20 @@ pub enum AppCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         stress: Option<f32>,
     },
+    /// Run a scripted performance suite against the focused tab and report the frame times, queries and memory it measured.
+    ScaleBench {
+        #[serde(default)]
+        suite: crate::ui::devtools::scale::bench::Suite,
+        /// Seconds the scroll or record step lasts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seconds: Option<f32>,
+        /// Scopes of the scope suite; `tag:@top`, `cat:@top` and `col:@top` stand for the biggest tag, category and collection.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        scopes: Vec<String>,
+        /// File the report is written to as JSON.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        report: Option<String>,
+    },
     /// Show or hide the inspector rail; without `open` it flips.
     InspectorToggle {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -447,6 +462,7 @@ impl AppCommand {
             Self::ClearFilters => "clear_filters",
             Self::ApplySavedView { .. } => "apply_saved_view",
             Self::SetViewMode { .. } => "set_view_mode",
+            Self::ScaleBench { .. } => "scale_bench",
             Self::InspectorToggle { .. } => "inspector_toggle",
             Self::OpenPalette { .. } => "open_palette",
             Self::Mcp { .. } => "mcp",
@@ -561,6 +577,8 @@ mod tests {
             AppCommand::ApplySavedView { name: "Holidays".into() },
             AppCommand::SetViewMode { mode: ViewMode::Grid, size: Some(120.0), fit: Some(TileFit::Fit), captions: Some(false), stress: Some(30.0) },
             AppCommand::SetViewMode { mode: ViewMode::Details, size: None, fit: None, captions: None, stress: None },
+            AppCommand::ScaleBench { suite: crate::ui::devtools::scale::bench::Suite::Scroll, seconds: Some(8.0), scopes: Vec::new(), report: Some("/tmp/scale.json".into()) },
+            AppCommand::ScaleBench { suite: crate::ui::devtools::scale::bench::Suite::Scopes, seconds: None, scopes: vec!["lib:all".into(), "tag:@top".into()], report: None },
             AppCommand::InspectorToggle { open: Some(true) },
             AppCommand::InspectorToggle { open: None },
             AppCommand::OpenPalette { query: Some("tag".into()) },
@@ -610,7 +628,7 @@ mod tests {
                 parsed.insert(cmd.name());
             }
         }
-        for name in ["open_scope", "open_rows", "open_tool", "run", "show_settings", "wizard", "backup", "attach_to_assistant", "zc", "zc_memory", "refine", "undo", "redo", "workspace", "dump_state", "toast", "task_update", "clear_selection", "query", "dialog", "focus_path", "open_devtools", "show_task_center", "navigate", "connect_database", "set_filter", "clear_filters", "apply_saved_view", "set_view_mode", "inspector_toggle", "open_palette", "mcp"] {
+        for name in ["open_scope", "open_rows", "open_tool", "run", "show_settings", "wizard", "backup", "attach_to_assistant", "zc", "zc_memory", "refine", "undo", "redo", "workspace", "dump_state", "toast", "task_update", "clear_selection", "query", "dialog", "focus_path", "open_devtools", "show_task_center", "navigate", "connect_database", "set_filter", "clear_filters", "apply_saved_view", "set_view_mode", "scale_bench", "inspector_toggle", "open_palette", "mcp"] {
             assert!(parsed.contains(name), "the docs have no example for {name}");
         }
     }

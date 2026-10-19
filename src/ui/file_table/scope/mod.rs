@@ -20,7 +20,7 @@ pub mod runner;
 
 pub use badge::{Badge, Badges};
 pub use history::{Entry, History};
-pub use load::{Outcome, Request, RowBatch};
+pub use load::{Outcome, Request, RowBatch, Stages};
 pub use pending::{Pending, PendingKind};
 
 #[cfg(test)]
@@ -76,6 +76,7 @@ pub struct LoadRecord {
     pub batches: usize,
     pub first_batch: Option<Duration>,
     pub elapsed: Duration,
+    pub stages: Stages,
     pub error: Option<String>,
     pub cancelled: bool,
     pub total: Option<u64>,
@@ -231,7 +232,7 @@ mod tests {
     fn the_load_log_keeps_the_newest_records() {
         let mut nav = Nav::new(Scope::Library);
         for i in 0..LOG_CAPACITY + 5 {
-            nav.push_log(LoadRecord { scope: format!("s{i}"), kind: "library", rows: i, batches: 1, first_batch: None, elapsed: Duration::ZERO, error: None, cancelled: false, total: None });
+            nav.push_log(LoadRecord { scope: format!("s{i}"), kind: "library", rows: i, batches: 1, first_batch: None, elapsed: Duration::ZERO, stages: Stages::default(), error: None, cancelled: false, total: None });
         }
         assert_eq!(nav.log.len(), LOG_CAPACITY);
         assert_eq!(nav.log.front().unwrap().scope, "s5");

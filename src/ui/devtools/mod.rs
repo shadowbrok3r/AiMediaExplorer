@@ -19,6 +19,7 @@ pub mod zeroclaw;
 pub mod zc_jobs;
 pub mod zeroclaw_usage;
 pub mod row_store;
+pub mod scale;
 pub mod scope;
 pub mod scan_perf;
 pub mod settings_store;
@@ -137,6 +138,10 @@ pub fn toggle_grid(ctx: &Context) {
     grid::toggle(ctx);
 }
 
+pub fn toggle_scale(ctx: &Context) {
+    scale::toggle(ctx);
+}
+
 pub fn toggle_sidebar(ctx: &Context) {
     sidebar::set_open(ctx, !sidebar::is_open(ctx));
 }
@@ -168,6 +173,7 @@ pub fn open(ctx: &Context, window: DevtoolsWindow) {
         DevtoolsWindow::Scope => scope::set_open(ctx, true),
         DevtoolsWindow::Filters => filters::set_open(ctx, true),
         DevtoolsWindow::Grid => grid::set_open(ctx, true),
+        DevtoolsWindow::Scale => scale::set_open(ctx, true),
         DevtoolsWindow::Inspector => inspector::set_open(ctx, true),
         DevtoolsWindow::Journal => journal::set_open(ctx, true),
         DevtoolsWindow::Workspace => workspace::set_open(ctx, true),
@@ -201,6 +207,7 @@ pub fn show(ctx: &Context) {
     scope::show(ctx);
     filters::show(ctx);
     grid::show(ctx);
+    scale::show(ctx);
     inspector::show(ctx);
     journal::show(ctx);
     workspace::show(ctx);
@@ -236,6 +243,7 @@ mod tests {
             DevtoolsWindow::Scope => scope::is_open(ctx),
             DevtoolsWindow::Filters => filters::is_open(ctx),
             DevtoolsWindow::Grid => grid::is_open(ctx),
+            DevtoolsWindow::Scale => scale::is_open(ctx),
             DevtoolsWindow::Inspector => inspector::is_open(ctx),
             DevtoolsWindow::Journal => journal::is_open(ctx),
             DevtoolsWindow::Workspace => workspace::is_open(ctx),
@@ -272,6 +280,7 @@ mod tests {
             DevtoolsWindow::Scope,
             DevtoolsWindow::Filters,
             DevtoolsWindow::Grid,
+            DevtoolsWindow::Scale,
             DevtoolsWindow::Inspector,
             DevtoolsWindow::Journal,
             DevtoolsWindow::Workspace,

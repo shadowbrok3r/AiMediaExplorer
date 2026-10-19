@@ -87,6 +87,9 @@ fn chip_label(meta: &StatusMeta) -> String {
     if is_active(meta) { format!("   {label}") } else { label }
 }
 
+/// Time between the frames of a pulsing engine icon.
+const SPIN_FRAME: std::time::Duration = std::time::Duration::from_millis(50);
+
 /// Icon of the engine indicator `name`; an engine without its own icon shows a gear.
 pub fn engine_icon(name: &str) -> Icon {
     match name {
@@ -107,7 +110,7 @@ fn paint_engine_icon(ui: &mut Ui, rect: Rect, meta: &StatusMeta) {
     let icon = engine_icon(meta.name);
     if is_active(meta) {
         let phase = ui.input(|i| i.time) as f32 * std::f32::consts::TAU * 0.8;
-        ui.ctx().request_repaint();
+        ui.ctx().request_repaint_after(SPIN_FRAME);
         let tint = crate::theme::primary(ui).gamma_multiply(0.65 + 0.35 * phase.sin());
         icon.image(CHIP_ICON).tint(tint).paint_at(ui, rect);
     } else {
@@ -289,6 +292,35 @@ mod tests {
             meta("QWEN-EDIT", StatusState::Idle, ""),
             meta("ASSIST", StatusState::Idle, ""),
         ]
+    }
+
+    // The delay before the next frame that the third frame of the chips asks for.
+    fn repaint_delay_of(metas: &[StatusMeta], mode: ChipMode) -> std::time::Duration {
+        let ctx = crate::ui::test_support::test_ctx();
+        let mut delay = std::time::Duration::ZERO;
+        for _ in 0..3 {
+            let input = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 600.0))), ..Default::default() };
+            let out = ctx.run_ui(input, |ui| status_chips(ui, mode, metas));
+            delay = out.viewport_output.get(&ViewportId::ROOT).map(|v| v.repaint_delay).unwrap();
+            out.drop_without_applying_deltas();
+        }
+        delay
+    }
+
+    #[test]
+    fn a_pulsing_icon_asks_for_a_frame_every_fifty_milliseconds_not_every_frame() {
+        let busy = StatusMeta { name: "CLIP", state: StatusState::Running, ..Default::default() };
+        for mode in [ChipMode::Full, ChipMode::Icon] {
+            let delay = repaint_delay_of(std::slice::from_ref(&busy), mode);
+            assert!(delay >= SPIN_FRAME, "{mode:?} asks for the next frame after {delay:?}");
+            assert!(delay < std::time::Duration::from_secs(1), "{mode:?} still spins: {delay:?}");
+        }
+    }
+
+    #[test]
+    fn idle_engines_ask_for_no_frame() {
+        let idle = StatusMeta { name: "CLIP", state: StatusState::Idle, ..Default::default() };
+        assert!(repaint_delay_of(&[idle], ChipMode::Full) > std::time::Duration::from_secs(60));
     }
 
     #[test]

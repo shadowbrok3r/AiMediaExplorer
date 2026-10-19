@@ -21,6 +21,7 @@ pub mod grid_facts;
 pub mod grid_layout;
 pub mod grid_tile;
 pub mod keys;
+pub mod scale;
 pub mod view_mode;
 pub mod view_strip;
 

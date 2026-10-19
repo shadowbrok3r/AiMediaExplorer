@@ -18,6 +18,10 @@ pub use utilities::{explorer::*, scan::*, thumbs::*, types::*};
 pub use database::*;
 use eframe::egui::*;
 
+#[cfg(all(feature = "alloc-stats", not(test)))]
+#[global_allocator]
+static ALLOCATOR: ui::devtools::scale::alloc::Counting = ui::devtools::scale::alloc::Counting;
+
 impl eframe::App for app::SmartMediaApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         theme::glass::poll_outcome(ctx);
@@ -85,6 +89,7 @@ impl eframe::App for app::SmartMediaApp {
         self.context.appearance.show(&ctx);
         theme::debug_panel::record_ui_time(&ctx, started.elapsed());
         theme::debug_panel::record_frame_cpu(&ctx, frame.info().cpu_usage);
+        ui::devtools::scale::frame_end(&ctx, started.elapsed(), frame.info().cpu_usage);
         self.window_edges(ui);
     }
 

@@ -32,7 +32,7 @@ pub struct Sources<'a> {
 }
 
 /// Windows of the Devtools menu the palette lists.
-pub const DEVTOOLS: [DevtoolsWindow; 28] = [
+pub const DEVTOOLS: [DevtoolsWindow; 29] = [
     DevtoolsWindow::ThemePanel,
     DevtoolsWindow::SettingsStore,
     DevtoolsWindow::Wizard,
@@ -53,6 +53,7 @@ pub const DEVTOOLS: [DevtoolsWindow; 28] = [
     DevtoolsWindow::Scope,
     DevtoolsWindow::Filters,
     DevtoolsWindow::Grid,
+    DevtoolsWindow::Scale,
     DevtoolsWindow::Inspector,
     DevtoolsWindow::Journal,
     DevtoolsWindow::Workspace,

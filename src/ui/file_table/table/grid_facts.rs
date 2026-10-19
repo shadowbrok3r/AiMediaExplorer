@@ -1,7 +1,7 @@
 //! Per-tile facts that are not on the row: offline state, folder item counts, collection counts and video durations, probed in the background for visible tiles.
 
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossbeam::channel::{Receiver, Sender, unbounded};
 use egui::Context;
@@ -12,6 +12,10 @@ pub const DIR_COUNT_CAP: u32 = 999;
 const BATCH: usize = 64;
 /// Background jobs running at once.
 const MAX_INFLIGHT: usize = 2;
+/// Time a tile must stay drawn before its probes start.
+const LINGER: Duration = Duration::from_millis(60);
+/// Frames a queued probe survives without its tile being drawn.
+const PROBE_PATIENCE: u64 = 6;
 /// Video probes one background job runs; small so a job ends soon after its tiles scroll away.
 const DURATION_BATCH: usize = 4;
 /// Pump calls a queued video probe survives without its tile being drawn.
@@ -92,6 +96,7 @@ impl ProbeSource for SystemProbes {
         }
         if !member_paths.is_empty() && crate::database::is_connected() {
             let handle = crate::ui::file_table::thumbs::service().runtime().clone();
+            crate::database::scope_queries::counter::note(crate::database::scope_queries::counter::Site::TileFacts);
             let counts = handle.block_on(async { crate::database::collections::counts_for(&crate::database::DB, &member_paths).await });
             match counts {
                 Ok(counts) => {
@@ -106,11 +111,41 @@ impl ProbeSource for SystemProbes {
     }
 }
 
+/// One probe waiting to start.
+#[derive(Clone, Copy, Debug)]
+struct Waiting {
+    /// When the tile was first drawn.
+    since: Instant,
+    /// The pump frame the tile was last drawn in.
+    seen: u64,
+    /// When the tile was last drawn.
+    seen_at: Instant,
+    order: u64,
+}
+
+/// The waiting probes of one path, one slot per kind except videos.
+#[derive(Default)]
+struct Slots([Option<Waiting>; 3]);
+
+const WAITING_KINDS: [ProbeKind; 3] = [ProbeKind::Offline, ProbeKind::DirItems, ProbeKind::Collections];
+
+fn slot_of(kind: ProbeKind) -> Option<usize> {
+    WAITING_KINDS.iter().position(|k| *k == kind)
+}
+
 /// Facts about the paths that were drawn, gathered without blocking the UI.
 pub struct TileFacts {
     known: HashMap<String, Facts>,
     asked: HashMap<String, u8>,
-    pending: Vec<(String, ProbeKind)>,
+    /// Probes waiting for their tile to stay on screen, by path.
+    waiting: HashMap<String, Slots>,
+    waiting_count: usize,
+    next_order: u64,
+    linger: Duration,
+    patience: u64,
+    /// When the current frame was pumped.
+    now: Instant,
+    dropped_probes: u64,
     /// Queued video probes with the pump frame their tile was last drawn in.
     durations: HashMap<String, u64>,
     inflight: usize,
@@ -137,8 +172,18 @@ impl Default for TileFacts {
 
 impl TileFacts {
     pub fn new(source: std::sync::Arc<dyn ProbeSource>) -> Self {
+        Self::with_linger(source, LINGER)
+    }
+
+    /// Facts whose probes start after their tile stayed drawn for `linger`.
+    pub fn with_linger(source: std::sync::Arc<dyn ProbeSource>, linger: Duration) -> Self {
+        Self::with_tuning(source, linger, PROBE_PATIENCE)
+    }
+
+    /// Facts whose probes start after their tile stayed drawn for `linger` and are dropped once it was not drawn for `patience` frames.
+    pub fn with_tuning(source: std::sync::Arc<dyn ProbeSource>, linger: Duration, patience: u64) -> Self {
         let (tx, rx) = unbounded();
-        Self { known: HashMap::new(), asked: HashMap::new(), pending: Vec::new(), durations: HashMap::new(), inflight: 0, duration_inflight: 0, tx, rx, source, frame: 0, started: 0, finished: 0, dropped: 0 }
+        Self { known: HashMap::new(), asked: HashMap::new(), waiting: HashMap::new(), waiting_count: 0, next_order: 0, linger, patience, now: Instant::now(), dropped_probes: 0, durations: HashMap::new(), inflight: 0, duration_inflight: 0, tx, rx, source, frame: 0, started: 0, finished: 0, dropped: 0 }
     }
 
     pub fn get(&self, path: &str) -> Facts {
@@ -158,6 +203,9 @@ impl TileFacts {
                     if let Some(seen) = self.durations.get_mut(path) {
                         *seen = self.frame;
                     }
+                } else if let Some(waiting) = self.waiting.get_mut(path).and_then(|slots| slot_of(kind).and_then(|i| slots.0[i].as_mut())) {
+                    waiting.seen = self.frame;
+                    waiting.seen_at = self.now;
                 }
                 return;
             }
@@ -166,16 +214,72 @@ impl TileFacts {
                 self.asked.insert(path.to_string(), kind.bit());
             }
         }
-        if kind == ProbeKind::Duration {
-            self.durations.insert(path.to_string(), self.frame);
-        } else {
-            self.pending.push((path.to_string(), kind));
+        match slot_of(kind) {
+            None => {
+                self.durations.insert(path.to_string(), self.frame);
+            }
+            Some(slot) => {
+                let waiting = Waiting { since: self.now, seen: self.frame, seen_at: self.now, order: self.next_order };
+                self.next_order += 1;
+                self.waiting.entry(path.to_string()).or_default().0[slot] = Some(waiting);
+                self.waiting_count += 1;
+            }
         }
+    }
+
+    // Drops the waiting probes whose tiles went away and takes up to a batch of those whose tiles stayed drawn for the linger time, oldest first.
+    fn take_ready(&mut self) -> Vec<(String, ProbeKind)> {
+        let oldest_seen = self.frame.saturating_sub(self.patience);
+        let mut ready: Vec<(u64, String, ProbeKind)> = Vec::new();
+        let mut stale: Vec<(String, ProbeKind)> = Vec::new();
+        for (path, slots) in &self.waiting {
+            for (slot, waiting) in slots.0.iter().enumerate() {
+                let Some(waiting) = waiting else { continue };
+                if waiting.seen < oldest_seen {
+                    stale.push((path.clone(), WAITING_KINDS[slot]));
+                } else if waiting.seen_at.saturating_duration_since(waiting.since) >= self.linger {
+                    ready.push((waiting.order, path.clone(), WAITING_KINDS[slot]));
+                }
+            }
+        }
+        for (path, kind) in stale {
+            self.remove_waiting(&path, kind);
+            if let Some(bits) = self.asked.get_mut(&path) {
+                *bits &= !kind.bit();
+            }
+            self.dropped_probes += 1;
+        }
+        ready.sort_unstable_by_key(|(order, _, _)| *order);
+        ready.truncate(BATCH);
+        ready
+            .into_iter()
+            .map(|(_, path, kind)| {
+                self.remove_waiting(&path, kind);
+                (path, kind)
+            })
+            .collect()
+    }
+
+    fn remove_waiting(&mut self, path: &str, kind: ProbeKind) {
+        let Some(slot) = slot_of(kind) else { return };
+        let Some(slots) = self.waiting.get_mut(path) else { return };
+        if slots.0[slot].take().is_some() {
+            self.waiting_count -= 1;
+        }
+        if slots.0.iter().all(Option::is_none) {
+            self.waiting.remove(path);
+        }
+    }
+
+    // The shortest time until a waiting probe has been drawn long enough.
+    fn next_ready_in(&self) -> Option<Duration> {
+        self.waiting.values().flat_map(|slots| slots.0.iter().flatten()).map(|w| self.linger.saturating_sub(w.seen_at.saturating_duration_since(w.since))).min()
     }
 
     /// Applies finished probes and starts queued ones; returns whether any fact changed.
     pub fn pump(&mut self, ctx: &Context) -> bool {
         self.frame += 1;
+        self.now = Instant::now();
         let mut changed = false;
         while let Ok(done) = self.rx.try_recv() {
             if done.duration {
@@ -197,15 +301,22 @@ impl TileFacts {
             let durations: Vec<(String, f32)> = self.known.iter().filter_map(|(p, f)| f.duration_secs.map(|d| (p.clone(), d))).collect();
             self.known.clear();
             self.asked.clear();
+            self.waiting.clear();
+            self.waiting_count = 0;
             self.durations.clear();
             for (p, d) in durations {
                 self.known.entry(p).or_default().duration_secs = Some(d);
             }
         }
-        while self.inflight < MAX_INFLIGHT && !self.pending.is_empty() {
-            let take = self.pending.len().min(BATCH);
-            let batch: Vec<(String, ProbeKind)> = self.pending.drain(..take).collect();
+        while self.inflight < MAX_INFLIGHT {
+            let batch = self.take_ready();
+            if batch.is_empty() {
+                break;
+            }
             self.spawn(batch, false, ctx.clone());
+        }
+        if let Some(wait) = self.next_ready_in() {
+            ctx.request_repaint_after(wait.max(Duration::from_millis(1)));
         }
         self.drop_stale_durations();
         while self.duration_inflight < MAX_INFLIGHT && !self.durations.is_empty() {
@@ -266,7 +377,7 @@ impl TileFacts {
 
     /// Probes waiting to start.
     pub fn queued(&self) -> usize {
-        self.pending.len() + self.durations.len()
+        self.waiting_count + self.durations.len()
     }
 
     pub fn inflight(&self) -> usize {
@@ -276,6 +387,11 @@ impl TileFacts {
     /// Video probes dropped because their tiles scrolled away before they started.
     pub fn dropped_durations(&self) -> u64 {
         self.dropped
+    }
+
+    /// Probes dropped because their tiles stopped being drawn.
+    pub fn dropped_probes(&self) -> u64 {
+        self.dropped_probes
     }
 
     /// Paths with at least one known fact.
@@ -292,7 +408,8 @@ impl TileFacts {
     pub fn reset(&mut self) {
         self.known.clear();
         self.asked.clear();
-        self.pending.clear();
+        self.waiting.clear();
+        self.waiting_count = 0;
         self.durations.clear();
     }
 
@@ -337,7 +454,7 @@ mod tests {
 
     fn fake() -> (Arc<Fake>, TileFacts) {
         let src = Arc::new(Fake { batches: AtomicUsize::new(0), largest: AtomicUsize::new(0) });
-        (src.clone(), TileFacts::new(src))
+        (src.clone(), TileFacts::with_tuning(src, Duration::ZERO, u64::MAX))
     }
 
     fn settle(facts: &mut TileFacts) {
@@ -380,6 +497,135 @@ mod tests {
         assert_eq!(src.batches.load(Ordering::SeqCst), 4);
         assert_eq!(facts.known_len(), 200);
         assert_eq!(facts.batches(), (4, 4));
+    }
+
+    fn source() -> Arc<Fake> {
+        Arc::new(Fake { batches: AtomicUsize::new(0), largest: AtomicUsize::new(0) })
+    }
+
+    #[test]
+    fn a_probe_waits_until_its_tile_has_stayed_drawn_for_the_linger_time() {
+        let src = source();
+        let mut facts = TileFacts::with_linger(src.clone(), Duration::from_millis(40));
+        let ctx = Context::default();
+        facts.pump(&ctx);
+        facts.want("/stays.jpg", ProbeKind::Offline);
+        facts.pump(&ctx);
+        assert_eq!((facts.inflight(), facts.queued()), (0, 1), "too early");
+        std::thread::sleep(Duration::from_millis(50));
+        facts.pump(&ctx);
+        facts.want("/stays.jpg", ProbeKind::Offline);
+        facts.pump(&ctx);
+        assert_eq!((facts.inflight(), facts.queued()), (1, 0), "the tile stayed drawn");
+        settle(&mut facts);
+        assert_eq!(facts.get("/stays.jpg").offline, Some(false));
+    }
+
+    #[test]
+    fn a_tile_drawn_once_is_never_probed_however_long_the_probe_waits() {
+        let src = source();
+        let mut facts = TileFacts::with_tuning(src.clone(), Duration::from_millis(10), u64::MAX);
+        let ctx = Context::default();
+        facts.pump(&ctx);
+        facts.want("/once.jpg", ProbeKind::Offline);
+        std::thread::sleep(Duration::from_millis(30));
+        for _ in 0..5 {
+            facts.pump(&ctx);
+        }
+        assert_eq!((facts.inflight(), facts.queued()), (0, 1), "it was drawn for no time at all");
+        assert_eq!(src.batches.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_probe_whose_tile_scrolled_away_is_dropped_and_asked_again_when_it_returns() {
+        let src = source();
+        let mut facts = TileFacts::with_linger(src.clone(), Duration::from_secs(3600));
+        let ctx = Context::default();
+        facts.want("/gone.jpg", ProbeKind::Collections);
+        for _ in 0..PROBE_PATIENCE + 2 {
+            facts.pump(&ctx);
+        }
+        assert_eq!(facts.queued(), 0);
+        assert_eq!(facts.dropped_probes(), 1);
+        assert_eq!(src.batches.load(Ordering::SeqCst), 0, "it never started");
+        facts.want("/gone.jpg", ProbeKind::Collections);
+        assert_eq!(facts.queued(), 1, "the returning tile asks again");
+    }
+
+    #[test]
+    fn a_probe_for_a_tile_that_stays_drawn_is_kept_alive() {
+        let mut facts = TileFacts::with_linger(source(), Duration::from_secs(3600));
+        let ctx = Context::default();
+        for _ in 0..PROBE_PATIENCE * 3 {
+            facts.pump(&ctx);
+            facts.want("/here.jpg", ProbeKind::Offline);
+        }
+        assert_eq!((facts.queued(), facts.dropped_probes()), (1, 0));
+    }
+
+    #[test]
+    fn scrolling_past_tiles_starts_no_probes_at_all() {
+        let src = source();
+        let mut facts = TileFacts::with_linger(src.clone(), Duration::from_millis(60));
+        let ctx = Context::default();
+        let frames = 80u64;
+        for frame in 0..frames {
+            facts.pump(&ctx);
+            for col in 0..6 {
+                facts.want(&format!("/scroll/{frame}_{col}.jpg"), ProbeKind::Collections);
+                facts.want(&format!("/scroll/{frame}_{col}.jpg"), ProbeKind::Offline);
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        settle(&mut facts);
+        assert_eq!(src.batches.load(Ordering::SeqCst), 0, "no tile stayed drawn long enough");
+        assert_eq!(facts.known_len(), 0);
+        assert_eq!(facts.dropped_probes(), frames * 12);
+    }
+
+    #[test]
+    fn tiles_that_stop_scrolling_are_probed_in_batches() {
+        let src = source();
+        let mut facts = TileFacts::with_linger(src.clone(), Duration::from_millis(30));
+        let ctx = Context::default();
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_millis(150) {
+            facts.pump(&ctx);
+            for i in 0..100 {
+                facts.want(&format!("/rest/{i}.jpg"), ProbeKind::Offline);
+            }
+            std::thread::sleep(Duration::from_millis(3));
+        }
+        settle(&mut facts);
+        assert_eq!(facts.known_len(), 100);
+        assert!(src.largest.load(Ordering::SeqCst) <= BATCH);
+        assert!(src.batches.load(Ordering::SeqCst) <= 4, "{} batches", src.batches.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn the_oldest_waiting_probes_start_first() {
+        let src = source();
+        let mut facts = TileFacts::with_tuning(src.clone(), Duration::ZERO, u64::MAX);
+        let ctx = Context::default();
+        for i in 0..BATCH * 2 + 10 {
+            facts.want(&format!("/order/{i:03}.jpg"), ProbeKind::Offline);
+        }
+        facts.pump(&ctx);
+        assert_eq!((facts.inflight(), facts.queued()), (2, 10), "two full batches started");
+        let mut left: Vec<&String> = facts.waiting.keys().collect();
+        left.sort();
+        assert_eq!(left.first().map(|p| p.as_str()), Some("/order/128.jpg"), "the newest ten wait");
+    }
+
+    #[test]
+    fn a_reset_forgets_the_waiting_probes() {
+        let (_, mut facts) = fake();
+        facts.want("/a", ProbeKind::Offline);
+        facts.want("/b", ProbeKind::Collections);
+        assert_eq!(facts.queued(), 2);
+        facts.reset();
+        assert_eq!(facts.queued(), 0);
+        assert!(facts.next_ready_in().is_none());
     }
 
     #[test]

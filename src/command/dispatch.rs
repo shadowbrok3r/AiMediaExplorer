@@ -113,6 +113,11 @@ pub trait CommandSink {
     fn clear_filters(&mut self) -> CommandResult;
     fn apply_saved_view(&mut self, name: &str) -> CommandResult;
     fn set_view_mode(&mut self, mode: ViewMode, size: Option<f32>, fit: Option<TileFit>, captions: Option<bool>, stress: Option<f32>) -> CommandResult;
+    /// Starts a scripted performance suite on the focused tab.
+    fn scale_bench(&mut self, suite: crate::ui::devtools::scale::bench::Suite, seconds: Option<f32>, scopes: Vec<String>, report: Option<String>) -> CommandResult {
+        let _ = (suite, seconds, scopes, report);
+        Err(CommandError::unsupported("this sink cannot run scale suites"))
+    }
     fn inspector_toggle(&mut self, open: Option<bool>) -> CommandResult;
     fn open_palette(&mut self, query: Option<String>) -> CommandResult;
     fn mcp(&mut self, op: crate::ai::mcp::command::McpOp, id: Option<String>, tool: Option<String>, args: Option<serde_json::Value>) -> CommandResult {
@@ -162,6 +167,7 @@ pub fn dispatch(sink: &mut dyn CommandSink, cmd: AppCommand) -> CommandResult {
         AppCommand::ApplySavedView { name } if name.trim().is_empty() => Err(CommandError::invalid("no view name")),
         AppCommand::ApplySavedView { name } => sink.apply_saved_view(&name),
         AppCommand::SetViewMode { mode, size, fit, captions, stress } => sink.set_view_mode(mode, size, fit, captions, stress),
+        AppCommand::ScaleBench { suite, seconds, scopes, report } => sink.scale_bench(suite, seconds, scopes, report),
         AppCommand::InspectorToggle { open } => sink.inspector_toggle(open),
         AppCommand::OpenPalette { query } => sink.open_palette(query),
         AppCommand::Mcp { op, id, tool, args } => sink.mcp(op, id, tool, args),
@@ -305,6 +311,9 @@ pub(crate) mod fake {
         fn set_view_mode(&mut self, mode: ViewMode, size: Option<f32>, fit: Option<TileFit>, captions: Option<bool>, stress: Option<f32>) -> CommandResult {
             self.done(format!("view {mode:?} {size:?} {fit:?} {captions:?} {stress:?}"))
         }
+        fn scale_bench(&mut self, suite: crate::ui::devtools::scale::bench::Suite, seconds: Option<f32>, scopes: Vec<String>, report: Option<String>) -> CommandResult {
+            self.done(format!("scale_bench {suite:?} {seconds:?} {scopes:?} {report:?}"))
+        }
         fn inspector_toggle(&mut self, open: Option<bool>) -> CommandResult {
             self.done(format!("inspector {open:?}"))
         }
@@ -384,6 +393,14 @@ mod tests {
                 "palette Some(\"tag\")",
             ]
         );
+    }
+
+    #[test]
+    fn a_scale_suite_reaches_its_sink_method() {
+        use crate::ui::devtools::scale::bench::Suite;
+        let mut sink = FakeSink::default();
+        dispatch(&mut sink, AppCommand::ScaleBench { suite: Suite::Scopes, seconds: Some(5.0), scopes: vec!["lib:all".into()], report: Some("/r.json".into()) }).unwrap();
+        assert_eq!(sink.calls, vec!["scale_bench Scopes Some(5.0) [\"lib:all\"] Some(\"/r.json\")"]);
     }
 
     #[test]

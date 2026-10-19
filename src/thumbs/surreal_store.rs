@@ -2,6 +2,7 @@
 
 use super::key::ThumbKey;
 use super::store::{Blob, BlobFormat, BlobIn, BlobStamp, BlobStats, ThumbBlobStore};
+use crate::database::scope_queries::counter::{Site, note};
 use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
@@ -32,18 +33,22 @@ fn global() -> Result<&'static Surreal<Db>> {
 #[async_trait]
 impl ThumbBlobStore for GlobalDbStore {
     async fn get_many(&self, keys: &[ThumbKey]) -> Result<HashMap<ThumbKey, Blob>> {
+        note(Site::ThumbRead);
         blobs::get_many(global()?, keys).await
     }
 
     async fn put(&self, entries: Vec<BlobIn>) -> Result<usize> {
+        note(Site::ThumbWrite);
         blobs::put(global()?, entries).await
     }
 
     async fn exists_many(&self, keys: &[ThumbKey]) -> Result<HashSet<ThumbKey>> {
+        note(Site::ThumbPresence);
         blobs::exists_many(global()?, keys).await
     }
 
     async fn stamps_many(&self, keys: &[ThumbKey]) -> Result<HashMap<ThumbKey, BlobStamp>> {
+        note(Site::ThumbPresence);
         blobs::stamps_many(global()?, keys).await
     }
 

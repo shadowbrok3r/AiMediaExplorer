@@ -16,6 +16,8 @@ use crate::utilities::types::QuickAccess;
 const SCAN_LIMIT: usize = 20;
 /// Wait before a failed load is tried again.
 const ERROR_RETRY: Duration = Duration::from_secs(15);
+/// Youngest age at which a stale list loads again.
+const STALE_MIN_AGE: Duration = Duration::from_secs(2);
 
 static REFRESH_EPOCH: AtomicU64 = AtomicU64::new(0);
 
@@ -85,7 +87,7 @@ impl Meta {
         }
         match self.age(now) {
             None => true,
-            Some(_) if self.stale => true,
+            Some(age) if self.stale => age >= STALE_MIN_AGE,
             Some(age) if self.error.is_some() => age >= ERROR_RETRY,
             Some(age) => age >= source.ttl(),
         }
@@ -121,6 +123,14 @@ struct Inner {
     categories: Arc<Vec<CountEntry>>,
     scans: Arc<Vec<ScanEntry>>,
     places: Arc<PlacesRaw>,
+}
+
+impl Inner {
+    fn mark_library_stale(&mut self) {
+        for source in Source::ALL.into_iter().filter(|s| *s != Source::Places) {
+            self.meta[source.index()].stale = true;
+        }
+    }
 }
 
 enum Loaded {
@@ -190,8 +200,9 @@ impl SidebarData {
         self.with(|i| i.meta[source.index()].stale = true);
     }
 
+    /// Marks every list that reads the library to load again.
     pub fn invalidate_all(&self) {
-        self.with(|i| i.meta.iter_mut().for_each(|m| m.stale = true));
+        self.with(Inner::mark_library_stale);
     }
 
     /// Starts a background load of `source` when `wanted` and the cache is empty, stale or expired.
@@ -200,7 +211,7 @@ impl SidebarData {
             let epoch = REFRESH_EPOCH.load(Ordering::Relaxed);
             if epoch != i.epoch {
                 i.epoch = epoch;
-                i.meta.iter_mut().for_each(|m| m.stale = true);
+                i.mark_library_stale();
             }
             let m = &mut i.meta[source.index()];
             let go = wanted && i.auto_load && m.due(source, now);
@@ -313,6 +324,15 @@ pub struct PresetData {
 }
 
 async fn load(source: Source) -> anyhow::Result<Loaded> {
+    use crate::database::scope_queries::counter::{Site, note};
+    match source {
+        Source::Library => note(Site::SidebarLibrary),
+        Source::Collections => note(Site::SidebarCollections),
+        Source::Tags => note(Site::SidebarTags),
+        Source::Categories => note(Site::SidebarCategories),
+        Source::Scans => note(Site::SidebarScans),
+        Source::Places => {}
+    }
     match source {
         Source::Places => {
             Ok(Loaded::Places(tokio::task::spawn_blocking(PlacesRaw::read).await?))
@@ -343,4 +363,67 @@ fn scan_entry(scan: crate::database::CachedScan) -> Option<ScanEntry> {
     let started = started.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string();
     let title = scan.title.filter(|t| !t.trim().is_empty()).unwrap_or_else(|| crate::command::Scope::Folder(scan.root.clone()).default_title());
     Some(ScanEntry { scan_id, title, root: scan.root, started, total: scan.total })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn loaded(now: Instant, age: Duration, stale: bool) -> Meta {
+        Meta { loaded_at: Some(now - age), stale, ..Default::default() }
+    }
+
+    #[test]
+    fn a_list_that_never_loaded_is_due_at_once() {
+        assert!(Meta::default().due(Source::Tags, Instant::now()));
+    }
+
+    #[test]
+    fn a_stale_list_waits_until_it_is_old_enough_to_be_worth_loading_again() {
+        let now = Instant::now();
+        assert!(!loaded(now, Duration::from_millis(300), true).due(Source::Collections, now), "a burst of changes loads once");
+        assert!(loaded(now, STALE_MIN_AGE, true).due(Source::Collections, now));
+        assert!(loaded(now, Duration::from_secs(5), true).due(Source::Library, now));
+    }
+
+    #[test]
+    fn a_fresh_list_waits_for_its_timer_and_a_loading_one_never_starts_twice() {
+        let now = Instant::now();
+        assert!(!loaded(now, Duration::from_secs(5), false).due(Source::Collections, now));
+        assert!(loaded(now, Source::Collections.ttl(), false).due(Source::Collections, now));
+        let mut busy = Meta::default();
+        busy.loading = true;
+        assert!(!busy.due(Source::Library, now));
+    }
+
+    #[test]
+    fn a_failed_list_is_tried_again_after_the_retry_wait_even_when_stale_is_off() {
+        let now = Instant::now();
+        let mut failed = loaded(now, Duration::from_secs(3), false);
+        failed.error = Some("down".into());
+        assert!(!failed.due(Source::Tags, now));
+        failed.loaded_at = Some(now - ERROR_RETRY);
+        assert!(failed.due(Source::Tags, now));
+    }
+
+    #[test]
+    fn invalidating_everything_leaves_the_places_alone() {
+        let data = SidebarData::default();
+        data.invalidate_all();
+        for source in Source::ALL {
+            assert_eq!(data.meta(source).stale, source != Source::Places, "{source:?}");
+        }
+        data.invalidate(Source::Places);
+        assert!(data.meta(Source::Places).stale, "an explicit request still marks them");
+    }
+
+    #[test]
+    fn a_refresh_request_marks_the_library_lists_stale_on_the_next_poll() {
+        let data = SidebarData::default();
+        data.with(|i| i.auto_load = false);
+        request_refresh();
+        data.poll(&Context::default(), Source::Library, false, Instant::now());
+        assert!(data.meta(Source::Tags).stale);
+        assert!(!data.meta(Source::Places).stale);
+    }
 }
