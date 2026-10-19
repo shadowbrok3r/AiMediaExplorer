@@ -80,6 +80,9 @@ pub trait CommandSink {
     fn wizard(&mut self, step: Option<crate::ui::wizard::Step>) -> CommandResult;
     fn backup(&mut self, op: crate::ui::settings::backup::Op, path: Option<String>, dir: Option<String>, redact_keys: bool, include_thumbs: bool) -> CommandResult;
     fn attach_to_assistant(&mut self, paths: Vec<String>) -> CommandResult;
+    fn zc(&mut self, op: crate::zc::command::ZcOp, args: crate::zc::command::ZcArgs) -> CommandResult {
+        crate::zc::command::run(op, args)
+    }
     fn refine(&mut self, paths: Vec<String>) -> CommandResult;
     /// Reverts the newest batch of the metadata journal.
     fn undo(&mut self) -> CommandResult;
@@ -128,6 +131,7 @@ pub fn dispatch(sink: &mut dyn CommandSink, cmd: AppCommand) -> CommandResult {
         AppCommand::Backup { op, path, dir, redact_keys, include_thumbs } => sink.backup(op, path, dir, redact_keys, include_thumbs),
         AppCommand::AttachToAssistant { paths } if paths.is_empty() => Err(CommandError::invalid("no paths to attach")),
         AppCommand::AttachToAssistant { paths } => sink.attach_to_assistant(paths),
+        AppCommand::Zc { op, args } => sink.zc(op, args),
         AppCommand::Refine { paths } if paths.is_empty() => Err(CommandError::invalid("no paths to refine")),
         AppCommand::Refine { paths } => sink.refine(paths),
         AppCommand::Undo => sink.undo(),

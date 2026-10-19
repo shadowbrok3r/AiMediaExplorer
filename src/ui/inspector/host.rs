@@ -23,7 +23,9 @@ pub struct HostArgs<'a> {
     pub ex: &'a mut FileExplorer,
     /// Title of the focused browser tab.
     pub tab: &'a str,
+    /// The assistant is popped out into its own window.
     pub assistant_open: &'a mut bool,
+    pub assistant: &'a mut crate::ui::assistant::AssistantPanel,
 }
 
 /// What the application must do after the rail drew.
@@ -132,7 +134,7 @@ fn track_focus(ctx: &Context, insp: &mut Inspector, ex: &mut FileExplorer, rail:
 }
 
 fn draw_contents(ui: &mut Ui, insp: &mut Inspector, args: &mut HostArgs, target: &Target) -> bool {
-    let mut env = RailEnv { assistant_open: &mut *args.assistant_open, close: false };
+    let mut env = RailEnv { assistant_open: &mut *args.assistant_open, assistant: &mut *args.assistant, close: false };
     panel::show(ui, insp, args.ex, &mut env, target);
     env.close
 }
@@ -184,6 +186,7 @@ pub fn show(ui: &mut Ui, insp: &mut Inspector, mut args: HostArgs) -> HostOutput
     if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::I)) {
         insp.toggle();
     }
+    crate::ui::assistant::handle_shortcuts(&ctx, insp, *args.assistant_open);
     out.edits = insp.pump(&ctx, now);
     for edit in &out.edits {
         apply_edit(args.ex, edit);

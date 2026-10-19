@@ -172,11 +172,46 @@ Backs up or restores the library without a dialog, as Database tasks (Task Cente
 
 ### attach_to_assistant
 
-Attaches files to the assistant chat and shows the assistant window.
+Attaches files to the assistant chat: opens the right rail on the Ask tab (or the pop-out window when the assistant is popped out) and shows the files as attachment chips in the composer.
 
 ```json
 {"cmd": "attach_to_assistant", "paths": ["/a.jpg"]}
 ```
+
+### zc
+
+Sets up and drives the ZeroClaw gateway connection of the assistant (`docs/zeroclaw.md`). `op` picks the operation; the other fields are the ones the op reads. Work that needs the network finishes in the background and reports through a toast and the notes of Devtools > ZeroClaw. A command never carries a token: `configure` reads it from `token_file`, and `pair` and `import` store it in the token file of the application.
+
+| Op | Does | Fields |
+|---|---|---|
+| `status` | Returns the profile, health, the chat socket, usage totals, frame counts and the tools server as one JSON line | |
+| `check` | Probes the gateway now (`/health`, then the authenticated agent check; 6 s) | |
+| `connect` | Opens the chat socket for `session` (a new id when left out) | `session`, `name` |
+| `disconnect` | Closes the chat socket; a running turn goes on at the gateway | |
+| `reconnect` | Drops the socket and connects again at once | |
+| `complete` | One model call through `/api/complete` | `prompt`, `hint`, `system`, `temperature` |
+| `configure` | Changes the profile; a new host or agent closes the socket and checks again | `host`, `agent`, `name`, `hint`, `backend` (`auto`, `zeroclaw`, `direct`, `local`), `allow_images`, `tools`, `token_file` |
+| `pair` | Exchanges a one-time pairing code for a token and stores it | `host`, `code`, `agent` |
+| `import` | Takes the selected ZeroClaw machine of a ZC Codex config (default `~/.config/zc-codex/config.json`) | `path` |
+| `send` | Sends `text` from the assistant as if typed | `text` |
+| `stop` | Stops the running turn | |
+| `open` | Shows the assistant in the right rail | |
+| `ping_tools` | Asks the agent to call `aimedia__util_ping` and report the result | |
+| `forget_token` | Deletes the stored token | |
+
+```json
+{"cmd": "zc", "op": "status"}
+{"cmd": "zc", "op": "configure", "host": "100.96.121.37", "agent": "media", "token_file": "/home/u/.config/zc/token", "allow_images": false}
+{"cmd": "zc", "op": "pair", "host": "wss://claw.example.app", "code": "123456", "agent": "media"}
+{"cmd": "zc", "op": "import", "path": "/home/u/.config/zc-codex/config.json"}
+{"cmd": "zc", "op": "check"}
+{"cmd": "zc", "op": "connect", "session": "demo"}
+{"cmd": "zc", "op": "complete", "prompt": "Suggest three tags for a sunset", "hint": "quick", "temperature": 0.2}
+{"cmd": "zc", "op": "send", "text": "How many pictures are in the library?"}
+{"cmd": "zc", "op": "ping_tools"}
+```
+
+Start-up flag: `--zc-status [--zc-url URL] [--zc-agent ALIAS] [--zc-token-file PATH]` probes a gateway, prints one JSON line and exits without opening the window or the database (exit 0 online, 2 not set up, 3 token refused, 4 unreachable, 1 anything else). `ZC_URL`, `ZC_AGENT` and `ZC_TOKEN_FILE` fill in missing flags.
 
 ### refine
 
@@ -262,7 +297,7 @@ Selects the row of a path in the focused tab, which the inspector rail previews 
 
 ### open_devtools
 
-Opens a debug window: `theme_panel`, `settings_store`, `wizard`, `db_maintenance`, `legacy_import`, `thumb_storage`, `thumb_cache`, `tasks`, `command_log`, `perf`, `row_store`, `collections`, `query`, `browser_actions`, `video`, `scope`, `filters`, `grid`, `inspector`, `journal`, `refine`, `sidebar`, `actions`, `mcp_server`.
+Opens a debug window: `theme_panel`, `settings_store`, `wizard`, `db_maintenance`, `legacy_import`, `thumb_storage`, `thumb_cache`, `tasks`, `command_log`, `perf`, `zeroclaw`, `row_store`, `collections`, `query`, `browser_actions`, `video`, `scope`, `filters`, `grid`, `inspector`, `journal`, `refine`, `sidebar`, `actions`, `mcp_server`.
 
 The `scope` window takes a scope string and shows how it parses (kind, title, parent, whether a folder exists), opens it in the focused tab or a new one, steps back and forward, lists the history stack of the focused tab with the scroll row and selection saved in each entry, and shows the timing of its recent loads: rows, batches, time to the first batch and total time.
 

@@ -299,7 +299,7 @@ fn attach_and_refine_fill_the_mailboxes_and_show_their_panels() {
     crate::ui::assistant::ATTACH_REQUESTS.lock().unwrap().clear();
     rig.app.attach_to_assistant(vec!["/a.jpg".into()]).unwrap();
     assert_eq!(crate::ui::assistant::ATTACH_REQUESTS.lock().unwrap().last(), Some(&vec!["/a.jpg".to_string()]));
-    assert!(rig.app.context.assistant_window_open);
+    assert!(rig.app.context.inspector.is_open() && rig.app.context.inspector.prefs.prefs.rail_tab == crate::ui::inspector::prefs::RailTab::Ask, "the rail opens on the Ask tab");
     crate::ui::refine::REFINE_SELECTION_REQUESTS.lock().unwrap().clear();
     rig.app.refine(vec!["/b.jpg".into()]).unwrap();
     assert_eq!(crate::ui::refine::REFINE_SELECTION_REQUESTS.lock().unwrap().last(), Some(&vec!["/b.jpg".to_string()]));

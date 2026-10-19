@@ -183,6 +183,8 @@ pub enum DevtoolsWindow {
     Tasks,
     CommandLog,
     Perf,
+    #[serde(rename = "zeroclaw")]
+    ZeroClaw,
     RowStore,
     Collections,
     Query,
@@ -310,6 +312,12 @@ pub enum AppCommand {
         include_thumbs: bool,
     },
     AttachToAssistant { paths: Vec<String> },
+    /// Set up and drive the ZeroClaw gateway connection of the assistant.
+    Zc {
+        op: crate::zc::command::ZcOp,
+        #[serde(flatten)]
+        args: crate::zc::command::ZcArgs,
+    },
     Refine { paths: Vec<String> },
     /// Revert the newest metadata change batch of the journal.
     Undo,
@@ -400,6 +408,7 @@ impl AppCommand {
             Self::Wizard { .. } => "wizard",
             Self::Backup { .. } => "backup",
             Self::AttachToAssistant { .. } => "attach_to_assistant",
+            Self::Zc { .. } => "zc",
             Self::Refine { .. } => "refine",
             Self::Undo => "undo",
             Self::Redo => "redo",
@@ -512,6 +521,8 @@ mod tests {
             AppCommand::Backup { op: crate::ui::settings::backup::Op::Snapshot, path: None, dir: None, redact_keys: true, include_thumbs: false },
             AppCommand::Backup { op: crate::ui::settings::backup::Op::Restore, path: Some("/b/out.surql".into()), dir: Some("/lib/restored".into()), redact_keys: true, include_thumbs: false },
             AppCommand::AttachToAssistant { paths: vec!["/a".into()] },
+            AppCommand::Zc { op: crate::zc::command::ZcOp::Status, args: Default::default() },
+            AppCommand::Zc { op: crate::zc::command::ZcOp::Configure, args: crate::zc::command::ZcArgs { host: Some("h:1".into()), agent: Some("a".into()), allow_images: Some(true), ..Default::default() } },
             AppCommand::Refine { paths: vec!["/a".into()] },
             AppCommand::Undo,
             AppCommand::Redo,
@@ -589,7 +600,7 @@ mod tests {
                 parsed.insert(cmd.name());
             }
         }
-        for name in ["open_scope", "open_rows", "open_tool", "run", "show_settings", "wizard", "backup", "attach_to_assistant", "refine", "undo", "redo", "toast", "task_update", "clear_selection", "query", "dialog", "focus_path", "open_devtools", "show_task_center", "navigate", "connect_database", "set_filter", "clear_filters", "apply_saved_view", "set_view_mode", "inspector_toggle", "open_palette", "mcp"] {
+        for name in ["open_scope", "open_rows", "open_tool", "run", "show_settings", "wizard", "backup", "attach_to_assistant", "zc", "refine", "undo", "redo", "toast", "task_update", "clear_selection", "query", "dialog", "focus_path", "open_devtools", "show_task_center", "navigate", "connect_database", "set_filter", "clear_filters", "apply_saved_view", "set_view_mode", "inspector_toggle", "open_palette", "mcp"] {
             assert!(parsed.contains(name), "the docs have no example for {name}");
         }
     }

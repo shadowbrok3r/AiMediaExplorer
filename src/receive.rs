@@ -71,6 +71,8 @@ impl crate::app::SmartMediaContext {
             }
         }
 
+        crate::zc::tick(ctx);
+        self.assistant.receive(ctx);
         crate::ui::wizard::show(ctx, &mut self.wizard, crate::database::is_connected());
         self.run_wizard_devtools(ctx);
         crate::ui::settings::startup::tick(self);
@@ -129,12 +131,14 @@ impl crate::app::SmartMediaContext {
         let assistant = &mut self.assistant;
         ctx.show_viewport_immediate(
             vp_id,
-            ViewportBuilder::default().with_title("AI Assistant").with_inner_size([1000.0, 900.0]),
+            ViewportBuilder::default().with_title("AI Assistant").with_inner_size([760.0, 900.0]),
             |ui, _class| {
                 if ui.ctx().input(|i| i.viewport().close_requested()) {
                     close_requested = true;
                 }
-                assistant.ui(ui, explorer);
+                if assistant.ui(ui, explorer).dock {
+                    close_requested = true;
+                }
             },
         );
         if close_requested {

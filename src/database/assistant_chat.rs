@@ -8,6 +8,13 @@ pub struct AssistantSession {
     pub title: String,
     pub created: Option<Datetime>,
     pub updated: Option<Datetime>,
+    /// `zeroclaw`, `direct` or `local`; missing on sessions from before backends existed.
+    #[serde(default)]
+    pub backend: Option<String>,
+    #[serde(default)]
+    pub agent: Option<String>,
+    #[serde(default)]
+    pub gateway_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
@@ -19,6 +26,14 @@ pub struct AssistantMessage {
     pub attachments: Option<Vec<String>>,
     pub attachments_refs: Option<Vec<RecordId>>,
     pub created: Option<Datetime>,
+    /// Entry kind; missing on rows from before entries had kinds.
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub turn: Option<i64>,
+    /// JSON text with the entry's extra data (tool name, arguments, ids).
+    #[serde(default)]
+    pub meta: Option<String>,
 }
 
 pub async fn create_session(title: &str) -> anyhow::Result<RecordId, anyhow::Error> {
@@ -28,7 +43,10 @@ pub async fn create_session(title: &str) -> anyhow::Result<RecordId, anyhow::Err
         title: title.to_string(),
         id: RecordId::new(ASSISTANT_SESSIONS, surrealdb_types::Uuid::new_v4().to_string()),
         created: Some(chrono::Utc::now().into()),
-        updated: Some(chrono::Utc::now().into()), 
+        updated: Some(chrono::Utc::now().into()),
+        backend: None,
+        agent: None,
+        gateway_id: None,
     };
     let row: Option<AssistantSession> = DB
         .create(ASSISTANT_SESSIONS)
@@ -82,6 +100,9 @@ pub async fn append_message(session_id: &RecordId, role: &str, content: &str, at
         attachments_refs,
         id: RecordId::new(ASSISTANT_MESSAGES, surrealdb_types::Uuid::new_v4().to_string()),
         created: Some(chrono::Utc::now().into()),
+        kind: None,
+        turn: None,
+        meta: None,
     };
     let _: Option<AssistantMessage> = DB
         .create(ASSISTANT_MESSAGES)

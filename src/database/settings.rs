@@ -47,6 +47,7 @@ struct UiSettingsDb {
     pub openai_default_model: Option<String>,
     pub openai_organization: Option<String>,
     pub mcp_stdio_enabled: Option<bool>,
+    pub zeroclaw: Option<crate::zc::profile::ZcProfile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,6 +116,8 @@ pub struct UiSettings {
     pub openai_organization: Option<String>,
     // Start the MCP stdio server (it shares the GUI process stdin/stdout); off unless true
     pub mcp_stdio_enabled: Option<bool>,
+    // ZeroClaw gateway profile of the assistant; the token lives in a file, never here
+    pub zeroclaw: Option<crate::zc::profile::ZcProfile>,
     // egui preferences - kept in memory only, not persisted to DB
     #[serde(skip)]
     pub egui_preferences: Options
@@ -161,6 +164,7 @@ impl From<UiSettingsDb> for UiSettings {
             openai_default_model: db.openai_default_model,
             openai_organization: db.openai_organization,
             mcp_stdio_enabled: db.mcp_stdio_enabled,
+            zeroclaw: db.zeroclaw,
             egui_preferences: Options::default(),
         }
     }
@@ -207,6 +211,7 @@ impl From<&UiSettings> for UiSettingsDb {
             openai_default_model: s.openai_default_model.clone(),
             openai_organization: s.openai_organization.clone(),
             mcp_stdio_enabled: s.mcp_stdio_enabled,
+            zeroclaw: s.zeroclaw.clone(),
         }
     }
 }
@@ -253,6 +258,7 @@ impl Default for UiSettings {
             openai_default_model: Some("gpt-5-mini".into()),
             openai_organization: None,
             mcp_stdio_enabled: None,
+            zeroclaw: None,
             egui_preferences: Options::default()
 
         }
@@ -318,7 +324,7 @@ persisted_fields!(
     jina_doc_type, jina_query_type, jina_enable_multimodal, scan_found_batch_max,
     ai_chat_provider, openai_api_key, grok_api_key, gemini_api_key, groq_api_key,
     openrouter_api_key, openai_base_url, openai_default_model, openai_organization,
-    mcp_stdio_enabled,
+    mcp_stdio_enabled, zeroclaw,
 );
 
 /// Record id of the single user settings document.

@@ -18,6 +18,7 @@ pub mod journal;
 pub mod filter_groups;
 pub mod cached_scans;
 pub mod assistant_chat;
+pub mod assistant_store;
 pub mod snapshot;
 pub mod surql;
 pub mod maintenance;

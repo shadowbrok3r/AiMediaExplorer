@@ -170,6 +170,9 @@ async fn main() -> eframe::Result<()> {
     if let Some(code) = database::cli::run(&db_cli_args) {
         std::process::exit(code);
     }
+    if let Some(code) = zc::cli::run(&db_cli_args) {
+        std::process::exit(code);
+    }
 
     // Theme flags: `--theme-dump` prints the resolved tokens and metrics as JSON and exits without a window, `--theme <path.json>` (or EGUI_THEME_KIT_THEME, or the old SMART_MEDIA_THEME) forces a theme file for the run, `--no-frost` (or EGUI_THEME_KIT_NO_FROST, or the old SMART_MEDIA_NO_FROST) disables the glass blur, `--theme-panel` opens the Theme window.
     let theme_options = match theme::cli_options() {
@@ -197,6 +200,7 @@ async fn main() -> eframe::Result<()> {
         eprintln!("{e}");
         std::process::exit(2);
     }
+    zc::init();
     theme::cli::install(theme_options);
 
     match command::cli::startup_commands(&db_cli_args) {

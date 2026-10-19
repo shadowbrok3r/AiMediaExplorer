@@ -156,6 +156,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_batch_tag_change_is_one_undoable_journal_batch() {
+        let db = db().await;
+        insert_rows(&db, vec![seed_row(1, "/u/a.jpg"), seed_row(2, "/u/b.jpg")]).await;
+        let files = [file("/u/a.jpg", &[]), file("/u/b.jpg", &[])];
+        tag_files(&db, &files, &change(&["sun"], &[])).await.unwrap();
+        let tags_of = |path: &'static str| {
+            let db = db.clone();
+            async move {
+                let rows: Vec<Vec<String>> = db.query("SELECT VALUE tags FROM thumbnails WHERE path = $p").bind(("p", path)).await.unwrap().take(0).unwrap();
+                rows.into_iter().next().unwrap_or_default()
+            }
+        };
+        assert_eq!(tags_of("/u/a.jpg").await, ["sun"]);
+        let report = crate::database::journal::undo_last_with(&db).await.unwrap();
+        assert_eq!(report.applied.len(), 2, "both files revert in one batch");
+        assert!(tags_of("/u/a.jpg").await.is_empty() && tags_of("/u/b.jpg").await.is_empty());
+        crate::database::journal::redo_last_with(&db).await.unwrap();
+        assert_eq!(tags_of("/u/b.jpg").await, ["sun"]);
+    }
+
+    #[tokio::test]
     async fn removing_a_tag_from_some_files_counts_only_those_that_had_it() {
         let db = db().await;
         let files = [file("/t/a.jpg", &[]), file("/t/b.jpg", &[])];

@@ -442,8 +442,8 @@ fn the_ai_step_shows_the_zeroclaw_hook_and_a_local_folder_check() {
     w.ai.mode = AiMode::Zeroclaw;
     let mut rig = Rig::new(w, 1000.0);
     let out = rig.settle();
-    assert!(out.text().contains("The ZeroClaw connection is not set up in this build."), "the hook is called:\n{}", out.text());
-    assert!(rig.wizard.zc_done, "the stub reports the step complete");
+    assert!(out.text().contains("Pairing code"), "the onboarding card is drawn:\n{}", out.text());
+    assert!(!rig.wizard.zc_done, "an unpaired gateway leaves the step open");
     rig.wizard.ai.mode = AiMode::Local;
     rig.wizard.ai.vision_dir = root.path().display().to_string();
     let out = rig.settle();

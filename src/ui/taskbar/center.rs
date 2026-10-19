@@ -64,6 +64,7 @@ fn attention_row(ui: &mut Ui, item: &AttentionItem, actions: &mut Vec<CenterActi
                 let (label, icon) = match item.kind {
                     AttentionKind::FailedThumbs => ("Show failures", svg::FUNNEL),
                     AttentionKind::Database => ("Retry", svg::ARROW_CLOCKWISE),
+                    AttentionKind::Gateway => ("Re-pair", svg::LINK),
                     _ => ("Open", svg::FUNNEL),
                 };
                 if icons::small_button(ui, icon, label).clicked() {

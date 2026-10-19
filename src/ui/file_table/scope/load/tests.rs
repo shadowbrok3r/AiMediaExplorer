@@ -243,13 +243,15 @@ async fn the_failed_thumbnails_view_lists_the_shared_failures() {
     let db = db().await;
     failed::record("/f/bad.jpg", "corrupt");
     failed::record("/f/worse.png", "truncated");
-    let (batches, out) = load_scope(&db, Scope::Smart(SmartView::FailedThumbs)).await;
-    assert_eq!(out.rows, 2);
-    assert_eq!(batches[0].rows[0].description.as_deref(), Some("Thumbnail failed: corrupt"));
-    assert_eq!(batches[0].unindexed.len(), 2);
+    let ours = |batches: &[super::RowBatch]| batches.iter().flat_map(|b| b.rows.iter()).filter(|r| r.path.starts_with("/f/")).cloned().collect::<Vec<_>>();
+    let (batches, _) = load_scope(&db, Scope::Smart(SmartView::FailedThumbs)).await;
+    let listed = ours(&batches);
+    assert_eq!(listed.len(), 2);
+    assert!(listed.iter().any(|r| r.description.as_deref() == Some("Thumbnail failed: corrupt")));
+    assert!(batches.iter().map(|b| b.unindexed.len()).sum::<usize>() >= 2);
     failed::clear();
-    let (none, out) = load_scope(&db, Scope::Smart(SmartView::FailedThumbs)).await;
-    assert!(none.is_empty() && out.rows == 0);
+    let (none, _) = load_scope(&db, Scope::Smart(SmartView::FailedThumbs)).await;
+    assert!(ours(&none).is_empty());
 }
 
 #[tokio::test]

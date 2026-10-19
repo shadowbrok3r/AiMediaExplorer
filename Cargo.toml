@@ -66,6 +66,7 @@ futures-core = "0.3"
 infer = "0.22.0"
 async-openai = { version = "0.42.2", features = ["byot", "chat-completion", "model"] }
 async-trait = "0.1"
+zeroclaw-client = { path = "crates/zeroclaw-client" }
 rmcp = { version = "3.5.1", features = ["server", "schemars", "transport-streamable-http-server"] }
 axum = { version = "0.8", default-features = false, features = ["tokio", "http1"] }
 tokio-util = "0.7"
@@ -82,6 +83,7 @@ egui-icon-pack-build = { git = "https://github.com/shadowbrok3r/egui-theme-kit",
 [dev-dependencies]
 resvg = { version = "0.45", default-features = false }
 rmcp = { version = "3.5.1", features = ["client", "transport-streamable-http-client-reqwest"] }
+zeroclaw-client = { path = "crates/zeroclaw-client", features = ["mock"] }
 
 [features]
 cpu = []

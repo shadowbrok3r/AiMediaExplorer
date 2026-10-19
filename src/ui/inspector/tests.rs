@@ -73,6 +73,7 @@ pub(super) struct Rig {
     pub out: HostOutput,
     pub shapes: Vec<ClippedShape>,
     pub assistant: bool,
+    pub panel: crate::ui::assistant::AssistantPanel,
     pub notices: Vec<(crate::command::ToastLevel, String)>,
     pub width: f32,
     pub height: f32,
@@ -106,7 +107,7 @@ impl Rig {
         let insp = Inspector::new(backend.clone(), prefs);
         let ctx = test_ctx();
         egui_extras::install_image_loaders(&ctx);
-        Self { ctx, ex, insp, svc, dir, db, backend, out: HostOutput::default(), shapes: Vec::new(), assistant: false, notices: Vec::new(), width, height: 700.0, clock: 0.0 }
+        Self { ctx, ex, insp, svc, dir, db, backend, out: HostOutput::default(), shapes: Vec::new(), assistant: false, panel: crate::ui::assistant::AssistantPanel::with_runtime(crate::zc::ZcRuntime::new(tokio::runtime::Handle::current(), None)), notices: Vec::new(), width, height: 700.0, clock: 0.0 }
     }
 
     pub fn path(&self, name: &str) -> String {
@@ -123,11 +124,11 @@ impl Rig {
         all.extend(events);
         self.clock += 0.016;
         let input = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(self.width, self.height))), events: all, time: Some(self.clock), ..Default::default() };
-        let Self { ctx, ex, insp, svc, out, assistant, .. } = self;
+        let Self { ctx, ex, insp, svc, out, assistant, panel, .. } = self;
         let mut host_out = HostOutput::default();
         let full = ctx.run_ui(input, |ui| {
             svc.poll(ui.ctx());
-            host_out = host::show(ui, insp, HostArgs { ex, tab: "File Explorer", assistant_open: assistant });
+            host_out = host::show(ui, insp, HostArgs { ex, tab: "File Explorer", assistant_open: assistant, assistant: panel });
             CentralPanel::default().show(ui, |ui| ex.details_panel(ui));
         });
         self.shapes = full.shapes.clone();

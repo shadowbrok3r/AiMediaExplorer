@@ -197,7 +197,7 @@ pub static VISION_MAX_TOKENS: Lazy<AtomicUsize> =
 pub static LAST_ERROR_TS_MS: Lazy<AtomicU64> = Lazy::new(|| AtomicU64::new(0));
 
 /// Indicator order: the core engines first, then any others by name.
-pub const INDICATOR_ORDER: [&str; 6] = ["DB", "VISION", "CLIP", "RERANK", "QWEN-EDIT", "ASSIST"];
+pub const INDICATOR_ORDER: [&str; 7] = ["DB", "VISION", "CLIP", "RERANK", "QWEN-EDIT", "ASSIST", "ZEROCLAW"];
 
 /// Sort key placing the core engines in [`INDICATOR_ORDER`] and every other name after them.
 pub fn order_key(name: &str) -> (usize, String) {

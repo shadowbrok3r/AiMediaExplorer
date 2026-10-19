@@ -14,6 +14,7 @@ pub mod mcp;
 pub mod perf;
 pub mod query;
 pub mod refine;
+pub mod zeroclaw;
 pub mod row_store;
 pub mod scope;
 pub mod scan_perf;
@@ -113,6 +114,10 @@ pub fn toggle_perf(ctx: &Context) {
     perf::set_open(ctx, !perf::is_open(ctx));
 }
 
+pub fn toggle_zeroclaw(ctx: &Context) {
+    zeroclaw::toggle(ctx);
+}
+
 pub fn toggle_grid(ctx: &Context) {
     grid::toggle(ctx);
 }
@@ -138,6 +143,7 @@ pub fn open(ctx: &Context, window: DevtoolsWindow) {
         DevtoolsWindow::Tasks => tasks::set_open(ctx, true),
         DevtoolsWindow::CommandLog => command_log::set_open(ctx, true),
         DevtoolsWindow::Perf => perf::set_open(ctx, true),
+        DevtoolsWindow::ZeroClaw => zeroclaw::set_open(ctx, true),
         DevtoolsWindow::RowStore => row_store::set_open(ctx, true),
         DevtoolsWindow::Collections => collections::set_open(ctx, true),
         DevtoolsWindow::Query => query::set_open(ctx, true),
@@ -168,6 +174,7 @@ pub fn show(ctx: &Context) {
     tasks::show(ctx);
     command_log::show(ctx);
     perf::show(ctx);
+    zeroclaw::show(ctx);
     collections::show(ctx);
     query::show(ctx);
     browser_actions::show(ctx);
@@ -198,6 +205,7 @@ mod tests {
             DevtoolsWindow::Tasks => tasks::is_open(ctx),
             DevtoolsWindow::CommandLog => command_log::is_open(ctx),
             DevtoolsWindow::Perf => perf::is_open(ctx),
+            DevtoolsWindow::ZeroClaw => zeroclaw::is_open(ctx),
             DevtoolsWindow::RowStore => row_store::is_open(ctx),
             DevtoolsWindow::Collections => collections::is_open(ctx),
             DevtoolsWindow::Query => query::is_open(ctx),
@@ -230,6 +238,7 @@ mod tests {
             DevtoolsWindow::Tasks,
             DevtoolsWindow::CommandLog,
             DevtoolsWindow::Perf,
+            DevtoolsWindow::ZeroClaw,
             DevtoolsWindow::RowStore,
             DevtoolsWindow::Collections,
             DevtoolsWindow::Query,

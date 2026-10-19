@@ -73,7 +73,7 @@ fn is_model_engine(name: &str) -> bool {
 fn failure_kind(meta: &StatusMeta) -> TaskKind {
     match meta.name {
         "DB" => TaskKind::Database,
-        "ASSIST" => TaskKind::Assistant,
+        "ASSIST" | "ZEROCLAW" => TaskKind::Assistant,
         _ => TaskKind::ModelLoad,
     }
 }

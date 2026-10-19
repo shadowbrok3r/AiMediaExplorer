@@ -144,17 +144,20 @@ async fn dragging_the_edge_resizes_the_rail_and_keeps_it_in_range() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_ask_tab_is_a_placeholder_that_opens_the_assistant() {
+async fn the_ask_tab_hosts_the_assistant_and_a_popped_out_one_can_be_docked_back() {
     let mut rig = Rig::new(1000.0).await;
     rig.select(&["a.png"]);
     rig.settle(4).await;
     rig.click_text("Ask");
     assert_eq!(rig.insp.prefs.prefs.rail_tab, RailTab::Ask);
     rig.settle(2).await;
-    assert!(rig.has_text("Open the assistant"), "{:?}", rig.texts());
+    assert!(rig.has_text("Connect the assistant"), "an assistant that is not set up shows its setup card: {:?}", rig.texts());
     assert!(!rig.assistant);
-    rig.click_text("Open the assistant");
-    assert!(rig.assistant, "the placeholder opens the assistant window");
+    rig.assistant = true;
+    rig.settle(2).await;
+    assert!(rig.has_text("The assistant is open in its own window."), "{:?}", rig.texts());
+    rig.click_text("Dock it here");
+    assert!(!rig.assistant, "docking brings the assistant back into the rail");
     rig.click_text("Inspect");
     assert!(rig.has_text("Info"));
 }

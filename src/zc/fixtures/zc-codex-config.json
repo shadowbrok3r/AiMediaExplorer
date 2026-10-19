@@ -1,0 +1,9 @@
+{
+  "selected": 2,
+  "machines": [
+    { "name": "codex-box", "host": "100.64.0.9:7000", "token": "codex-token-not-used", "kind": "Codex", "agent": "" },
+    { "name": "zeroclaw", "host": "100.96.121.37:42617", "token": "fixture-token-first-zeroclaw", "kind": "ZeroClaw", "agent": "companion" },
+    { "name": "claw (public)", "host": "wss://claw.example.test", "token": "fixture-token-selected-public", "kind": "ZeroClaw", "agent": "media" },
+    { "name": "empty", "host": "", "token": "", "kind": "ZeroClaw", "agent": "x" }
+  ]
+}

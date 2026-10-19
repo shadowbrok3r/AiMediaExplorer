@@ -321,6 +321,8 @@ pub enum AttentionKind {
     ModelError,
     /// The library database could not be opened.
     Database,
+    /// The ZeroClaw gateway refused the token.
+    Gateway,
 }
 
 /// `3s`, `2m 05s` or `1h 02m`.

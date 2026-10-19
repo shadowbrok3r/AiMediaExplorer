@@ -190,7 +190,7 @@ impl CommandSink for SmartMediaApp {
     fn attach_to_assistant(&mut self, paths: Vec<String>) -> CommandResult {
         let count = paths.len();
         crate::ui::assistant::ATTACH_REQUESTS.lock().unwrap_or_else(|e| e.into_inner()).push(paths);
-        self.context.assistant_window_open = true;
+        crate::ui::assistant::show_assistant(self);
         Ok(format!("attached {count} files to the assistant"))
     }
 

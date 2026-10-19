@@ -8540,6 +8540,7 @@ dependencies = [
  "windows 0.62.2",
  "winres",
  "xz2",
+ "zeroclaw-client",
  "zip 9.0.5",
 ]
 

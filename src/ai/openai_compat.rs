@@ -3,6 +3,7 @@ use futures_util::StreamExt;
 use base64::Engine as _;
 use async_openai::{config::OpenAIConfig, Client};
 use async_openai::types::chat::{
+    ChatCompletionRequestAssistantMessageArgs,
     ChatCompletionRequestMessage,
     ChatCompletionRequestSystemMessageArgs,
     ChatCompletionRequestUserMessageArgs,
@@ -167,6 +168,13 @@ pub async fn fetch_openrouter_models_json(api_key: Option<String>, base_url: Opt
 }
 
 
+/// One earlier message of a conversation sent along with the new prompt.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistoryTurn {
+    pub user: bool,
+    pub text: String,
+}
+
 pub async fn stream_multimodal_reply(
     cfg: ProviderConfig,
     prompt: &str,
@@ -174,7 +182,19 @@ pub async fn stream_multimodal_reply(
     on_token: impl FnMut(&str),
 ) -> Result<String> {
     log::debug!("[openai] request {}", request_summary(&cfg, prompt, images));
-    stream_openai_compatible(cfg, prompt, images, on_token).await
+    stream_openai_compatible(cfg, &[], prompt, images, on_token).await
+}
+
+/// Like [`stream_multimodal_reply`] with the conversation so far, oldest first, ahead of the new prompt.
+pub async fn stream_chat_reply(
+    cfg: ProviderConfig,
+    history: &[HistoryTurn],
+    prompt: &str,
+    images: &[Vec<u8>],
+    on_token: impl FnMut(&str),
+) -> Result<String> {
+    log::debug!("[openai] request {} history_turns={}", request_summary(&cfg, prompt, images), history.len());
+    stream_openai_compatible(cfg, history, prompt, images, on_token).await
 }
 
 /// Simple non-streaming convenience wrapper around stream_multimodal_reply for text-only prompts.
@@ -186,6 +206,7 @@ pub async fn simple_text_completion(cfg: ProviderConfig, prompt: &str) -> Result
 
 async fn stream_openai_compatible(
     cfg: ProviderConfig,
+    history: &[HistoryTurn],
     prompt: &str,
     images: &[Vec<u8>],
     mut on_token: impl FnMut(&str),
@@ -236,9 +257,19 @@ async fn stream_openai_compatible(
             .build()?
     );
 
+    let mut messages = vec![system_msg];
+    for turn in history.iter().filter(|t| !t.text.trim().is_empty()) {
+        messages.push(if turn.user {
+            ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessageArgs::default().content(turn.text.clone()).build()?)
+        } else {
+            ChatCompletionRequestMessage::Assistant(ChatCompletionRequestAssistantMessageArgs::default().content(turn.text.clone()).build()?)
+        });
+    }
+    messages.push(user_msg);
+
     let req = CreateChatCompletionRequestArgs::default()
         .model(cfg.model.clone())
-        .messages(vec![system_msg, user_msg])
+        .messages(messages)
         .temperature(cfg.temperature.unwrap_or(0.5))
         .stream(true)
         .build()?;

@@ -188,7 +188,7 @@ fn match_counts_follow_the_sections() {
 #[test]
 fn every_section_draws_every_setting_it_indexes_at_700_1000_and_1600_px() {
     for width in [700.0, 1000.0, 1600.0] {
-        let mut rig = Rig::new(width, 900.0);
+        let mut rig = Rig::new(width, 2400.0);
         rig.store.update("test", |s| s.ai_chat_provider = Some("openai".into()));
         rig.page.draft.revert(rig.store.snapshot());
         for section in sections::ALL {
@@ -445,10 +445,10 @@ fn the_appearance_section_embeds_the_theme_picker_and_the_egui_options() {
 
 #[test]
 fn the_assistant_section_calls_the_zeroclaw_hook_under_its_heading_and_offers_the_providers() {
-    let mut rig = Rig::new(1000.0, 900.0);
+    let mut rig = Rig::new(1000.0, 2400.0);
     let out = rig.show(Section::Assistant);
     assert!(out.has("ZeroClaw"), "{}", out.text());
-    assert!(out.text().contains("The ZeroClaw connection is not set up in this build."), "the hook is drawn");
+    assert!(out.text().contains("Gateway address"), "the connection card is drawn");
     for provider in assistant::PROVIDERS.iter().filter(|p| p.id != "local-joycaption") {
         assert!(out.text().contains(provider.label), "{} is listed", provider.label);
     }

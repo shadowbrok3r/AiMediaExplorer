@@ -14,7 +14,9 @@ use crate::ui::file_table::FileExplorer;
 
 /// What the host offers the rail beyond the explorer.
 pub struct RailEnv<'a> {
+    /// The assistant is popped out into its own window.
     pub assistant_open: &'a mut bool,
+    pub assistant: &'a mut crate::ui::assistant::AssistantPanel,
     /// Set when the user pressed the close button.
     pub close: bool,
 }
@@ -44,16 +46,22 @@ fn tabs_row(ui: &mut Ui, insp: &mut Inspector, env: &mut RailEnv) {
     ui.separator();
 }
 
-fn ask_tab(ui: &mut Ui, env: &mut RailEnv) {
-    ui.add_space(24.0);
-    ui.vertical_centered(|ui| {
-        ui.label(RichText::new("Assistant").heading());
-        ui.label(RichText::new("The assistant will live in this rail.").weak());
-        ui.add_space(6.0);
-        if icons::button(ui, svg::AME_ASSISTANT, "Open the assistant").clicked() {
-            *env.assistant_open = true;
-        }
-    });
+fn ask_tab(ui: &mut Ui, ex: &mut FileExplorer, env: &mut RailEnv) {
+    if *env.assistant_open {
+        ui.add_space(24.0);
+        ui.vertical_centered(|ui| {
+            ui.label(RichText::new("Assistant").heading());
+            ui.label(RichText::new("The assistant is open in its own window.").weak());
+            ui.add_space(6.0);
+            if icons::button(ui, svg::SIDEBAR_SIMPLE, "Dock it here").clicked() {
+                *env.assistant_open = false;
+            }
+        });
+        return;
+    }
+    if env.assistant.ui_rail(ui, ex, false).pop_out {
+        *env.assistant_open = true;
+    }
 }
 
 fn empty_state(ui: &mut Ui) {
@@ -161,7 +169,7 @@ fn multi_view(ui: &mut Ui, insp: &mut Inspector, ex: &mut FileExplorer, count: u
 pub fn show(ui: &mut Ui, insp: &mut Inspector, ex: &mut FileExplorer, env: &mut RailEnv, target: &Target) {
     tabs_row(ui, insp, env);
     if insp.prefs.prefs.rail_tab == RailTab::Ask {
-        ask_tab(ui, env);
+        ask_tab(ui, ex, env);
         return;
     }
     if !matches!(target, Target::Single(r) if is_video_path(&r.path) && !is_dir(r)) {
