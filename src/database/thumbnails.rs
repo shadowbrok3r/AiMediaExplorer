@@ -17,6 +17,12 @@ pub(crate) fn row_cols() -> &'static str {
     if super::thumb_migration::inline_may_exist() { COLS_WITH_INLINE } else { COLS_META }
 }
 
+/// Replaces the tag `$old` with `$new` on every row that has it.
+pub(crate) const RENAME_TAG_SQL: &str = "UPDATE thumbnails SET tags = array::distinct(array::union(array::complement(tags, [$old]), [$new])) WHERE tags CONTAINS $old";
+
+/// Removes the tag `$tag` from every row that has it.
+pub(crate) const DELETE_TAG_SQL: &str = "UPDATE thumbnails SET tags = array::complement(tags, [$tag]) WHERE tags CONTAINS $tag";
+
 impl Default for crate::Thumbnail {
     fn default() -> Self {
         Self { 
@@ -381,7 +387,7 @@ impl crate::Thumbnail {
         let _ga = db_activity("Select thumbnails by tag");
         db_set_detail(format!("Loading tag '{tag}'"));
         let rows: Vec<Self> = DB
-            .query(format!("SELECT {} FROM thumbnails WHERE array::contains(tags, $tag)", row_cols()))
+            .query(format!("SELECT {} FROM thumbnails WHERE tags CONTAINS $tag", row_cols()))
             .bind(("tag", tag.to_string()))
             .await?
             .take(0)?;
@@ -440,13 +446,7 @@ impl crate::Thumbnail {
         let _ga = db_activity("Rename tag");
         db_set_detail(format!("{old} -> {new}"));
         let updated: Vec<Self> = DB
-            .query(
-                r#"
-                UPDATE thumbnails
-                SET tags = array::distinct(array::union(array::remove(tags, $old), [$new]))
-                WHERE array::contains(tags, $old)
-                "#,
-            )
+            .query(RENAME_TAG_SQL)
             .bind(("old", old.to_string()))
             .bind(("new", new.to_string()))
             .await?
@@ -459,13 +459,7 @@ impl crate::Thumbnail {
         let _ga = db_activity("Delete tag");
         db_set_detail(format!("{tag}"));
         let updated: Vec<Self> = DB
-            .query(
-                r#"
-                UPDATE thumbnails
-                SET tags = array::remove(tags, $tag)
-                WHERE array::contains(tags, $tag)
-                "#,
-            )
+            .query(DELETE_TAG_SQL)
             .bind(("tag", tag.to_string()))
             .await?
             .take(0)?;

@@ -317,3 +317,28 @@ async fn an_embedding_is_found_by_path() {
     assert_eq!(found.len(), 1024);
     assert!(embedding_of(&db, "/nope.jpg").await.unwrap().is_none());
 }
+
+#[tokio::test]
+async fn tag_queries_select_rename_and_delete_by_value() {
+    use crate::database::thumbnails::{DELETE_TAG_SQL, RENAME_TAG_SQL};
+    let db = db().await;
+    let mut rows: Vec<Seed> = (0..4).map(|i| seed(i, &path_of(i))).collect();
+    rows[0].tags = vec!["sun".into(), "sea".into()];
+    rows[1].tags = vec!["sea".into()];
+    rows[2].tags = vec!["sun".into(), "sand".into()];
+    insert(&db, rows).await;
+
+    let with_sun: Vec<Thumbnail> = db.query("SELECT * FROM thumbnails WHERE tags CONTAINS $tag").bind(("tag", "sun".to_string())).await.unwrap().take(0).unwrap();
+    assert_eq!(with_sun.len(), 2);
+
+    let renamed: Vec<Thumbnail> = db.query(RENAME_TAG_SQL).bind(("old", "sun".to_string())).bind(("new", "sea".to_string())).await.unwrap().take(0).unwrap();
+    assert_eq!(renamed.len(), 2);
+    let mut tags: Vec<Vec<String>> = renamed.into_iter().map(|r| { let mut t = r.tags; t.sort(); t }).collect();
+    tags.sort();
+    assert_eq!(tags, vec![vec!["sand".to_string(), "sea".to_string()], vec!["sea".to_string()]]);
+
+    let deleted: Vec<Thumbnail> = db.query(DELETE_TAG_SQL).bind(("tag", "sea".to_string())).await.unwrap().take(0).unwrap();
+    assert_eq!(deleted.len(), 3);
+    let left: Vec<Thumbnail> = db.query("SELECT * FROM thumbnails WHERE tags CONTAINS $tag").bind(("tag", "sea".to_string())).await.unwrap().take(0).unwrap();
+    assert!(left.is_empty());
+}
