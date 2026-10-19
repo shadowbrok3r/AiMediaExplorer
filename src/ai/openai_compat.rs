@@ -19,7 +19,7 @@ use crate::ai::openrouter_types::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ProviderConfig {
     pub provider: String,              // openai|grok|gemini|groq|openrouter|custom
     pub api_key: Option<String>,
@@ -28,6 +28,46 @@ pub struct ProviderConfig {
     pub organization: Option<String>,  // OpenAI optional
     pub temperature: Option<f32>,      // optional sampling temperature for chat completions
     pub zdr: bool
+}
+
+/// Text that stands in for a secret in logs and `Debug` output.
+pub fn redact_secret(secret: Option<&str>) -> String {
+    match secret {
+        Some(s) if !s.is_empty() => "<redacted>".to_string(),
+        _ => "none".to_string(),
+    }
+}
+
+impl std::fmt::Debug for ProviderConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderConfig")
+            .field("provider", &self.provider)
+            .field("api_key", &redact_secret(self.api_key.as_deref()))
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("organization", &redact_secret(self.organization.as_deref()))
+            .field("temperature", &self.temperature)
+            .field("zdr", &self.zdr)
+            .finish()
+    }
+}
+
+/// Installs the process-wide rustls crypto provider; false when one was already installed.
+pub fn install_crypto_provider() -> bool {
+    rustls::crypto::aws_lc_rs::default_provider().install_default().is_ok()
+}
+
+/// One-line request summary without prompt text, image data or keys.
+fn request_summary(cfg: &ProviderConfig, prompt: &str, images: &[Vec<u8>]) -> String {
+    let image_bytes: usize = images.iter().map(Vec::len).sum();
+    format!(
+        "provider={} model={} prompt_chars={} images={} image_bytes={}",
+        cfg.provider,
+        cfg.model,
+        prompt.chars().count(),
+        images.len(),
+        image_bytes
+    )
 }
 
 fn default_base(provider: &str) -> String {
@@ -133,15 +173,14 @@ pub async fn stream_multimodal_reply(
     images: &[Vec<u8>],
     on_token: impl FnMut(&str),
 ) -> Result<String> {
-    // All providers go through the OpenAI-compatible path now
-    log::error!("Cfg: {cfg:?}");
+    log::debug!("[openai] request {}", request_summary(&cfg, prompt, images));
     stream_openai_compatible(cfg, prompt, images, on_token).await
 }
 
 /// Simple non-streaming convenience wrapper around stream_multimodal_reply for text-only prompts.
 pub async fn simple_text_completion(cfg: ProviderConfig, prompt: &str) -> Result<String> {
     let mut acc = String::new();
-    let _ = stream_multimodal_reply(cfg, prompt, &[], |tok| { acc.push_str(tok); }).await;
+    stream_multimodal_reply(cfg, prompt, &[], |tok| { acc.push_str(tok); }).await?;
     Ok(acc)
 }
 
@@ -167,8 +206,6 @@ async fn stream_openai_compatible(
             .build()?
     );
 
-    log::error!("system_msg: {system_msg:?}");
-
     let user_content = if images.is_empty() {
         ChatCompletionRequestUserMessageContent::Text(prompt.to_string())
     } else {
@@ -193,15 +230,11 @@ async fn stream_openai_compatible(
         ChatCompletionRequestUserMessageContent::Array(parts)
     };
 
-    log::error!("user_content: {user_content:?}");
-
     let user_msg = ChatCompletionRequestMessage::User(
         ChatCompletionRequestUserMessageArgs::default()
             .content(user_content)
             .build()?
     );
-
-    log::error!("user_msg: {user_msg:?}");
 
     let req = CreateChatCompletionRequestArgs::default()
         .model(cfg.model.clone())
@@ -211,7 +244,6 @@ async fn stream_openai_compatible(
         .build()?;
 
     if cfg.provider == "openrouter" {
-        log::error!("OpenRouter Request: {req:?}");
         // BYOT streaming with our custom OpenRouter stream type
         let mut stream: OpenRouterChatCompletionResponseStream = client
             .chat()
@@ -249,5 +281,90 @@ async fn stream_openai_compatible(
             }
         }
         Ok(acc)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, Once};
+
+    const KEY: &str = "sk-test-0123456789abcdef-secret";
+
+    static LOGGED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static INSTALL: Once = Once::new();
+
+    struct Capture;
+
+    impl log::Log for Capture {
+        fn enabled(&self, _: &log::Metadata) -> bool {
+            true
+        }
+
+        fn log(&self, record: &log::Record) {
+            LOGGED.lock().unwrap_or_else(|e| e.into_inner()).push(format!("{} {}", record.level(), record.args()));
+        }
+
+        fn flush(&self) {}
+    }
+
+    fn capture_logs() -> bool {
+        let mut installed = false;
+        INSTALL.call_once(|| installed = log::set_logger(&Capture).is_ok());
+        log::set_max_level(log::LevelFilter::Trace);
+        installed
+    }
+
+    fn cfg(base: &str) -> ProviderConfig {
+        ProviderConfig {
+            provider: "custom".into(),
+            api_key: Some(KEY.into()),
+            base_url: Some(base.into()),
+            model: "m".into(),
+            organization: Some("org-secret".into()),
+            temperature: None,
+            zdr: false,
+        }
+    }
+
+    #[test]
+    fn debug_output_never_contains_the_key() {
+        let text = format!("{:?}", cfg("http://127.0.0.1:9/v1"));
+        assert!(!text.contains(KEY), "{text}");
+        assert!(!text.contains("org-secret"), "{text}");
+        assert!(text.contains("<redacted>"));
+        assert_eq!(redact_secret(None), "none");
+        assert_eq!(redact_secret(Some("")), "none");
+        assert_eq!(redact_secret(Some(KEY)), "<redacted>");
+    }
+
+    #[test]
+    fn the_request_summary_has_counts_and_no_content() {
+        let summary = request_summary(&cfg("http://x"), "describe the secret plan", &[vec![1, 2, 3], vec![4]]);
+        assert_eq!(summary, "provider=custom model=m prompt_chars=24 images=2 image_bytes=4");
+        assert!(!summary.contains("secret"));
+    }
+
+    #[tokio::test]
+    async fn a_failed_completion_returns_the_error_and_logs_no_secrets() {
+        let capturing = capture_logs();
+        let png = vec![0x89u8, b'P', b'N', b'G', 13, 10, 26, 10, 1, 2, 3, 4];
+        let err = stream_multimodal_reply(cfg("http://127.0.0.1:9/v1"), "prompt text", &[png], |_| {}).await.unwrap_err();
+        assert!(!format!("{err:#}").contains(KEY));
+        let err = simple_text_completion(cfg("http://127.0.0.1:9/v1"), "prompt text").await.unwrap_err();
+        assert!(!format!("{err:#}").contains(KEY));
+        if capturing {
+            let logged = LOGGED.lock().unwrap_or_else(|e| e.into_inner()).join("\n");
+            assert!(!logged.contains(KEY), "{logged}");
+            assert!(!logged.contains("base64"), "{logged}");
+            assert!(!logged.lines().any(|l| l.starts_with("ERROR") && l.contains("Cfg")), "{logged}");
+        }
+    }
+
+    #[test]
+    fn the_crypto_provider_installs_once() {
+        install_crypto_provider();
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
+        assert!(!install_crypto_provider(), "a second install must report that one exists");
     }
 }

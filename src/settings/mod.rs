@@ -2,7 +2,6 @@
 
 pub mod banner;
 pub mod dirs;
-pub mod mcp;
 mod store;
 #[cfg(test)]
 pub(crate) mod testing;

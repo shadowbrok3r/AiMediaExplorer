@@ -8,6 +8,7 @@ pub mod filters;
 pub mod grid;
 pub mod inspector;
 pub mod legacy_import;
+pub mod mcp;
 pub mod perf;
 pub mod row_store;
 pub mod scope;
@@ -71,6 +72,10 @@ pub fn toggle_inspector(ctx: &Context) {
     inspector::toggle(ctx);
 }
 
+pub fn toggle_mcp(ctx: &Context) {
+    mcp::toggle(ctx);
+}
+
 pub fn toggle_tasks(ctx: &Context) {
     tasks::set_open(ctx, !tasks::is_open(ctx));
 }
@@ -116,6 +121,7 @@ pub fn open(ctx: &Context, window: DevtoolsWindow) {
         DevtoolsWindow::Inspector => inspector::set_open(ctx, true),
         DevtoolsWindow::Sidebar => sidebar::set_open(ctx, true),
         DevtoolsWindow::Actions => actions::set_open(ctx, true),
+        DevtoolsWindow::McpServer => mcp::set_open(ctx, true),
     }
     ctx.request_repaint();
 }
@@ -139,6 +145,7 @@ pub fn show(ctx: &Context) {
     inspector::show(ctx);
     sidebar::show(ctx);
     actions::show(ctx);
+    mcp::show(ctx);
 }
 
 #[cfg(test)]
@@ -164,6 +171,7 @@ mod tests {
             DevtoolsWindow::Inspector => inspector::is_open(ctx),
             DevtoolsWindow::Sidebar => sidebar::is_open(ctx),
             DevtoolsWindow::Actions => actions::is_open(ctx),
+            DevtoolsWindow::McpServer => mcp::is_open(ctx),
             DevtoolsWindow::ThemePanel => crate::theme::debug_panel::is_open(ctx),
         }
     }
@@ -190,6 +198,7 @@ mod tests {
             DevtoolsWindow::Inspector,
             DevtoolsWindow::Sidebar,
             DevtoolsWindow::Actions,
+            DevtoolsWindow::McpServer,
         ];
         for w in windows {
             assert!(!is_open(&ctx, w), "{w:?} starts closed");

@@ -198,7 +198,7 @@ Selects the row of a path in the focused tab, which the inspector rail previews 
 
 ### open_devtools
 
-Opens a debug window: `theme_panel`, `settings_store`, `db_maintenance`, `legacy_import`, `thumb_storage`, `thumb_cache`, `tasks`, `command_log`, `perf`, `row_store`, `collections`, `video`, `scope`, `filters`, `grid`, `inspector`, `sidebar`, `actions`.
+Opens a debug window: `theme_panel`, `settings_store`, `db_maintenance`, `legacy_import`, `thumb_storage`, `thumb_cache`, `tasks`, `command_log`, `perf`, `row_store`, `collections`, `video`, `scope`, `filters`, `grid`, `inspector`, `sidebar`, `actions`, `mcp_server`.
 
 The `scope` window takes a scope string and shows how it parses (kind, title, parent, whether a folder exists), opens it in the focused tab or a new one, steps back and forward, lists the history stack of the focused tab with the scroll row and selection saved in each entry, and shows the timing of its recent loads: rows, batches, time to the first batch and total time.
 
@@ -310,6 +310,29 @@ Opens the command palette (Ctrl+K), optionally with `query` typed in. The palett
 ```json
 {"cmd": "open_palette", "query": "no clip"}
 ```
+### mcp
+
+Controls the MCP tools server (`docs/mcp.md`) and the metadata proposals it collects. `op` is one of the following; work that needs the database or the network finishes in the background and reports through a toast and the notes of Devtools > MCP server.
+
+| Op | Does |
+|---|---|
+| `status` | Returns whether the server runs, where, and the counters |
+| `start` / `stop` | Starts or stops the listener |
+| `rotate_token` | Writes a new bearer token; clients need the new one |
+| `proposals` | Lists the pending proposals |
+| `accept` | Accepts the proposal `id` and writes its changes to the library |
+| `reject` | Rejects the proposal `id` |
+| `call` | Runs the tool `tool` with `args` in this process (as the Devtools tester does) |
+
+```json
+{"cmd": "mcp", "op": "status"}
+{"cmd": "mcp", "op": "start"}
+{"cmd": "mcp", "op": "proposals"}
+{"cmd": "mcp", "op": "accept", "id": "p1a2b3c4d"}
+{"cmd": "mcp", "op": "call", "tool": "library_stats", "args": {}}
+```
+
+Start-up flags: `--mcp-port N` serves on port N for this run (0 picks a free port), `--mcp-config-dir <dir>` keeps the token and the settings file in `<dir>`, and `SMART_MEDIA_MCP_PORT` does the same as the port flag.
 
 ## Results
 

@@ -170,8 +170,7 @@ impl crate::app::SmartMediaContext {
 
     /// One-time work after the stored settings were read.
     fn on_settings_loaded(&mut self) {
-        let (auto_indexing, enable_clip, mcp) = crate::settings::store()
-            .read(|s| (s.auto_indexing, s.auto_clip_embeddings, s.mcp_stdio_enabled == Some(true)));
+        let (auto_indexing, enable_clip) = crate::settings::store().read(|s| (s.auto_indexing, s.auto_clip_embeddings));
         crate::ai::GLOBAL_AI_ENGINE.auto_descriptions_enabled.store(auto_indexing, std::sync::atomic::Ordering::Relaxed);
         crate::ai::GLOBAL_AI_ENGINE.auto_clip_enabled.store(enable_clip, std::sync::atomic::Ordering::Relaxed);
         tokio::spawn(async move {
@@ -185,9 +184,6 @@ impl crate::app::SmartMediaContext {
         if auto_indexing && !self.ai_ready {
             self.ai_initializing = true;
             tokio::spawn(async move { crate::ai::init_global_ai_engine_async().await; });
-        }
-        if mcp || crate::settings::mcp::requested_by_flag() {
-            crate::settings::mcp::start_once();
         }
     }
 
@@ -230,9 +226,6 @@ impl crate::app::SmartMediaContext {
         if prefs.draft.auto_indexing && !self.ai_ready {
             self.ai_initializing = true;
             tokio::spawn(async move { crate::ai::init_global_ai_engine_async().await; });
-        }
-        if prefs.draft.mcp_stdio_enabled == Some(true) {
-            crate::settings::mcp::start_once();
         }
         tokio::spawn(async move { crate::ai::reranker::clear_global_reranker().await; });
     }
@@ -547,16 +540,12 @@ impl crate::app::SmartMediaContext {
                 Some("When enabled, newly discovered files will be saved to the database automatically (requires an active logical group)"),
                 &mut d.auto_save_to_database,
             );
-            let mut mcp = d.mcp_stdio_enabled.unwrap_or(false);
-            toggle_row(
-                ui,
-                "Start MCP stdio server",
-                Some("Serves MCP over this process's stdin/stdout, which only makes sense when a client launched the app. Turning it off takes effect on next launch."),
-                &mut mcp,
-            );
-            if mcp != d.mcp_stdio_enabled.unwrap_or(false) {
-                d.mcp_stdio_enabled = Some(mcp);
-            }
+            ui.horizontal(|ui| {
+                ui.label("MCP tools server");
+                if ui.button("Open settings").clicked() {
+                    crate::command::send(crate::command::AppCommand::OpenDevtools { window: crate::command::DevtoolsWindow::McpServer });
+                }
+            });
 
             ui.separator();
             ui.label("Excluded Directories (for recursive scans):");

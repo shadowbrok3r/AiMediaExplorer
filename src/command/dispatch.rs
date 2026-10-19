@@ -94,6 +94,9 @@ pub trait CommandSink {
     fn set_view_mode(&mut self, mode: ViewMode, size: Option<f32>, fit: Option<TileFit>, captions: Option<bool>, stress: Option<f32>) -> CommandResult;
     fn inspector_toggle(&mut self, open: Option<bool>) -> CommandResult;
     fn open_palette(&mut self, query: Option<String>) -> CommandResult;
+    fn mcp(&mut self, op: crate::ai::mcp::command::McpOp, id: Option<String>, tool: Option<String>, args: Option<serde_json::Value>) -> CommandResult {
+        crate::ai::mcp::command::run(op, id, tool, args)
+    }
 }
 
 /// Runs one command; an action on an empty set of files is an error, never "all files".
@@ -129,6 +132,7 @@ pub fn dispatch(sink: &mut dyn CommandSink, cmd: AppCommand) -> CommandResult {
         AppCommand::SetViewMode { mode, size, fit, captions, stress } => sink.set_view_mode(mode, size, fit, captions, stress),
         AppCommand::InspectorToggle { open } => sink.inspector_toggle(open),
         AppCommand::OpenPalette { query } => sink.open_palette(query),
+        AppCommand::Mcp { op, id, tool, args } => sink.mcp(op, id, tool, args),
     }
 }
 

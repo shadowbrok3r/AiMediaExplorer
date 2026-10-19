@@ -151,6 +151,7 @@ pub enum DevtoolsWindow {
     Inspector,
     Sidebar,
     Actions,
+    McpServer,
 }
 
 /// A move through the history of the focused tab, or the load it is showing.
@@ -286,6 +287,16 @@ pub enum AppCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         query: Option<String>,
     },
+    /// Control the MCP server and review its proposals.
+    Mcp {
+        op: crate::ai::mcp::command::McpOp,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        args: Option<serde_json::Value>,
+    },
 }
 
 impl AppCommand {
@@ -313,6 +324,7 @@ impl AppCommand {
             Self::SetViewMode { .. } => "set_view_mode",
             Self::InspectorToggle { .. } => "inspector_toggle",
             Self::OpenPalette { .. } => "open_palette",
+            Self::Mcp { .. } => "mcp",
         }
     }
 
@@ -468,7 +480,7 @@ mod tests {
                 parsed.insert(cmd.name());
             }
         }
-        for name in ["open_scope", "open_rows", "open_tool", "run", "show_settings", "attach_to_assistant", "refine", "toast", "task_update", "clear_selection", "focus_path", "open_devtools", "show_task_center", "navigate", "connect_database", "set_filter", "clear_filters", "apply_saved_view", "set_view_mode", "inspector_toggle", "open_palette"] {
+        for name in ["open_scope", "open_rows", "open_tool", "run", "show_settings", "attach_to_assistant", "refine", "toast", "task_update", "clear_selection", "focus_path", "open_devtools", "show_task_center", "navigate", "connect_database", "set_filter", "clear_filters", "apply_saved_view", "set_view_mode", "inspector_toggle", "open_palette", "mcp"] {
             assert!(parsed.contains(name), "the docs have no example for {name}");
         }
     }

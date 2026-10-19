@@ -184,6 +184,10 @@ impl crate::app::SmartMediaApp {
                 crate::ui::devtools::toggle_actions(ui.ctx());
                 ui.close();
             }
+            if icons::button(ui, svg::AME_MCP, "MCP server").clicked() {
+                crate::ui::devtools::toggle_mcp(ui.ctx());
+                ui.close();
+            }
         });
     }
 

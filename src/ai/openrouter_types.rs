@@ -36,7 +36,7 @@ pub struct OpenRouterChatCompletionResponse {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct OpenRouterChatCompletionStreamResponse {
-    pub choices: Vec<ChatChoiceStream>,
+    #[serde(default)] pub choices: Vec<ChatChoiceStream>,
     #[serde(default)] pub created: Option<u32>,
     #[serde(default)] pub model: Option<String>,
     #[serde(default)] pub object: Option<String>,
@@ -53,5 +53,30 @@ impl OpenRouterChatCompletionResponse {
             if let Some(text) = &c.message.content { out.push_str(text); }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_usage_only_chunk_without_choices_parses() {
+        let chunk: OpenRouterChatCompletionStreamResponse =
+            serde_json::from_str(r#"{"model":"m","object":"chat.completion.chunk","usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}"#).unwrap();
+        assert!(chunk.choices.is_empty());
+        assert_eq!(chunk.usage.map(|u| u.total_tokens), Some(7));
+    }
+
+    #[test]
+    fn a_content_chunk_parses_and_joined_content_concatenates() {
+        let chunk: OpenRouterChatCompletionStreamResponse =
+            serde_json::from_str(r#"{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}"#).unwrap();
+        assert_eq!(chunk.choices[0].delta.content.as_deref(), Some("hi"));
+        let full: OpenRouterChatCompletionResponse = serde_json::from_str(
+            r#"{"id":"1","model":"m","object":"chat.completion","created":1,"choices":[{"index":0,"message":{"role":"assistant","content":"a"}},{"index":1,"message":{"role":"assistant","content":"b"}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(full.joined_content(), "ab");
     }
 }

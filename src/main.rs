@@ -33,6 +33,7 @@ impl eframe::App for app::SmartMediaApp {
         self.context.receive(&ctx);
         self.sync_focused_explorer();
         ui::devtools::scope::publish(&ctx, self.context.active_explorer());
+        ai::mcp::snapshot::publish_frame(self);
         self.poll_tasks();
         self.title_strip(ui);
         settings::banner::show(ui);
@@ -182,11 +183,15 @@ async fn main() -> eframe::Result<()> {
         }
     }
 
-    // `--mcp-stdio` (or SMART_MEDIA_MCP_STDIO=1) starts the MCP stdio server; it is off otherwise.
     egui_logger::builder()
         .max_level(log::LevelFilter::Info) // defaults to Debug
         .init()
         .unwrap();
+    ai::openai_compat::install_crypto_provider();
+    if let Err(e) = ai::mcp::init(&db_cli_args) {
+        eprintln!("{e}");
+        std::process::exit(2);
+    }
     theme::cli::install(theme_options);
 
     match command::cli::startup_commands(&db_cli_args) {
