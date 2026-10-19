@@ -69,12 +69,35 @@ Lists return `{items, returned, total, offset, limit, next_offset}`. Text from f
 | `describe_image` | gpu | Local vision model on an image; `dry_run` (default true) returns the text only, false files it as a proposal |
 | `clip_embed` | gpu | Local CLIP model on an image; `dry_run` (default true) returns size and norm, false stores the embedding of a library item |
 | `gpu_queue_status` | read | The running job, the waiting jobs, limits and recent jobs |
+| `taxonomy_propose_rename` | propose | File a tag or category rename, or a merge of up to 10 names into one, for review; the answer says how many items it touches and nothing is written |
+| `taxonomy_list_proposals` | read | Rename proposals with status `pending`, `accepted`, `rejected` or `failed` |
+| `image_edit_start` | gpu | Start an edit of a picture with the local image edit model as a background job; the call returns a job id at once |
+| `image_edit_status` | read | Progress, queue place, error and review state of one job, or the latest jobs; `include_preview` attaches the finished result as a JPEG |
+| `image_edit_cancel` | gpu | Stop a queued or running edit job |
 
-There is no tool that deletes, moves, renames or overwrites files, runs a shell command, reads a path outside the allowed folders or writes metadata directly. `ui_run` has no `open` action.
+There is no tool that deletes, moves, renames or overwrites files, runs a shell command, reads a path outside the allowed folders or writes metadata directly. `ui_run` has no `open` action. `taxonomy_propose_rename` renames nothing and `image_edit_start` never writes over a file: both only file something for the person to accept.
 
 ### Metadata proposals
 
 `metadata_propose` stores a row in the `mcp_proposals` table (created on first use). The user reviews proposals in Devtools > MCP server (Accept writes the changes to the library row, Reject keeps it as it was) or with `{"cmd": "mcp", "op": "accept", "id": "..."}`. Accepting adds and removes tags case-insensitively and leaves fields that already hold the proposed value alone. The Refinements tab lists the pending proposals next to the ones it generates itself: each shows its client as the source, the reason, the current and the proposed value per field and a checkbox per field, and Accept writes only the checked fields (`ProposalStore::accept_fields`); several accepts at once are one journal batch. Every accept is recorded in the metadata journal and Ctrl+Z reverts it (see `tools.md`).
+
+### Taxonomy proposals
+
+`taxonomy_propose_rename` takes `kind` (`tag` or `category`), `from` (1 to 10 existing names, matched exactly) and `to` (a tag up to 40 characters, a category up to 80), plus an optional `reason`. One name in `from` is a rename, several are a merge; a `to` that already exists merges the items into it. The proposal is stored in the `mcp_taxonomy_proposals` table with the number of items it touches when it was filed (`preview`: `items`, `merged`, `target_items` and the items per old name). A name that no item carries is refused with `not_found`, an identical pending proposal is returned instead of a second one, and at most 100 proposals may wait (`busy` beyond that).
+
+The person reviews them in Settings > Metadata tools > Agent proposals (or with `{"cmd": "mcp", "op": "taxonomy_accept", "id": "..."}`): each card shows the counts read from the library now, Accept asks once more ("Apply to N items") and then applies the rename through the journaled `rename_tag` and `rename_category` functions, one undo step per old name, Reject keeps the library as it was.
+
+### Image edit jobs
+
+`image_edit_start` takes `path` (an image under the allowed folders; it is only read), `prompt` (up to 1000 characters) and optionally `negative_prompt`, `steps` (1 to 50, default 30), `guidance_scale` (1 to 20) and `strength` (0.1 to 1). It returns `{job_id, state: "queued", ...}` at once; the job waits its turn in the GPU queue (up to 15 minutes), loads the model if needed and runs for up to 45 minutes. It uses the same model backend as the Image Edit tab, so the model loads once, and shows as an Image edit task in the Task Center.
+
+The result is written to `agent-edits/<job>.png` in the application data folder and never anywhere else; the original is never touched. A finished job waits for the person in Settings > Metadata tools > Agent proposals: Save as new file writes `name-edited.png` (then `-2`, `-3`, ...) next to the original and never over an existing file, Add to library does that and adds the file to the library, Discard deletes the result (`{"cmd": "mcp", "op": "edit_accept" | "edit_reject", "id": "..."}` does the same). `image_edit_status` reports `state` (`queued`, `loading_model`, `running`, `done`, `failed`, `cancelled`), the steps done, the queue place, the error, the result size and `review` (`pending`, `saved`, `added`, `rejected`); it never shows the scratch path. At most 3 jobs may be queued or running and at most 20 finished results may wait for review; beyond that `image_edit_start` answers `busy`. Jobs are kept in memory: a restart forgets them and leaves any unreviewed result file in the folder.
+
+When a job ends the application shows a toast and adds a notice to the open assistant chat ("Image edit of beach.png is ready. Review it in Settings > Metadata tools."), or a failure notice with the reason. A job that was cancelled is not reported.
+
+### Resources
+
+The server offers one resource, `library://guide` (`text/markdown`): the owner's notes on tags, categories, captions and sensitive pictures. It is the text of Settings > Assistant > Library guide (a shipped default until it is edited) and is read afresh on every `resources/read`. The gateway snippet pins it (`pinned_resources`). `resources/list` lists it, every other URI is refused.
 
 ### Model jobs
 
@@ -88,6 +111,7 @@ There is no tool that deletes, moves, renames or overwrites files, runs a shell 
 | Library, UI and proposal tools | 20-30 s |
 | `library_get_preview` | 60 s |
 | `library_semantic_search`, `library_similar_to`, `describe_image`, `clip_embed` | 300-480 s including the wait in the queue |
+| `taxonomy_propose_rename`, `taxonomy_list_proposals`, `image_edit_start`, `image_edit_status`, `image_edit_cancel` | 10-30 s (an edit runs in the background) |
 
 Results larger than 512 KiB are refused with a hint to ask for fewer items.
 
@@ -98,13 +122,13 @@ Results larger than 512 KiB are refused with a hint to ask for fewer items.
 - `Host` must be on the allow-list (DNS-rebinding guard); a request with an `Origin` header is refused unless the origin is listed.
 - Request bodies are limited (413), requests are rate limited (429 with `Retry-After`), every tool call has a time limit, results have a size limit.
 - File access: tools take absolute paths that must lie under an indexed library folder, a watched folder or the Pictures or Videos folder of the user. `..` is refused, archive paths are refused, links are resolved and the real file must still be inside; a link that leaves the folders is refused. Library rows are matched by the path as stored.
-- Writes: only through proposals (and `clip_embed` with `dry_run` false, which stores a derived vector for a library item). Catalog tests assert that no tool offers a destructive operation.
+- Writes: only through proposals (and `clip_embed` with `dry_run` false, which stores a derived vector for a library item). Renames wait for the person's review and are journaled; edited pictures are written to a scratch folder and only copied next to the original, to a name that is not taken, by the person. Catalog tests assert that no tool offers a destructive operation.
 - Windows: the release build of the application asks for administrator rights, so tool access to files is limited by the path policy alone; keep `watched_folders` short.
 - A gateway may keep the real token out of its configuration files by reading it from the file at connect time; the Devtools snippet only ever contains a placeholder.
 
 ## Adding the server to a ZeroClaw gateway
 
-Devtools > MCP server > "Copy gateway config snippet" copies this with the real URL (the token stays a placeholder):
+Devtools > MCP server > "Copy gateway config snippet" and Settings > Assistant > Gateway configuration (which fills in the agent alias and the address of the connection profile) give this with the real URL (the token stays a placeholder):
 
 ```toml
 [[mcp.servers]]
@@ -113,6 +137,7 @@ transport = "http"
 url = "http://100.116.134.128:9871/mcp"
 headers = { Authorization = "Bearer <paste the token from the mcp_token file>" }
 tool_timeout_secs = 300
+pinned_resources = ["library://guide"]
 
 [mcp_bundles.aimedia]
 servers = ["aimedia"]
@@ -120,7 +145,7 @@ servers = ["aimedia"]
 [risk_profiles.media]
 level = "supervised"
 auto_approve = ["aimedia__util_ping", "aimedia__library_search", "aimedia__library_semantic_search", "..."]
-always_ask = ["aimedia__describe_image", "aimedia__clip_embed"]
+always_ask = ["aimedia__describe_image", "aimedia__clip_embed", "aimedia__image_edit_start", "aimedia__taxonomy_propose_rename"]
 
 [agents.media]
 risk_profile = "media"

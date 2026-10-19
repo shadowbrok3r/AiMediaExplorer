@@ -1,6 +1,7 @@
 //! The Settings page: a dock tab with a section list, a search box and Apply and Revert for the edited settings.
 
 pub mod advanced;
+pub mod agent_proposals;
 pub mod appearance;
 pub mod assistant;
 pub mod automation;
@@ -17,6 +18,8 @@ pub mod sections;
 pub mod shortcuts;
 mod widgets;
 
+#[cfg(test)]
+mod agent_proposals_tests;
 #[cfg(test)]
 mod tests;
 

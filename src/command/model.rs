@@ -201,6 +201,8 @@ pub enum DevtoolsWindow {
     Sidebar,
     Actions,
     McpServer,
+    #[serde(rename = "zeroclaw_usage")]
+    ZeroClawUsage,
 }
 
 /// A move through the history of the focused tab, or the load it is showing.
@@ -313,6 +315,12 @@ pub enum AppCommand {
         #[serde(default, skip_serializing_if = "is_false")]
         include_thumbs: bool,
     },
+    /// Library guide, gateway chats, gateway usage and the gateway configuration snippet.
+    ZcMemory {
+        op: crate::zc::memory_command::MemoryOp,
+        #[serde(flatten)]
+        args: crate::zc::memory_command::MemoryArgs,
+    },
     AttachToAssistant { paths: Vec<String> },
     /// Set up and drive the ZeroClaw gateway connection of the assistant.
     Zc {
@@ -417,6 +425,7 @@ impl AppCommand {
             Self::ShowSettings { .. } => "show_settings",
             Self::Wizard { .. } => "wizard",
             Self::Backup { .. } => "backup",
+            Self::ZcMemory { .. } => "zc_memory",
             Self::AttachToAssistant { .. } => "attach_to_assistant",
             Self::Zc { .. } => "zc",
             Self::Refine { .. } => "refine",
@@ -515,6 +524,8 @@ mod tests {
             AppCommand::Backup { op: crate::ui::settings::backup::Op::Export, path: Some("/b/full.surql".into()), dir: None, redact_keys: false, include_thumbs: true },
             AppCommand::Backup { op: crate::ui::settings::backup::Op::Snapshot, path: None, dir: None, redact_keys: true, include_thumbs: false },
             AppCommand::Backup { op: crate::ui::settings::backup::Op::Restore, path: Some("/b/out.surql".into()), dir: Some("/lib/restored".into()), redact_keys: true, include_thumbs: false },
+            AppCommand::ZcMemory { op: crate::zc::memory_command::MemoryOp::Usage, args: Default::default() },
+            AppCommand::ZcMemory { op: crate::zc::memory_command::MemoryOp::SessionRename, args: crate::zc::memory_command::MemoryArgs { session: Some("s1".into()), name: Some("Named".into()), ..Default::default() } },
             AppCommand::AttachToAssistant { paths: vec!["/a".into()] },
             AppCommand::Zc { op: crate::zc::command::ZcOp::Status, args: Default::default() },
             AppCommand::Zc { op: crate::zc::command::ZcOp::Configure, args: crate::zc::command::ZcArgs { host: Some("h:1".into()), agent: Some("a".into()), allow_images: Some(true), ..Default::default() } },
@@ -599,7 +610,7 @@ mod tests {
                 parsed.insert(cmd.name());
             }
         }
-        for name in ["open_scope", "open_rows", "open_tool", "run", "show_settings", "wizard", "backup", "attach_to_assistant", "zc", "refine", "undo", "redo", "workspace", "dump_state", "toast", "task_update", "clear_selection", "query", "dialog", "focus_path", "open_devtools", "show_task_center", "navigate", "connect_database", "set_filter", "clear_filters", "apply_saved_view", "set_view_mode", "inspector_toggle", "open_palette", "mcp"] {
+        for name in ["open_scope", "open_rows", "open_tool", "run", "show_settings", "wizard", "backup", "attach_to_assistant", "zc", "zc_memory", "refine", "undo", "redo", "workspace", "dump_state", "toast", "task_update", "clear_selection", "query", "dialog", "focus_path", "open_devtools", "show_task_center", "navigate", "connect_database", "set_filter", "clear_filters", "apply_saved_view", "set_view_mode", "inspector_toggle", "open_palette", "mcp"] {
             assert!(parsed.contains(name), "the docs have no example for {name}");
         }
     }

@@ -9,16 +9,20 @@ pub mod direct;
 pub mod emit;
 pub mod entry;
 mod flow;
+pub mod gateway_sessions;
 pub mod header;
 mod images;
 mod layout;
 pub mod local;
+pub mod notices;
 pub mod providers;
 pub mod sessions;
 mod shortcuts;
 pub mod tools_debug;
 pub mod transcript;
 
+#[cfg(test)]
+mod gateway_sessions_tests;
 #[cfg(test)]
 mod tests;
 

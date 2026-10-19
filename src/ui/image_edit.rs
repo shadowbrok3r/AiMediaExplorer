@@ -22,6 +22,7 @@ use crate::command::{AppCommand, ToastLevel};
 use crate::ui::file_table::thumbs::{ScopeId, ThumbService, ThumbView, Tier, can_preview};
 
 pub use backend::{EditBackend, EditRequest, RunCtl};
+pub use debug::DebugBackend;
 pub use job::{Decoded, Msg};
 pub use model::{CompareMode, EditError, ErrorKind, ModelSettings, Params, Phase};
 
@@ -81,9 +82,15 @@ pub struct ImageEditPanel {
     debug_backend: bool,
 }
 
+/// The model backend the tab and the MCP image edit tools share, so the model loads once.
+pub fn shared_backend() -> Arc<dyn EditBackend> {
+    static SHARED: std::sync::OnceLock<Arc<dyn EditBackend>> = std::sync::OnceLock::new();
+    SHARED.get_or_init(|| if debug::requested_by_env() { Arc::new(DebugBackend::default()) } else { Arc::new(qwen::QwenBackend::default()) }).clone()
+}
+
 impl Default for ImageEditPanel {
     fn default() -> Self {
-        let mut panel = Self::with_backend(Arc::new(qwen::QwenBackend::default()), DbSource::Global, crate::ui::file_table::thumbs::service());
+        let mut panel = Self::with_backend(shared_backend(), DbSource::Global, crate::ui::file_table::thumbs::service());
         if debug::requested_by_env() {
             panel.use_debug_backend(true);
         }
@@ -136,7 +143,7 @@ impl ImageEditPanel {
         if self.phase.is_busy() || self.debug_backend == on {
             return;
         }
-        self.backend = if on { Arc::new(debug::DebugBackend::default()) } else { Arc::new(qwen::QwenBackend::default()) };
+        self.backend = if on { Arc::new(debug::DebugBackend::default()) } else { shared_backend() };
         self.debug_backend = on;
         self.model_error = None;
     }

@@ -33,7 +33,7 @@ pub fn entries() -> Vec<ToolEntry> {
 }
 
 /// Polls until the task center asks the task to stop.
-async fn task_cancelled(reporter: crate::tasks::Reporter) {
+pub async fn task_cancelled(reporter: crate::tasks::Reporter) {
     loop {
         tokio::time::sleep(Duration::from_millis(250)).await;
         if reporter.cancel_requested() {
@@ -71,7 +71,7 @@ fn is_image_path(path: &std::path::Path) -> bool {
     path.extension().and_then(|e| e.to_str()).is_some_and(|e| crate::is_image(&e.to_ascii_lowercase()))
 }
 
-async fn checked_image(ctx: &ToolCtx, path: &str) -> Result<std::path::PathBuf, ToolError> {
+pub(super) async fn checked_image(ctx: &ToolCtx, path: &str) -> Result<std::path::PathBuf, ToolError> {
     ctx.policy.refresh(&ctx.db).await;
     let real = ctx.policy.check_file(path.trim())?;
     if !is_image_path(&real) {

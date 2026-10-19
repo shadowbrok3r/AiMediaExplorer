@@ -15,7 +15,7 @@ Opening the page changes nothing. Edits stay in a draft until Apply: the library
 | AI models | vision folder with a check, device, CLIP/SigLIP model, reranker and Jina options, image-edit pointer, load and reload buttons, free memory |
 | Automation | auto indexing, auto CLIP, overwrite descriptions, prompt template with reset |
 | Assistant and providers | the ZeroClaw card (`zc::connection_ui`), the direct providers with masked keys, endpoint, model, organization and a connection test |
-| Metadata tools | rename or merge a category or tag, delete a tag, limit tags per item; each shows the counts first and asks |
+| Metadata tools | rename or merge a category or tag, delete a tag, limit tags per item; each shows the counts first and asks. Agent proposals below them: the renames the agent filed (accept or reject, with the counts read now) and the pictures it edited (save as a new file, add to the library or discard), see `mcp.md` |
 | Shortcuts | every registered action and command with its binding, from the palette registry |
 | Appearance | the theme picker and the egui options (Save keeps them across restarts) |
 | Advanced | log level, performance HUD, MCP server window, raw settings JSON, resets |

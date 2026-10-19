@@ -27,6 +27,7 @@ pub enum Act {
     Pair,
     StartTools,
     BrowseModels,
+    GatewaySessions,
     SetProvider(String),
     SetModel(String),
     ToolsDebug,
@@ -88,6 +89,9 @@ fn backend_menu(ui: &mut Ui, env: &Env, acts: &mut Vec<Act>) {
         }
         if icons::button(ui, svg::GEAR, "Connection settings").clicked() {
             acts.push(Act::OpenSettings);
+        }
+        if icons::button(ui, svg::LIST_MAGNIFYING_GLASS, "Gateway sessions").on_hover_text("Chats the gateway holds for this agent").clicked() {
+            acts.push(Act::GatewaySessions);
         }
     });
     ui.separator();

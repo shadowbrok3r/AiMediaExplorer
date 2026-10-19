@@ -39,6 +39,14 @@ impl AssistantPanel {
                 self.composer.text = text;
             }
         }
+        for open in super::gateway_sessions::take_open_requests() {
+            self.open_gateway_session(open);
+        }
+        if self.sessions.active.is_some() {
+            for (i, (level, text)) in super::notices::take().into_iter().enumerate() {
+                self.transcript.notice(format!("agent:{}:{i}", now_ms()), level, text, None, now_ms());
+            }
+        }
     }
 
     /// Adds a session to the list and makes it the open one.

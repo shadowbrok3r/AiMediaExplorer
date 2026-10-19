@@ -109,6 +109,7 @@ impl AssistantPanel {
                     crate::zc::tools::ensure_running(&profile);
                 }
                 HeaderAct::BrowseModels => self.models.show_and_load(&self.settings),
+                HeaderAct::GatewaySessions => super::gateway_sessions::set_open(ctx, true),
                 HeaderAct::SetProvider(p) => {
                     crate::settings::update("assistant:provider", |s| s.ai_chat_provider = Some(p));
                 }
@@ -241,6 +242,9 @@ impl AssistantPanel {
             self.new_chat();
         }
         self.tools_dbg.show(&ctx);
+        if let Some(open) = super::gateway_sessions::show(&ctx, &self.rt) {
+            self.open_gateway_session(open);
+        }
         out
     }
 }

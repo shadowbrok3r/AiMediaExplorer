@@ -217,6 +217,10 @@ impl crate::app::SmartMediaApp {
                 crate::ui::devtools::toggle_mcp(ui.ctx());
                 ui.close();
             }
+            if icons::button(ui, svg::GAUGE, "ZeroClaw usage").clicked() {
+                crate::ui::devtools::toggle_zeroclaw_usage(ui.ctx());
+                ui.close();
+            }
         });
     }
 

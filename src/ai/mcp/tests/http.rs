@@ -16,25 +16,25 @@ use crate::status::{GlobalStatusIndicator, StatusState};
 
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-struct Served {
-    hub: Arc<Hub>,
-    f: Fixture,
-    addr: SocketAddr,
-    token: String,
+pub(super) struct Served {
+    pub(super) hub: Arc<Hub>,
+    pub(super) f: Fixture,
+    pub(super) addr: SocketAddr,
+    pub(super) token: String,
     _dir: tempfile::TempDir,
     _lock: tokio::sync::MutexGuard<'static, ()>,
 }
 
 impl Served {
-    fn url(&self) -> String {
+    pub(super) fn url(&self) -> String {
         format!("http://{}/mcp", self.addr)
     }
 
-    fn client(&self) -> reqwest::Client {
+    pub(super) fn client(&self) -> reqwest::Client {
         reqwest::Client::builder().timeout(Duration::from_secs(10)).build().unwrap()
     }
 
-    async fn post(&self, token: Option<&str>, body: &str) -> reqwest::Response {
+    pub(super) async fn post(&self, token: Option<&str>, body: &str) -> reqwest::Response {
         let mut req = self.client().post(self.url()).header("Accept", "application/json, text/event-stream").header("Content-Type", "application/json").body(body.to_string());
         if let Some(t) = token {
             req = req.header("Authorization", format!("Bearer {t}"));
@@ -42,14 +42,14 @@ impl Served {
         req.send().await.unwrap()
     }
 
-    fn rmcp_transport(&self, token: &str) -> StreamableHttpClientTransport<reqwest::Client> {
+    pub(super) fn rmcp_transport(&self, token: &str) -> StreamableHttpClientTransport<reqwest::Client> {
         StreamableHttpClientTransport::from_config(StreamableHttpClientTransportConfig::with_uri(self.url()).auth_header(token.to_string()))
     }
 }
 
-const INIT: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#;
+pub(super) const INIT: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#;
 
-async fn served_with(tweak: impl FnOnce(&mut McpConfig)) -> Served {
+pub(super) async fn served_with(tweak: impl FnOnce(&mut McpConfig)) -> Served {
     let lock = SERIAL.lock().await;
     let f = fixture().await;
     let dir = tempfile::tempdir().unwrap();
@@ -61,7 +61,7 @@ async fn served_with(tweak: impl FnOnce(&mut McpConfig)) -> Served {
     Served { hub, f, addr, token, _dir: dir, _lock: lock }
 }
 
-async fn served() -> Served {
+pub(super) async fn served() -> Served {
     served_with(|_| {}).await
 }
 
@@ -316,7 +316,8 @@ async fn the_gateway_snippet_names_the_url_and_a_token_placeholder() {
     assert!(snippet.contains(&format!("url = \"http://127.0.0.1:{}/mcp\"", s.addr.port())), "{snippet}");
     assert!(snippet.contains("Bearer <paste the token"));
     assert!(!snippet.contains(&s.token), "the real token is never part of the snippet");
-    assert!(snippet.contains("\"aimedia__library_search\"") && snippet.contains("always_ask = [\"aimedia__describe_image\", \"aimedia__clip_embed\"]"));
+    assert!(snippet.contains("\"aimedia__library_search\"") && snippet.contains("always_ask = [\"aimedia__describe_image\", \"aimedia__clip_embed\", \"aimedia__image_edit_start\", \"aimedia__taxonomy_propose_rename\"]"));
     assert!(!snippet.contains("auto_approve = [\"aimedia__describe_image"));
+    assert!(snippet.contains("pinned_resources = [\"library://guide\"]") && snippet.contains("[agents.media]"));
     s.hub.stop().await;
 }

@@ -1,6 +1,7 @@
 //! ZeroClaw glue: gateway profile and token, health, the chat runtime, the connection card and the `zc` command.
 
 pub mod card;
+mod card_memory;
 mod card_tools;
 pub mod cli;
 pub mod coalesce;
@@ -10,11 +11,16 @@ pub mod events;
 pub mod health;
 pub mod import;
 pub mod jobs;
+pub mod memory;
+pub mod memory_command;
 pub mod profile;
 pub mod runtime;
 pub mod secrets;
 pub mod session;
+pub mod sessions;
+pub mod snippet;
 pub mod tools;
+pub mod usage;
 pub mod widgets;
 
 #[cfg(test)]

@@ -170,6 +170,38 @@ Backs up or restores the library without a dialog, as Database tasks (Task Cente
 {"cmd": "backup", "op": "snapshot"}
 ```
 
+### zc_memory
+
+Drives the library guide, the gateway chats, the gateway usage and the gateway configuration snippet (`docs/zeroclaw.md`, `docs/mcp.md`). Work that needs the gateway finishes in the background and reports through a toast and the notes of Devtools > ZeroClaw; the others answer at once. The guide is never pushed unless `guide_push` runs.
+
+| Op | Does | Fields |
+|---|---|---|
+| `guide` | Returns whether the guide is the shipped text, its length, the last push and the text as one JSON line | |
+| `guide_set` | Stores `text` as the guide; blank text or the shipped text brings the default back | `text` |
+| `guide_reset` | Brings the shipped guide back | |
+| `guide_push` | Stores the guide in the gateway memory of the agent and records the time | |
+| `guide_check` | Asks the gateway whether it holds the same guide | |
+| `sessions` | Lists the gateway chats of the agent that have messages | |
+| `sessions_open` | Shows the assistant with the gateway session browser | |
+| `session_open` | Opens the gateway chat `session` in the assistant; its history is read lazily | `session`, `name` |
+| `session_rename` | Names the gateway chat `session` | `session`, `name` |
+| `session_delete` | Deletes the gateway chat `session` | `session` |
+| `usage` | Returns the usage totals, the sessions and the days as one JSON line | |
+| `usage_reset` | Clears the usage totals | |
+| `snippet` | Returns the gateway configuration snippet with a placeholder for the token | |
+| `snippet_test` | Calls `util_ping` through the tools server's own address | |
+
+```json
+{"cmd": "zc_memory", "op": "guide"}
+{"cmd": "zc_memory", "op": "guide_set", "text": "# Guide\nTags are lower case."}
+{"cmd": "zc_memory", "op": "guide_push"}
+{"cmd": "zc_memory", "op": "sessions"}
+{"cmd": "zc_memory", "op": "session_open", "session": "0a1b2c3d", "name": "Tag the sunsets"}
+{"cmd": "zc_memory", "op": "session_rename", "session": "0a1b2c3d", "name": "Holiday tags"}
+{"cmd": "zc_memory", "op": "usage"}
+{"cmd": "zc_memory", "op": "snippet_test"}
+```
+
 ### attach_to_assistant
 
 Attaches files to the assistant chat: opens the right rail on the Ask tab (or the pop-out window when the assistant is popped out) and shows the files as attachment chips in the composer.
@@ -338,7 +370,7 @@ Selects the row of a path in the focused tab, which the inspector rail previews 
 
 ### open_devtools
 
-Opens a debug window: `theme_panel`, `settings_store`, `wizard`, `db_maintenance`, `legacy_import`, `thumb_storage`, `thumb_cache`, `tasks`, `command_log`, `perf`, `zeroclaw`, `zeroclaw_jobs`, `row_store`, `collections`, `query`, `browser_actions`, `video`, `scope`, `filters`, `grid`, `inspector`, `journal`, `workspace`, `refine`, `sidebar`, `actions`, `mcp_server`.
+Opens a debug window: `theme_panel`, `settings_store`, `wizard`, `db_maintenance`, `legacy_import`, `thumb_storage`, `thumb_cache`, `tasks`, `command_log`, `perf`, `zeroclaw`, `zeroclaw_jobs`, `row_store`, `collections`, `query`, `browser_actions`, `video`, `scope`, `filters`, `grid`, `inspector`, `journal`, `workspace`, `refine`, `sidebar`, `actions`, `mcp_server`, `zeroclaw_usage`.
 
 The `scope` window takes a scope string and shows how it parses (kind, title, parent, whether a folder exists), opens it in the focused tab or a new one, steps back and forward, lists the history stack of the focused tab with the scroll row and selection saved in each entry, and shows the timing of its recent loads: rows, batches, time to the first batch and total time.
 
@@ -463,6 +495,12 @@ Controls the MCP tools server (`docs/mcp.md`) and the metadata proposals it coll
 | `accept` | Accepts the proposal `id` and writes its changes to the library |
 | `reject` | Rejects the proposal `id` |
 | `call` | Runs the tool `tool` with `args` in this process (as the Devtools tester does) |
+| `taxonomy_proposals` | Lists the pending tag and category rename proposals with what each would touch |
+| `taxonomy_accept` | Applies the rename proposal `id` through the journaled tag or category functions (one undo step per old name) |
+| `taxonomy_reject` | Rejects the rename proposal `id` |
+| `edit_jobs` | Lists the image edit jobs the agent started and what became of their results |
+| `edit_accept` | Saves the finished edit `id` as a new file next to its original; `args` `{"library": true}` also adds the file to the library |
+| `edit_reject` | Discards the finished edit `id` and deletes its result |
 
 ```json
 {"cmd": "mcp", "op": "status"}
@@ -470,6 +508,10 @@ Controls the MCP tools server (`docs/mcp.md`) and the metadata proposals it coll
 {"cmd": "mcp", "op": "proposals"}
 {"cmd": "mcp", "op": "accept", "id": "p1a2b3c4d"}
 {"cmd": "mcp", "op": "call", "tool": "library_stats", "args": {}}
+{"cmd": "mcp", "op": "taxonomy_proposals"}
+{"cmd": "mcp", "op": "taxonomy_accept", "id": "x1a2b3c4d"}
+{"cmd": "mcp", "op": "edit_jobs"}
+{"cmd": "mcp", "op": "edit_accept", "id": "e1a2b3c4d", "args": {"library": true}}
 ```
 
 Start-up flags: `--mcp-port N` serves on port N for this run (0 picks a free port), `--mcp-config-dir <dir>` keeps the token and the settings file in `<dir>`, and `SMART_MEDIA_MCP_PORT` does the same as the port flag.

@@ -48,6 +48,7 @@ struct UiSettingsDb {
     pub openai_organization: Option<String>,
     pub mcp_stdio_enabled: Option<bool>,
     pub zeroclaw: Option<crate::zc::profile::ZcProfile>,
+    pub library_guide: Option<crate::ai::mcp::guide::LibraryGuide>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +119,8 @@ pub struct UiSettings {
     pub mcp_stdio_enabled: Option<bool>,
     // ZeroClaw gateway profile of the assistant; the token lives in a file, never here
     pub zeroclaw: Option<crate::zc::profile::ZcProfile>,
+    // Notes for the agent about this library; served as library://guide
+    pub library_guide: Option<crate::ai::mcp::guide::LibraryGuide>,
     // egui preferences - kept in memory only, not persisted to DB
     #[serde(skip)]
     pub egui_preferences: Options
@@ -165,6 +168,7 @@ impl From<UiSettingsDb> for UiSettings {
             openai_organization: db.openai_organization,
             mcp_stdio_enabled: db.mcp_stdio_enabled,
             zeroclaw: db.zeroclaw,
+            library_guide: db.library_guide,
             egui_preferences: Options::default(),
         }
     }
@@ -212,6 +216,7 @@ impl From<&UiSettings> for UiSettingsDb {
             openai_organization: s.openai_organization.clone(),
             mcp_stdio_enabled: s.mcp_stdio_enabled,
             zeroclaw: s.zeroclaw.clone(),
+            library_guide: s.library_guide.clone(),
         }
     }
 }
@@ -259,6 +264,7 @@ impl Default for UiSettings {
             openai_organization: None,
             mcp_stdio_enabled: None,
             zeroclaw: None,
+            library_guide: None,
             egui_preferences: Options::default()
 
         }
@@ -324,7 +330,7 @@ persisted_fields!(
     jina_doc_type, jina_query_type, jina_enable_multimodal, scan_found_batch_max,
     ai_chat_provider, openai_api_key, grok_api_key, gemini_api_key, groq_api_key,
     openrouter_api_key, openai_base_url, openai_default_model, openai_organization,
-    mcp_stdio_enabled, zeroclaw,
+    mcp_stdio_enabled, zeroclaw, library_guide,
 );
 
 /// Record id of the single user settings document.

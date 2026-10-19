@@ -1,22 +1,28 @@
 //! MCP tools server hosted by the application: Streamable HTTP with a bearer token, tools over the library, the UI and the local models.
 
 pub mod activity;
+pub mod agent;
 pub mod auth;
 pub mod clock;
 pub mod command;
 pub mod config;
 pub mod ctx;
+pub mod edits;
 pub mod error;
 pub mod gpu;
+pub mod guide;
 pub mod legacy;
+pub mod notify;
 pub mod policy;
 pub mod proposals;
 pub mod registry;
+pub mod resources;
 pub mod server;
 pub mod snapshot;
+pub mod taxonomy;
 pub mod tools;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;
 

@@ -103,6 +103,7 @@ pub struct ToolCtx {
     pub ui: Arc<dyn UiBridge>,
     pub proposals: Arc<ProposalStore>,
     pub snapshot: SnapshotCell,
+    pub agent: Arc<super::agent::AgentCtx>,
 }
 
 /// Facts about one call.

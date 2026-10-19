@@ -942,7 +942,9 @@ async fn rest_handler(State(sh): State<Arc<Shared>>, method: Method, uri: Uri, h
                 return err(400, "name is required");
             }
             let mut inner = sh.lock();
-            match inner.sessions.iter_mut().find(|s| s["session_id"] == json!(id)) {
+            let by_key = inner.sessions.iter().position(|s| s["session_key"] == json!(id));
+            let at = by_key.or_else(|| inner.sessions.iter().position(|s| s["session_id"] == json!(id)));
+            match at.and_then(|i| inner.sessions.get_mut(i)) {
                 Some(s) => {
                     s["name"] = json!(name);
                     json_response(200, json!({"session_id": id, "name": name}))
@@ -953,7 +955,8 @@ async fn rest_handler(State(sh): State<Arc<Shared>>, method: Method, uri: Uri, h
         ("DELETE", ["api", "sessions", id]) => {
             let mut inner = sh.lock();
             let before = inner.sessions.len();
-            inner.sessions.retain(|s| s["session_id"] != json!(id));
+            let by_key = inner.sessions.iter().any(|s| s["session_key"] == json!(id));
+            inner.sessions.retain(|s| if by_key { s["session_key"] != json!(id) } else { s["session_id"] != json!(id) });
             inner.messages.remove(*id);
             inner.messages.remove(&format!("gw_{id}"));
             if inner.sessions.len() == before { err(404, "Session not found") } else { json_response(200, json!({"deleted": true})) }

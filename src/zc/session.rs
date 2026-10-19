@@ -230,6 +230,7 @@ async fn handle_event(sh: &Arc<Shared>, tag: &Tag, event: Event, co: &mut Coales
             flushed(sh, tag, co).await;
             suppress.store(false, Ordering::Relaxed);
             sh.add_usage(&usage);
+            super::usage::record(&tag.session, &usage);
             if hushed {
                 sh.emit(tag, ChatEv::Aborted { turn }).await;
             } else {

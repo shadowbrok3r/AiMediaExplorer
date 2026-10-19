@@ -2,9 +2,11 @@
 
 pub mod common;
 pub mod gpu;
+pub mod image_edit;
 pub mod library;
 pub mod preview;
 pub mod propose;
+pub mod taxonomy;
 pub mod ui;
 
 use std::sync::Arc;
@@ -43,6 +45,8 @@ pub fn all_entries() -> Vec<ToolEntry> {
     entries.extend(ui::entries());
     entries.extend(propose::entries());
     entries.extend(gpu::entries());
+    entries.extend(taxonomy::entries());
+    entries.extend(image_edit::entries());
     entries
 }
 
@@ -62,7 +66,7 @@ mod tests {
     fn names_are_lower_snake_case_and_fit_the_gateway_limit() {
         let re = regex::Regex::new(r"^[a-z0-9_]{1,40}$").unwrap();
         let catalog = registry().catalog();
-        assert!(catalog.len() >= 19, "{} tools", catalog.len());
+        assert!(catalog.len() >= 24, "{} tools", catalog.len());
         let mut seen = std::collections::HashSet::new();
         for row in &catalog {
             assert!(re.is_match(&row.name), "bad name {}", row.name);
@@ -81,7 +85,7 @@ mod tests {
         }
         for required in [
             "util_ping", "library_search", "library_semantic_search", "library_similar_to", "library_get_item", "library_stats", "list_collections", "collection_items", "list_tags", "list_categories",
-            "app_get_context", "ui_open_scope", "ui_run", "metadata_propose", "describe_image", "clip_embed",
+            "app_get_context", "ui_open_scope", "ui_run", "metadata_propose", "describe_image", "clip_embed", "taxonomy_propose_rename", "taxonomy_list_proposals", "image_edit_start", "image_edit_status", "image_edit_cancel",
         ] {
             assert!(names.contains(&required.to_string()), "{required} missing");
         }

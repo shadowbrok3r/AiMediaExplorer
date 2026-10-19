@@ -17,6 +17,7 @@ pub mod query;
 pub mod refine;
 pub mod zeroclaw;
 pub mod zc_jobs;
+pub mod zeroclaw_usage;
 pub mod row_store;
 pub mod scope;
 pub mod scan_perf;
@@ -108,6 +109,10 @@ pub fn toggle_mcp(ctx: &Context) {
     mcp::toggle(ctx);
 }
 
+pub fn toggle_zeroclaw_usage(ctx: &Context) {
+    zeroclaw_usage::toggle(ctx);
+}
+
 pub fn toggle_tasks(ctx: &Context) {
     tasks::set_open(ctx, !tasks::is_open(ctx));
 }
@@ -170,6 +175,7 @@ pub fn open(ctx: &Context, window: DevtoolsWindow) {
         DevtoolsWindow::Sidebar => sidebar::set_open(ctx, true),
         DevtoolsWindow::Actions => actions::set_open(ctx, true),
         DevtoolsWindow::McpServer => mcp::set_open(ctx, true),
+        DevtoolsWindow::ZeroClawUsage => zeroclaw_usage::set_open(ctx, true),
     }
     ctx.request_repaint();
 }
@@ -202,6 +208,7 @@ pub fn show(ctx: &Context) {
     sidebar::show(ctx);
     actions::show(ctx);
     mcp::show(ctx);
+    zeroclaw_usage::show(ctx);
 }
 
 #[cfg(test)]
@@ -236,6 +243,7 @@ mod tests {
             DevtoolsWindow::Sidebar => sidebar::is_open(ctx),
             DevtoolsWindow::Actions => actions::is_open(ctx),
             DevtoolsWindow::McpServer => mcp::is_open(ctx),
+            DevtoolsWindow::ZeroClawUsage => zeroclaw_usage::is_open(ctx),
             DevtoolsWindow::ThemePanel => crate::theme::debug_panel::is_open(ctx),
         }
     }
@@ -271,6 +279,7 @@ mod tests {
             DevtoolsWindow::Sidebar,
             DevtoolsWindow::Actions,
             DevtoolsWindow::McpServer,
+            DevtoolsWindow::ZeroClawUsage,
         ];
         for w in windows {
             assert!(!is_open(&ctx, w), "{w:?} starts closed");

@@ -37,11 +37,19 @@ pub struct JobSpec {
     pub kind: &'static str,
     pub label: String,
     pub client: String,
+    /// Longest wait for the turn and longest run of this job; the queue limits apply when `None`.
+    pub limits: Option<(Duration, Duration)>,
 }
 
 impl JobSpec {
     pub fn new(kind: &'static str, label: impl Into<String>, client: impl Into<String>) -> Self {
-        Self { kind, label: label.into(), client: client.into() }
+        Self { kind, label: label.into(), client: client.into(), limits: None }
+    }
+
+    /// Replaces the queue's wait and run limits for this job.
+    pub fn with_limits(mut self, wait: Duration, run: Duration) -> Self {
+        self.limits = Some((wait, run));
+        self
     }
 }
 
@@ -239,6 +247,7 @@ impl GpuQueue {
         Fut: Future<Output = Result<T, String>>,
     {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let (queue_timeout, job_timeout) = spec.limits.unwrap_or((self.limits.queue_timeout, self.limits.job_timeout));
         let cancel = outer.child_token();
         let submitted = self.clock.now();
         let depth = {
@@ -265,9 +274,9 @@ impl GpuQueue {
                 return Err(GpuError::Cancelled);
             }
             guard = self.gate.lock() => guard,
-            _ = tokio::time::sleep(self.limits.queue_timeout) => {
+            _ = tokio::time::sleep(queue_timeout) => {
                 abandon.armed = false;
-                let e = GpuError::QueueTimeout(self.limits.queue_timeout);
+                let e = GpuError::QueueTimeout(queue_timeout);
                 self.finish(id, JobState::TimedOut, Some(e.to_string()));
                 return Err(e);
             }
@@ -289,7 +298,7 @@ impl GpuQueue {
             biased;
             _ = cancel.cancelled() => Err(GpuError::Cancelled),
             r = work(ctx) => r.map_err(GpuError::Job),
-            _ = tokio::time::sleep(self.limits.job_timeout) => Err(GpuError::JobTimeout(self.limits.job_timeout)),
+            _ = tokio::time::sleep(job_timeout) => Err(GpuError::JobTimeout(job_timeout)),
         };
         let (state, error) = match &outcome {
             Ok(_) => (JobState::Done, None),

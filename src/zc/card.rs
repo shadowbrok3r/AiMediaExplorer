@@ -246,6 +246,8 @@ pub fn show(ui: &mut Ui, rt: &Arc<ZcRuntime>, mode: Mode) -> bool {
         card_tools::tools_section(ui, &mut card, &mut draft);
         ui.add_space(4.0);
         card_tools::privacy_section(ui, &mut card, &mut draft);
+        ui.add_space(4.0);
+        super::card_memory::section(ui, rt, &draft);
         if card.draft.as_ref() != Some(&draft) {
             card.draft = Some(draft.clone());
         }

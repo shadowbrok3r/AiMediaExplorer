@@ -51,6 +51,10 @@ Opens from the Inspector's Edit tab, Tools > Image edit and `{"cmd": "open_tool"
 - **History**: the last 12 results of the session with the prompt and whether they were saved; picking one brings back its source image.
 - **Errors**: out of memory, model load and unreadable source each say what to do; out of memory offers "Retry at lower precision" (full precision off, at most 20 steps). The pipeline also retries once at reduced precision by itself.
 
+### Edits started by the agent
+
+The MCP tools `image_edit_start`, `image_edit_status` and `image_edit_cancel` (`mcp.md`) run edits on the same model backend as this tab (`image_edit::shared_backend`, so the model loads once) as jobs of the GPU queue. Their results are written to the `agent-edits` folder of the application data folder, never over an original, and wait in Settings > Metadata tools > Agent proposals for Save as new file, Add to library or Discard. The tab itself does not wait in the GPU queue: start an edit here only when no agent job is running.
+
 ### Without the model
 
 Devtools > Refine and Image Edit shows the state of both tabs, adds sample proposals with made-up values for library files, drives the bulk buttons and switches Image Edit to a test backend that grays, inverts or warms the picture in a moment (a prompt containing "simulate oom" fails like a GPU out of memory). `SMART_MEDIA_IMAGE_EDIT_BACKEND=test` starts the tab on that backend. Open the window at start-up with `--devtools refine`.

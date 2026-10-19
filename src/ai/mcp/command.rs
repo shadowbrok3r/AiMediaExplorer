@@ -27,6 +27,18 @@ pub enum McpOp {
     Call,
     /// Write a new token.
     RotateToken,
+    /// List the pending tag and category rename proposals with what each would touch.
+    TaxonomyProposals,
+    /// Apply the rename proposal `id` through the journaled tag or category functions.
+    TaxonomyAccept,
+    /// Reject the rename proposal `id`.
+    TaxonomyReject,
+    /// List the image edit jobs of the agent.
+    EditJobs,
+    /// Save the finished edit `id` next to its original; `args` `{"library": true}` also adds it to the library.
+    EditAccept,
+    /// Discard the finished edit `id`.
+    EditReject,
 }
 
 /// Longest tool result kept in the Devtools notes.
@@ -108,6 +120,60 @@ pub fn run(op: McpOp, id: Option<String>, tool: Option<String>, args: Option<Val
             });
             Ok(format!("{} proposal {shown}", if accept { "accepting" } else { "rejecting" }))
         }
+        McpOp::TaxonomyProposals => {
+            spawn_note("taxonomy proposals", async move {
+                let store = &hub.ctx.agent.taxonomy;
+                let (rows, total) = store.list(Some(Status::Pending), 0, 50).await.map_err(|e| e.to_string())?;
+                let mut lines = Vec::new();
+                for p in &rows {
+                    let counts = match store.preview(&p.rename()).await {
+                        Ok(v) => v.summary(),
+                        Err(e) => e.to_string(),
+                    };
+                    lines.push(format!("{} {} ({counts})", p.id, p.rename().title()));
+                }
+                Ok(format!("{total} pending\n{}", lines.join("\n")))
+            });
+            Ok("listing pending taxonomy proposals".to_string())
+        }
+        McpOp::TaxonomyAccept | McpOp::TaxonomyReject => {
+            let id = id.filter(|i| !i.trim().is_empty()).ok_or_else(|| CommandError::invalid("this command needs a proposal id"))?;
+            let accept = op == McpOp::TaxonomyAccept;
+            let shown = id.clone();
+            spawn_note(if accept { "taxonomy accept" } else { "taxonomy reject" }, async move {
+                let store = &hub.ctx.agent.taxonomy;
+                let proposal = if accept { store.accept(&id).await } else { store.reject(&id).await };
+                if accept {
+                    crate::ui::sidebar::request_refresh();
+                }
+                proposal.map(|p| format!("proposal {} is {}{}", p.id, p.status.as_str(), p.applied.map(|n| format!(", {n} changes")).unwrap_or_default())).map_err(|e| e.to_string())
+            });
+            Ok(format!("{} taxonomy proposal {shown}", if accept { "accepting" } else { "rejecting" }))
+        }
+        McpOp::EditJobs => {
+            let jobs = hub.ctx.agent.edits.list();
+            let lines: Vec<String> = jobs.iter().map(|j| format!("{} {} {} review {} {}", j.id, j.state.as_str(), j.file_name(), j.review.as_str(), j.saved_to.as_deref().unwrap_or(""))).collect();
+            Ok(format!("{} edit jobs\n{}", jobs.len(), lines.join("\n")))
+        }
+        McpOp::EditAccept => {
+            let id = id.filter(|i| !i.trim().is_empty()).ok_or_else(|| CommandError::invalid("this command needs an edit job id"))?;
+            let library = args.as_ref().and_then(|a| a.get("library")).and_then(Value::as_bool).unwrap_or(false);
+            let shown = id.clone();
+            spawn_note("edit accept", async move {
+                let edits = &hub.ctx.agent.edits;
+                let saved = if library { edits.add_to_library(&id, &hub.ctx.db).await } else { edits.save_new(&id) };
+                if library {
+                    crate::ui::sidebar::request_refresh();
+                }
+                saved.map(|(_, path)| format!("saved {}{}", path.display(), if library { " and added to the library" } else { "" })).map_err(|e| e.to_string())
+            });
+            Ok(format!("saving edit {shown}"))
+        }
+        McpOp::EditReject => {
+            let id = id.filter(|i| !i.trim().is_empty()).ok_or_else(|| CommandError::invalid("this command needs an edit job id"))?;
+            let job = hub.ctx.agent.edits.reject(&id).map_err(|e| CommandError::invalid(e.to_string()))?;
+            Ok(format!("discarded the edit of {}", job.file_name()))
+        }
         McpOp::Call => {
             let tool = tool.filter(|t| !t.trim().is_empty()).ok_or_else(|| CommandError::invalid("this command needs a tool name"))?;
             if hub.registry.get(&tool).is_none() {
@@ -146,7 +212,7 @@ mod tests {
     #[test]
     fn the_command_docs_describe_every_op() {
         let docs = include_str!("../../../docs/commands.md");
-        for op in ["status", "start", "stop", "rotate_token", "proposals", "accept", "reject", "call"] {
+        for op in ["status", "start", "stop", "rotate_token", "proposals", "accept", "reject", "call", "taxonomy_proposals", "taxonomy_accept", "taxonomy_reject", "edit_jobs", "edit_accept", "edit_reject"] {
             assert!(docs.contains(&format!("`{op}`")), "docs/commands.md does not describe {op}");
             let parsed: McpOp = serde_json::from_value(Value::String(op.to_string())).unwrap();
             assert_eq!(serde_json::to_value(parsed).unwrap(), Value::String(op.to_string()));
@@ -160,6 +226,9 @@ mod tests {
         assert_eq!(run(McpOp::Accept, None, None, None).unwrap_err().kind, crate::command::ErrorKind::Invalid);
         assert_eq!(run(McpOp::Reject, Some("  ".into()), None, None).unwrap_err().kind, crate::command::ErrorKind::Invalid);
         assert_eq!(run(McpOp::Call, None, None, None).unwrap_err().kind, crate::command::ErrorKind::Invalid);
+        for op in [McpOp::TaxonomyAccept, McpOp::TaxonomyReject, McpOp::EditAccept, McpOp::EditReject] {
+            assert_eq!(run(op, None, None, None).unwrap_err().kind, crate::command::ErrorKind::Invalid, "{op:?}");
+        }
         assert_eq!(run(McpOp::Call, None, Some("no_such_tool".into()), None).unwrap_err().kind, crate::command::ErrorKind::NotFound);
     }
 

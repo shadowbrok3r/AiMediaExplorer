@@ -13,11 +13,16 @@ use surrealdb::types::{RecordId, SurrealValue};
 use tokio_util::sync::CancellationToken;
 
 use super::activity::{ActivityLog, ServerStats};
+use super::agent::AgentCtx;
 use super::clock::FakeClock;
 use super::ctx::{CallInfo, ClipBackend, DbSource, ToolCtx, UiBridge, VisionBackend};
+use super::edits::EditJobs;
 use super::error::{ToolError, ToolOutput};
 use super::gpu::{GpuLimits, GpuQueue};
+use super::guide::FixedGuide;
+use super::notify::RecordingNotifier;
 use super::policy::PathPolicy;
+use super::taxonomy::TaxonomyStore;
 use super::proposals::ProposalStore;
 use super::registry::ToolRegistry;
 use super::snapshot::AppSnapshot;
@@ -188,6 +193,8 @@ pub struct Fixture {
     pub vision: Arc<FakeVision>,
     pub activity: Arc<ActivityLog>,
     pub stats: Arc<ServerStats>,
+    pub notifier: Arc<RecordingNotifier>,
+    pub guide: Arc<FixedGuide>,
     pub root: tempfile::TempDir,
 }
 
@@ -281,6 +288,14 @@ pub async fn fixture_with(limits: GpuLimits) -> Fixture {
     let ui = Arc::new(RecordingUi::default());
     let activity = Arc::new(ActivityLog::default());
     let stats = Arc::new(ServerStats::default());
+    let notifier = Arc::new(RecordingNotifier::default());
+    let guide = Arc::new(FixedGuide::new());
+    let agent = Arc::new(AgentCtx {
+        taxonomy: Arc::new(TaxonomyStore::new(DbSource::Handle(db.clone()), clock.clone())),
+        edits: EditJobs::new(Arc::new(crate::ui::image_edit::DebugBackend::default()), root.path().join("scratch"), clock.clone(), notifier.clone()),
+        notifier: notifier.clone(),
+        guide: guide.clone(),
+    });
     let ctx = Arc::new(ToolCtx {
         db: DbSource::Handle(db.clone()),
         clock: clock.clone(),
@@ -291,7 +306,8 @@ pub async fn fixture_with(limits: GpuLimits) -> Fixture {
         ui: ui.clone(),
         proposals: Arc::new(ProposalStore::new(DbSource::Handle(db.clone()), clock.clone())),
         snapshot: Arc::new(std::sync::RwLock::new(AppSnapshot::default())),
+        agent,
     });
     let registry = super::tools::build_registry(activity.clone(), stats.clone());
-    Fixture { ctx, registry, db, ui, clock, clip, vision, activity, stats, root }
+    Fixture { ctx, registry, db, ui, clock, clip, vision, activity, stats, notifier, guide, root }
 }

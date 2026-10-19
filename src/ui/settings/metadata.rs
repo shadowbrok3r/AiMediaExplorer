@@ -23,6 +23,8 @@ pub struct Metadata {
     pub pending: Option<(Op, Preview)>,
     pub running: bool,
     pub result: Option<Result<String, String>>,
+    /// Renames and edited pictures the agent filed.
+    pub agent: super::agent_proposals::Panel,
 }
 
 impl Metadata {
@@ -141,6 +143,9 @@ impl Metadata {
         }
         ui.add_space(8.0);
         self.answer_ui(ui, tx);
+        ui.add_space(12.0);
+        ui.separator();
+        self.agent.ui(ui, db_ready);
     }
 
     fn answer_ui(&mut self, ui: &mut Ui, tx: &Tx) {

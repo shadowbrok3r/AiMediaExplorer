@@ -81,6 +81,31 @@ Inspector > AI > Suggest (single file) asks for up to eight new tags, a category
 ## Devtools > ZeroClaw jobs
 
 `--devtools zeroclaw_jobs` or the Devtools menu. Status (availability, hint, queue depth, usage totals), the running job with Cancel, the queue, a submit box for a Manual job, the history (requests, bytes, estimated tokens, time, attempts, outcome) and a viewer of the system text, prompt, reply or parsed reply of every request, with the file paths masked as `<path>` unless unchecked. Driven without the mouse by the `zc` ops `jobs`, `job_submit`, `job_cancel`, `refine` and `suggest`, and by `--query ask:<sentence>` (`docs/commands.md`).
+## Library guide
+
+A markdown text with the owner's conventions: tag and category naming, how long captions are, how to treat sensitive pictures, how changes are made. A sensible default ships with the application (`src/ai/mcp/guide.rs`); Settings > Assistant > ZeroClaw > Library guide edits it (Save guide, Reset to default). It is stored in the application settings (`UiSettings::library_guide`: the text, the time of the last push and a hash of the pushed text) and is served by the tools server as the resource `library://guide` (`docs/mcp.md`), which the gateway snippet pins.
+
+Push to gateway stores the saved text in the gateway memory of the profile's agent (`POST /api/memory`, key `aimedia_library_guide`, category `core`, agent = the agent alias) and records the time; the card shows "Last pushed <time> (<age>)" and warns when the text changed since. Check gateway copy asks `GET /api/memory?agent=..&category=core` and says whether the gateway holds the same text. Nothing is ever pushed by itself: only the button or `{"cmd": "zc_memory", "op": "guide_push"}` does it. The memory routes are the ones the Mastertech client uses (research doc section 1.5); they are verified against the loopback mock gateway only, not against a real one.
+
+## Gateway sessions
+
+The assistant's backend menu has a Gateway sessions entry (also `{"cmd": "zc_memory", "op": "sessions_open"}`). It opens a window with the chats the gateway holds for the profile's agent: `GET /api/sessions`, only rows of that agent alias, without the empty chats a bare connect leaves, the twin stores of one chat as a single row, newest activity first, 12 rows a page. Each row shows the title (the name, else a short id), the message count and the last activity.
+
+| Button | Does |
+|---|---|
+| Open | Adds the chat to the assistant's list under the gateway's own session id and connects to it with `?session_id=`; the history is read lazily (the newest 50 messages, Load earlier messages for more) and the gateway keeps the authority over it. A chat that is already in the list is switched to. When the backend is not ZeroClaw a notice says so |
+| Rename | `PUT /api/sessions/{key}` with the new name for every store of the chat (a store that is already gone is skipped) |
+| Delete | After a confirmation, `DELETE /api/sessions/{id}` for every store of the chat; the local copy stays |
+
+A refused token shows "Pair again", an unreachable gateway shows why and Try again, a gateway without chats says so, and an unconfigured profile points at the connection settings.
+
+## Gateway configuration snippet
+
+Settings > Assistant > ZeroClaw > Gateway configuration shows the TOML for the gateway (`[[mcp.servers]]` with the tools server address of the profile, its bundle, the risk profile with the tools that ask first, the agent entry for the profile's alias, `pinned_resources`), read only, with a placeholder for the token that is never replaced by the real one. Copy snippet puts it on the clipboard. Test tools server calls `util_ping` through the server's own address with the real token (initialize, `notifications/initialized`, `tools/call`) and shows the answer or why it failed (not running, 401, 403, 429, no answer). The application never changes the gateway configuration (no `PATCH /api/config`); `{"cmd": "zc_memory", "op": "snippet"}` and `snippet_test` do the same from a script.
+
+## Usage
+
+Every finished turn adds its tokens and cost to a small file (`<config>/smart-media/zc_usage.json`) per session and per day, so the totals survive restarts: Devtools > ZeroClaw usage (`--devtools zeroclaw_usage`) shows the totals, the per-session and per-day tables and a Reset button that asks first. The ring in the assistant is unchanged and the totals per model of Devtools > ZeroClaw still count this run only. `{"cmd": "zc_memory", "op": "usage"}` prints the same numbers as JSON and `usage_reset` clears them.
 
 ## Devtools > ZeroClaw
 
@@ -90,4 +115,4 @@ Inspector > AI > Suggest (single file) asks for up to eight new tags, a category
 
 `zeroclaw-client` has a loopback mock gateway (feature `mock`). `cargo test zc::` and `cargo test ui::assistant::` run the runtime and the panel against it: plain turn, tool call with approval, error ending a turn, mid-turn drop and resume, refused token without retry, Stop, session switch, chips and pictures, titles, layouts from 280 to 760 px. `smart-media --zc-status --zc-url <mock-url> --zc-agent default --zc-token-file <file>` prints the probe result as JSON and exits.
 
-Not verified here: a real gateway (header authentication through `wss://claw.shadowbroker.app`, `turn_resume` after a real drop, vision on the `media` agent), tools reachability from the gateway to this desktop.
+Not verified here: a real gateway (header authentication through `wss://claw.shadowbroker.app`, `turn_resume` after a real drop, vision on the `media` agent, the memory routes the guide push uses, the twin-store delete of gateway chats), tools reachability from the gateway to this desktop.

@@ -122,6 +122,24 @@ async fn rename_and_delete() {
 }
 
 #[tokio::test]
+async fn rename_and_delete_address_one_store_by_its_key() {
+    let mock = MockGateway::start().await;
+    mock.add_session_row(json!({"session_id": "d1", "session_key": "gw_d1", "agent_alias": "media", "message_count": 3, "last_activity": "2026-09-11T10:00:00+00:00"}));
+    mock.add_session_row(json!({"session_id": "d1", "session_key": "d1", "agent_alias": "media", "message_count": 9, "last_activity": "2026-09-10T10:00:00+00:00"}));
+    let c = client(&mock);
+    c.rename_session("gw_d1", "Gateway store").await.unwrap();
+    let names: Vec<Option<String>> = mock.session_rows().iter().map(|s| s["name"].as_str().map(str::to_string)).collect();
+    assert_eq!(names, [Some("Gateway store".to_string()), None], "only the store the key names is renamed");
+    assert!(c.delete_session("gw_d1").await.unwrap());
+    let left = mock.session_rows();
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0]["session_key"], "d1", "the twin store stays");
+    assert!(!c.delete_session("gw_d1").await.unwrap());
+    assert!(c.delete_session("d1").await.unwrap());
+    assert!(mock.session_rows().is_empty());
+}
+
+#[tokio::test]
 async fn session_ids_are_percent_encoded_in_paths() {
     let mock = MockGateway::start().await;
     let c = client(&mock);
