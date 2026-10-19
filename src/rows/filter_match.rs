@@ -418,6 +418,7 @@ impl<'a> PreparedFilter<'a> {
             || n.in_text(&row.path)
             || (!row.tags.is_empty() && (row.tags.iter().any(|t| n.in_text(t)) || (n.text.contains(',') && n.in_text(&row.tags.join(",")))))
             || row.category.as_deref().is_some_and(|c| n.in_text(c))
+            || row.description.as_deref().is_some_and(|d| n.in_text(d))
     }
 
     fn detail(&self, c: Condition, cx: &RowCtx<'_>, passed: bool) -> String {
@@ -439,7 +440,7 @@ impl<'a> PreparedFilter<'a> {
             },
             Condition::Modified => format!("modified {} (range {})", date_text(row.modified.as_ref().map(|d| d.timestamp_millis())), range_text(&spec.modified)),
             Condition::Created => format!("added {} (range {})", date_text(row.db_created.as_ref().map(|d| d.timestamp_millis())), range_text(&spec.created)),
-            Condition::Query => format!("search '{}' {}", spec.query, if passed { "found" } else { "not found in name, type, path, tags or category" }),
+            Condition::Query => format!("search '{}' {}", spec.query, if passed { "found" } else { "not found in name, type, path, tags, category or description" }),
             Condition::Name => format!("name '{}' {}", row.filename, if passed { "contains the text" } else { "lacks the text" }),
             Condition::Description => format!("has description: {}", yes_no(row.description.as_deref().is_some_and(|s| !s.trim().is_empty()))),
             Condition::Category => format!("category {} (wanted: {})", row.category.as_deref().unwrap_or("none"), spec.categories.join(", ")),

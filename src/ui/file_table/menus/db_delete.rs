@@ -2,7 +2,7 @@
 
 use surrealdb::types::{RecordId, Value};
 
-/// Deletes thumbnails by record id and embeddings by path or thumbnail reference; returns (embeddings, thumbnails) removed.
+/// Deletes thumbnails by record id or path and embeddings by path or thumbnail reference; returns (embeddings, thumbnails) removed.
 pub async fn delete_rows(ids: Vec<RecordId>, paths: Vec<String>) -> anyhow::Result<(usize, usize)> {
     if ids.is_empty() && paths.is_empty() {
         return Ok((0, 0));
@@ -12,7 +12,7 @@ pub async fn delete_rows(ids: Vec<RecordId>, paths: Vec<String>) -> anyhow::Resu
         .query(
             r#"
             DELETE clip_embeddings WHERE path IN $paths OR thumb_ref IN $ids RETURN BEFORE;
-            DELETE thumbnails WHERE id IN $ids RETURN BEFORE;
+            DELETE thumbnails WHERE id IN $ids OR path IN $paths RETURN BEFORE;
             "#,
         )
         .bind(("paths", paths))
@@ -29,12 +29,17 @@ pub async fn delete_rows(ids: Vec<RecordId>, paths: Vec<String>) -> anyhow::Resu
     Ok((embeddings.len(), thumbnails.len()))
 }
 
+/// Held by tests that write to the process-wide database, which conflict when they overlap.
+#[cfg(test)]
+pub(crate) static GLOBAL_DB_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[tokio::test]
     async fn deletes_only_the_given_rows_and_their_embeddings() {
+        let _serial = GLOBAL_DB_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         crate::settings::testing::mem_db();
         let db = &*crate::database::DB;
         db.query(

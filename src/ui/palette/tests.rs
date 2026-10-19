@@ -77,11 +77,7 @@ fn every_file_action_runs_on_the_selection_and_needs_one() {
         assert_eq!(json["cmd"], "run");
         assert_eq!(json["on"], "selection");
         assert_eq!(find(&without, &id).enabled.clone().unwrap_err(), "No files selected");
-        if action == ActionId::Describe {
-            assert_eq!(find(&with, &id).enabled.clone().unwrap_err(), "Describing chosen files is not wired to the command bus yet");
-        } else {
-            assert!(find(&with, &id).enabled.is_ok(), "{id}");
-        }
+        assert!(find(&with, &id).enabled.is_ok(), "{id}");
     }
     assert!(find(&without, "clear_selection").enabled.is_err());
     assert!(find(&with, "clear_selection").enabled.is_ok());

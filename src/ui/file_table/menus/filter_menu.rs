@@ -1,5 +1,4 @@
 use eframe::egui::*;
-use egui::containers::menu::{MenuButton, MenuConfig};
 
 use crate::icons::{self, svg};
 use crate::ui::file_table::FileExplorer;
@@ -117,15 +116,6 @@ fn entry_list(ui: &mut Ui, id: Id, label: &str, hint: &str, split: bool, list: &
 }
 
 impl FileExplorer {
-    /// Navbar button that opens the filter editor.
-    pub fn filter_menu(&mut self, ui: &mut Ui) {
-        let button = icons::icon_button_widget(ui, svg::FUNNEL, icons::IconSize::Md);
-        let (response, _) = MenuButton::from_button(button)
-            .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside))
-            .ui(ui, |ui| self.filter_editor(ui, "navbar"));
-        response.on_hover_text("Filters");
-    }
-
     /// Controls for every condition of the tab's filter; changes take effect at once and rows are never removed.
     pub fn filter_editor(&mut self, ui: &mut Ui, salt: &str) {
         ui.set_width(EDITOR_WIDTH);
@@ -149,7 +139,7 @@ impl FileExplorer {
             heading(ui, "Text");
             ui.horizontal(|ui| {
                 ui.label("Search");
-                ui.add(TextEdit::singleline(&mut spec.query).id(id.with("query")).hint_text("name, type, path, tags, category").desired_width(ui.available_width()));
+                ui.add(TextEdit::singleline(&mut spec.query).id(id.with("query")).hint_text("name, type, path, tags, category, description").desired_width(ui.available_width()));
             });
             ui.horizontal(|ui| {
                 ui.label("Name");

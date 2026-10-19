@@ -1,6 +1,5 @@
 use std::time::{Duration, Instant};
 use crate::ui::file_table::rows::Upsert;
-use crate::utilities::filtering::FiltersExt;
 
 const SCAN_MSG_BUDGET: usize = 512;
 const SCAN_TIME_BUDGET: Duration = Duration::from_millis(6);
@@ -37,7 +36,6 @@ impl crate::ui::file_table::FileExplorer {
             }
             match env.msg {
                 crate::utilities::scan::ScanMsg::FoundDir(dir) => {
-                    if !self.viewer.types_show_dirs { ctx.request_repaint(); continue; }
                     if let Some(row) = crate::ui::file_table::FileExplorer::directory_to_thumbnail(&dir.path) {
                         let dp = row.path.clone();
                         if !self.last_scan_paths.contains(&dp) {
@@ -60,7 +58,7 @@ impl crate::ui::file_table::FileExplorer {
                 }
                 crate::utilities::scan::ScanMsg::FoundDirBatch(dirs) => {
                     if self.perf_scan_started.is_none() { self.perf_scan_started = Some(std::time::Instant::now()); self.perf_last_batch_at = self.perf_scan_started; }
-                    if self.viewer.types_show_dirs {
+                    {
                         for d in dirs.iter() {
                             if let Some(row) = crate::ui::file_table::FileExplorer::directory_to_thumbnail(&d.path) {
                                 if !self.last_scan_paths.contains(&row.path) {
@@ -83,31 +81,8 @@ impl crate::ui::file_table::FileExplorer {
                     }
                 }
                 crate::utilities::scan::ScanMsg::Found(item) => {
-                    // Found single file (incremental processing)
-                    // (extension filtering handled during scan)
-                    // Build UI filter parameters (no extra metadata reads on UI thread)
-                    let mut filters = crate::Filters::default();
-                    filters.include_images = self.viewer.types_show_images;
-                    filters.include_videos = self.viewer.types_show_videos;
-                    filters.include_archives = false; // archives not shown in file table view
-                    filters.min_size_bytes = self.viewer.ui_settings.db_min_size_bytes;
-                    filters.max_size_bytes = self.viewer.ui_settings.db_max_size_bytes;
-                    filters.skip_icons = self.viewer.ui_settings.filter_skip_icons;
-                    filters.modified_after = self.viewer.ui_settings.filter_modified_after.clone();
-                    filters.modified_before = self.viewer.ui_settings.filter_modified_before.clone();
-
-                    let size_val = item.size.unwrap_or(0);
-                    if let Some(row0) = if filters.allow_file_attrs(
-                        &item.path, 
-                        size_val, 
-                        item.modified, 
-                        item.created, 
-                        false
-                    ) { 
-                        crate::file_to_thumbnail(&item) 
-                    } else { 
-                        None 
-                    } {
+                    // Every found file is kept; the tab's filter decides what is listed
+                    if let Some(row0) = crate::file_to_thumbnail(&item) {
                         // Merge with DB if exists
                         let mut row = if let Some(db_row) = self.db_lookup.get(&row0.path).cloned() { db_row } else { row0 };
                         crate::ui::file_table::thumbs::adopt_legacy_one(&self.viewer.thumbs, &mut row);
@@ -243,49 +218,11 @@ impl crate::ui::file_table::FileExplorer {
                     let ui_start = std::time::Instant::now();
                     let mut to_index: Vec<crate::database::Thumbnail> = Vec::new();
                     let mut need_repaint = false;
-                    let excluded = if self.excluded_terms.is_empty() {
-                        None
-                    } else {
-                        Some(
-                            self.excluded_terms
-                                .iter()
-                                .map(|s| s.to_ascii_lowercase())
-                                .collect::<Vec<_>>(),
-                        )
-                    };
                     let mut cached_paths: Vec<String> = Vec::new();
-                    // Build UI filter parameters once for this batch (no extra metadata reads)
-                    let mut filters = crate::Filters::default();
-                    filters.include_images = self.viewer.types_show_images;
-                    filters.include_videos = self.viewer.types_show_videos;
-                    filters.include_archives = false; // archives not shown in file table view
-                    filters.min_size_bytes = self.viewer.ui_settings.db_min_size_bytes;
-                    filters.max_size_bytes = self.viewer.ui_settings.db_max_size_bytes;
-                    filters.skip_icons = self.viewer.ui_settings.filter_skip_icons;
-                    filters.modified_after = self.viewer.ui_settings.filter_modified_after.clone();
-                    filters.modified_before = self.viewer.ui_settings.filter_modified_before.clone();
 
                     for item in batch.into_iter() {
-                        // (extension filtering handled during scan)
-                        if let Some(ref ex) = excluded {
-                            let lp = item.path.to_string_lossy().to_ascii_lowercase();
-                            if ex.iter().any(|t| lp.contains(t)) {
-                                continue;
-                            }
-                        }
-                        // Incremental filter check
-                        let size_val = item.size.unwrap_or(0);
-                        if let Some(row0) = if filters.allow_file_attrs(
-                            &item.path, 
-                            size_val, 
-                            item.modified, 
-                            item.created, 
-                            false
-                        ) { 
-                            crate::file_to_thumbnail(&item) 
-                        } else { 
-                            None 
-                        } {
+                        // Every found file is kept; the tab's filter decides what is listed
+                        if let Some(row0) = crate::file_to_thumbnail(&item) {
                             // Merge with DB if exists
                             let mut row = if let Some(db_row) = self.db_lookup.get(&row0.path).cloned() { db_row } else { row0 };
                             crate::ui::file_table::thumbs::adopt_legacy_one(&self.viewer.thumbs, &mut row);
@@ -435,7 +372,7 @@ impl crate::ui::file_table::FileExplorer {
                                 .unwrap_or_default();
                             let is_img = crate::is_image(ext_lc.as_str());
                             let is_vid = crate::is_video(ext_lc.as_str());
-                            if (is_img && self.viewer.types_show_images) || (is_vid && self.viewer.types_show_videos) {
+                            if is_img || is_vid {
                                 use chrono::Utc;
                                 let filename = std::path::Path::new(&key)
                                     .file_name()
@@ -529,6 +466,9 @@ impl crate::ui::file_table::FileExplorer {
                         });
                     }
                     self.flush_pending_rows(true);
+                    if super::super::dialogs::scan::take_library_save(self.last_scan_root.as_deref().unwrap_or_default()) {
+                        self.save_scanned_to_library();
+                    }
                     self.note_listing_done();
                     // Do not bulk-refresh CLIP presence here; per-thumbnail checks will update presence incrementally.
                 }

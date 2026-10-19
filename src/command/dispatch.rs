@@ -4,6 +4,7 @@ use std::fmt;
 
 use super::bus::CommandBus;
 use super::log::{CommandLog, Outcome};
+use super::browser::{DialogKind, QueryMode};
 use super::model::{ActionId, AppCommand, DevtoolsWindow, NavOp, Section, Selector, Target, Tool, ToastLevel};
 use super::scope::Scope;
 use crate::ui::file_table::table::view_mode::{TileFit, ViewMode};
@@ -81,6 +82,10 @@ pub trait CommandSink {
     fn toast(&mut self, level: ToastLevel, text: String) -> CommandResult;
     fn task_update(&mut self, id: TaskId, event: TaskEvent) -> CommandResult;
     fn clear_selection(&mut self) -> CommandResult;
+    /// Sets the query bar of the focused tab and, with `run`, presses Enter in it.
+    fn query(&mut self, mode: QueryMode, text: String, run: bool) -> CommandResult;
+    /// Opens the scan or process dialog of the focused tab.
+    fn open_dialog(&mut self, dialog: DialogKind, folder: Option<String>) -> CommandResult;
     fn focus_path(&mut self, path: &str) -> CommandResult;
     fn open_devtools(&mut self, window: DevtoolsWindow) -> CommandResult;
     fn show_task_center(&mut self) -> CommandResult;
@@ -120,6 +125,8 @@ pub fn dispatch(sink: &mut dyn CommandSink, cmd: AppCommand) -> CommandResult {
         AppCommand::Toast { kind, text } => sink.toast(kind, text),
         AppCommand::TaskUpdate { id, event } => sink.task_update(id, event),
         AppCommand::ClearSelection => sink.clear_selection(),
+        AppCommand::Query { mode, text, run } => sink.query(mode, text, run),
+        AppCommand::Dialog { dialog, folder } => sink.open_dialog(dialog, folder),
         AppCommand::FocusPath { path } => sink.focus_path(&path),
         AppCommand::OpenDevtools { window } => sink.open_devtools(window),
         AppCommand::ShowTaskCenter => sink.show_task_center(),
@@ -222,6 +229,12 @@ pub(crate) mod fake {
         fn clear_selection(&mut self) -> CommandResult {
             self.done("clear_selection".to_string())
         }
+        fn query(&mut self, mode: QueryMode, text: String, run: bool) -> CommandResult {
+            self.done(format!("query {mode:?} {text} {run}"))
+        }
+        fn open_dialog(&mut self, dialog: DialogKind, folder: Option<String>) -> CommandResult {
+            self.done(format!("dialog {dialog:?} {folder:?}"))
+        }
         fn focus_path(&mut self, path: &str) -> CommandResult {
             self.done(format!("focus {path}"))
         }
@@ -316,6 +329,15 @@ mod tests {
                 "palette Some(\"tag\")",
             ]
         );
+    }
+
+    #[test]
+    fn query_and_dialog_commands_reach_their_sink_methods() {
+        let mut sink = FakeSink::default();
+        dispatch(&mut sink, AppCommand::Query { mode: QueryMode::Semantic, text: "red car".into(), run: true }).unwrap();
+        dispatch(&mut sink, AppCommand::Dialog { dialog: DialogKind::Scan, folder: Some("/p".into()) }).unwrap();
+        dispatch(&mut sink, AppCommand::Dialog { dialog: DialogKind::Process, folder: None }).unwrap();
+        assert_eq!(sink.calls, vec!["query Semantic red car true", "dialog Scan Some(\"/p\")", "dialog Process None"]);
     }
 
     #[test]

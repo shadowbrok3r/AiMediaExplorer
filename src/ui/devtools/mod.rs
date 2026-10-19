@@ -1,6 +1,7 @@
 //! Debug windows for subsystems, opened from the View menu.
 
 pub mod actions;
+pub mod browser_actions;
 pub mod collections;
 pub mod command_log;
 pub mod db_maintenance;
@@ -10,6 +11,7 @@ pub mod inspector;
 pub mod legacy_import;
 pub mod mcp;
 pub mod perf;
+pub mod query;
 pub mod row_store;
 pub mod scope;
 pub mod scan_perf;
@@ -50,6 +52,14 @@ pub fn toggle_row_store(ctx: &Context) {
 
 pub fn toggle_collections(ctx: &Context) {
     collections::set_open(ctx, !collections::is_open(ctx));
+}
+
+pub fn toggle_query(ctx: &Context) {
+    query::toggle(ctx);
+}
+
+pub fn toggle_browser_actions(ctx: &Context) {
+    browser_actions::toggle(ctx);
 }
 
 pub fn toggle_thumb_storage(ctx: &Context) {
@@ -114,6 +124,8 @@ pub fn open(ctx: &Context, window: DevtoolsWindow) {
         DevtoolsWindow::Perf => perf::set_open(ctx, true),
         DevtoolsWindow::RowStore => row_store::set_open(ctx, true),
         DevtoolsWindow::Collections => collections::set_open(ctx, true),
+        DevtoolsWindow::Query => query::set_open(ctx, true),
+        DevtoolsWindow::BrowserActions => browser_actions::set_open(ctx, true),
         DevtoolsWindow::Video => video::set_open(ctx, true),
         DevtoolsWindow::Scope => scope::set_open(ctx, true),
         DevtoolsWindow::Filters => filters::set_open(ctx, true),
@@ -138,6 +150,8 @@ pub fn show(ctx: &Context) {
     command_log::show(ctx);
     perf::show(ctx);
     collections::show(ctx);
+    query::show(ctx);
+    browser_actions::show(ctx);
     video::show(ctx);
     scope::show(ctx);
     filters::show(ctx);
@@ -164,6 +178,8 @@ mod tests {
             DevtoolsWindow::Perf => perf::is_open(ctx),
             DevtoolsWindow::RowStore => row_store::is_open(ctx),
             DevtoolsWindow::Collections => collections::is_open(ctx),
+            DevtoolsWindow::Query => query::is_open(ctx),
+            DevtoolsWindow::BrowserActions => browser_actions::is_open(ctx),
             DevtoolsWindow::Video => video::is_open(ctx),
             DevtoolsWindow::Scope => scope::is_open(ctx),
             DevtoolsWindow::Filters => filters::is_open(ctx),
@@ -191,6 +207,8 @@ mod tests {
             DevtoolsWindow::Perf,
             DevtoolsWindow::RowStore,
             DevtoolsWindow::Collections,
+            DevtoolsWindow::Query,
+            DevtoolsWindow::BrowserActions,
             DevtoolsWindow::Video,
             DevtoolsWindow::Scope,
             DevtoolsWindow::Filters,

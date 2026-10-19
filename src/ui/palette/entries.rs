@@ -32,7 +32,7 @@ pub struct Sources<'a> {
 }
 
 /// Windows of the Devtools menu the palette lists.
-pub const DEVTOOLS: [DevtoolsWindow; 19] = [
+pub const DEVTOOLS: [DevtoolsWindow; 21] = [
     DevtoolsWindow::ThemePanel,
     DevtoolsWindow::SettingsStore,
     DevtoolsWindow::DbMaintenance,
@@ -44,6 +44,8 @@ pub const DEVTOOLS: [DevtoolsWindow; 19] = [
     DevtoolsWindow::Perf,
     DevtoolsWindow::RowStore,
     DevtoolsWindow::Collections,
+    DevtoolsWindow::Query,
+    DevtoolsWindow::BrowserActions,
     DevtoolsWindow::Video,
     DevtoolsWindow::Scope,
     DevtoolsWindow::Filters,
@@ -141,6 +143,7 @@ fn action_icon(action: ActionId) -> Icon {
         ActionId::Describe => svg::AME_AI_DESCRIBE,
         ActionId::AttachToAssistant => svg::PAPERCLIP,
         ActionId::Refine => svg::AME_REFINE,
+        other => crate::command::actions::spec_of(other).icon,
     }
 }
 
@@ -153,6 +156,19 @@ fn action_slug(action: ActionId) -> &'static str {
         ActionId::Describe => "describe",
         ActionId::AttachToAssistant => "attach_to_assistant",
         ActionId::Refine => "refine",
+        ActionId::AddToLibrary => "add_to_library",
+        ActionId::RemoveFromLibrary => "remove_from_library",
+        ActionId::RegenerateDescription => "regenerate_description",
+        ActionId::RegenerateClip => "regenerate_clip",
+        ActionId::FindSimilar => "find_similar",
+        ActionId::Tag => "tag",
+        ActionId::Category => "category",
+        ActionId::AddToCollection => "add_to_collection",
+        ActionId::RemoveFromCollection => "remove_from_collection",
+        ActionId::OpenInNewTab => "open_in_new_tab",
+        ActionId::CopyTo => "copy_to",
+        ActionId::MoveTo => "move_to",
+        ActionId::ExcludeFolder => "exclude_folder",
     }
 }
 
@@ -176,8 +192,7 @@ pub fn registry(cx: &ActionContext) -> Vec<Entry> {
     for action in ActionId::ALL {
         let title = format!("{}: selected files", action.label());
         let run = AppCommand::Run { action, on: crate::command::Selector::Selection };
-        let e = command(format!("run.{}", action_slug(action)), title, action_icon(action), run).needs(cx.selected > 0, NO_SELECTION);
-        all.push(if action == ActionId::Describe { e.needs(false, "Describing chosen files is not wired to the command bus yet") } else { e });
+        all.push(command(format!("run.{}", action_slug(action)), title, action_icon(action), run).needs(cx.selected > 0, NO_SELECTION));
     }
     all.push(command("clear_selection", "Clear selection", svg::X, AppCommand::ClearSelection).needs(cx.selected > 0, NO_SELECTION));
 
@@ -205,6 +220,7 @@ pub fn registry(cx: &ActionContext) -> Vec<Entry> {
     all.push(shell(ShellAction::ToggleRightRail, svg::COLUMNS).detail(on_off(cx.right_rail_open)).keywords("inspector assistant"));
     all.push(shell(ShellAction::OpenFolder, svg::FOLDER_OPEN).keywords("browse directory"));
     all.push(shell(ShellAction::ScanFolder, svg::AME_SCAN).keywords("recursive index"));
+    all.push(command("dialog.process", "Process files...", svg::AME_MODEL, AppCommand::Dialog { dialog: crate::command::DialogKind::Process, folder: None }).keywords("describe clip embeddings bulk batch"));
     all.push(shell(ShellAction::ExportBackup, svg::AME_DB_EXPORT).keywords("database surql save"));
     all.push(shell(ShellAction::ImportBackup, svg::AME_DB_IMPORT).keywords("database surql restore load"));
     all.push(shell(ShellAction::ChooseDbFolder, svg::FOLDER_OPEN).keywords("database location"));

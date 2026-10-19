@@ -7,7 +7,7 @@ use egui::scroll_area::ScrollBarVisibility;
 use egui::{Align, CursorIcon, Id, Label, Layout, Rect, RichText, Sense, Stroke, Ui};
 use egui_extras::{Column, TableBuilder};
 
-use super::actions::{MenuAction, MenuTargets, menu_entries};
+use super::actions::{MenuAction, MenuTargets};
 use super::cells::{draw_cell, is_dir};
 use super::columns::{Col, DetailsPrefs};
 use super::keys::{self, KeyAction};
@@ -313,15 +313,7 @@ fn menu_targets(input: &DetailsInputs<'_>, key: &PathKey, row: &Thumbnail) -> Me
 
 pub(super) fn row_menu(ui: &mut Ui, input: &DetailsInputs<'_>, key: &PathKey, row: &Thumbnail, events: &mut Vec<DetailsEvent>) {
     let targets = menu_targets(input, key, row);
-    ui.label(RichText::new(if targets.rows == 1 { "1 item".to_string() } else { format!("{} items", targets.rows) }).weak());
-    ui.separator();
-    for (action, enabled) in menu_entries(targets) {
-        let button = icons::button_widget(ui, action.icon(), action.label());
-        if ui.add_enabled(enabled, button).clicked() {
-            events.push(DetailsEvent::Menu(action));
-            ui.close();
-        }
-    }
+    crate::ui::file_table::action_bar::context_menu(ui, targets, |action| events.push(DetailsEvent::Menu(action)));
 }
 
 /// Outlines the focused row across its cells.

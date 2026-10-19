@@ -172,6 +172,14 @@ impl crate::app::SmartMediaApp {
                 crate::ui::devtools::toggle_collections(ui.ctx());
                 ui.close();
             }
+            if icons::button(ui, svg::MAGNIFYING_GLASS, "Query").clicked() {
+                crate::ui::devtools::toggle_query(ui.ctx());
+                ui.close();
+            }
+            if icons::button(ui, svg::LIST_CHECKS, "Browser actions").clicked() {
+                crate::ui::devtools::toggle_browser_actions(ui.ctx());
+                ui.close();
+            }
             if icons::button(ui, svg::VIDEO_CAMERA, "Video").clicked() {
                 crate::ui::devtools::toggle_video(ui.ctx());
                 ui.close();
@@ -193,6 +201,10 @@ impl crate::app::SmartMediaApp {
 
     fn tools_menu_items(&mut self, ui: &mut Ui) {
         self.shell_item(ui, ShellAction::ScanFolder, svg::AME_SCAN, None);
+        if item(ui, svg::AME_MODEL, "Process files...", None).on_hover_text("Describe or embed the selection, this view or a folder").clicked() {
+            command::send(AppCommand::Dialog { dialog: command::DialogKind::Process, folder: None });
+            ui.close();
+        }
         icons::menu_button(ui, svg::AME_MODEL, "AI processing", |ui| {
             self.shell_item(ui, ShellAction::EnableAiSearch, svg::AME_SEMANTIC_SEARCH, None);
             self.shell_item(ui, ShellAction::EnableAutoIndexing, svg::AME_AI_DESCRIBE, None);

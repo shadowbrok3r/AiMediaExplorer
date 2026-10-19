@@ -143,10 +143,10 @@ fn logs_width(ui: &Ui) -> f32 {
     text_button_width(ui, "Logs") + IconSize::Md.px(ui) + ui.spacing().item_spacing.x
 }
 
-/// Menus of the explorer that stay reachable from the bar until the selection actions move.
-fn explorer_menus(ui: &mut Ui, ex: &mut FileExplorer, owner: &str) {
+/// Menus of the explorer that stay reachable from the bar: collections and the scan and process dialogs.
+fn explorer_menus(ui: &mut Ui, ex: &mut FileExplorer) {
     ex.logical_group_menu(ui);
-    ex.selection_menu(ui, owner);
+    ex.dialogs_menu(ui);
 }
 
 fn apply_center_action(ctx: &Context, action: CenterAction) {
@@ -187,7 +187,7 @@ pub fn show_with(ui: &mut Ui, ex: &mut FileExplorer, owner: &str, view: &TaskVie
         let inner = gap / 2.0;
         let step = inner * 2.0 + 1.0;
         let rect = ui.available_rect_before_wrap();
-        let select_w = text_button_width(ui, &ex.selection_label());
+        let select_w = text_button_width(ui, FileExplorer::DIALOGS_LABEL);
         let groups_w = text_button_width(ui, &ex.logical_group_label());
         let right_w = (select_w + gap + groups_w + gap + logs_width(ui)).min(rect.width());
         let right_rect = Rect::from_min_max(pos2(rect.right() - right_w, rect.top()), rect.right_bottom());
@@ -202,7 +202,7 @@ pub fn show_with(ui: &mut Ui, ex: &mut FileExplorer, owner: &str, view: &TaskVie
             if icons::button(ui, svg::TERMINAL_WINDOW, "Logs").on_hover_text("Open the log tab").clicked() {
                 crate::command::send(AppCommand::OpenTool { tool: Tool::Logs, path: None, target: crate::command::Target::NewTab });
             }
-            explorer_menus(ui, ex, owner);
+            explorer_menus(ui, ex);
         });
 
         let left = ui.scope_builder(UiBuilder::new().max_rect(left_rect).layout(Layout::left_to_right(Align::Center)), |ui| {

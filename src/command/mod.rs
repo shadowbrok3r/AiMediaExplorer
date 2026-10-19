@@ -1,5 +1,7 @@
 //! Command bus: requests to the application as serializable commands, run once per frame (see `docs/commands.md`).
 
+pub mod actions;
+pub mod browser;
 pub mod bus;
 pub mod cli;
 pub mod context;
@@ -15,6 +17,7 @@ mod sink_tests;
 pub use bus::{CommandBus, CommandSender, global, install_repaint, request_repaint, send, sender};
 pub use dispatch::{CommandError, CommandResult, CommandSink, ErrorKind, FRAME_BUDGET, Pumped, dispatch, pump};
 pub use log::{CommandLog, LOG_CAPACITY, LogEntry, Outcome, with_log};
+pub use browser::{DialogKind, QueryMode};
 pub use model::*;
 pub use scope::{Scope, ScopeParseError, SmartView};
 

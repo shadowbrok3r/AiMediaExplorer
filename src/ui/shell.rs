@@ -240,6 +240,7 @@ impl SmartMediaApp {
 
     /// Keyboard shortcuts, the palette and the dialogs of the shell; call once per frame after the panels.
     pub fn shell_overlays(&mut self, ctx: &Context) {
+        self.browser_keys(ctx);
         let (palette_key, sidebar_key) = ctx.input_mut(|i| (i.consume_key(Modifiers::COMMAND, Key::K), i.consume_key(Modifiers::COMMAND, Key::B)));
         if palette_key {
             self.shell.palette.toggle();
@@ -300,7 +301,7 @@ impl SmartMediaApp {
                 self.shell.layout.layout.right_rail_open = open;
             }
             ShellAction::OpenFolder => dialogs::pick_folder(ctx, "Open folder", |dir| command::send(open_folder_command(&dir, false))),
-            ShellAction::ScanFolder => dialogs::pick_folder(ctx, "Scan folder", |dir| command::send(open_folder_command(&dir, true))),
+            ShellAction::ScanFolder => command::send(AppCommand::Dialog { dialog: command::DialogKind::Scan, folder: None }),
             ShellAction::ExportBackup => export_backup(ctx),
             ShellAction::ImportBackup => import_backup(ctx),
             ShellAction::ChooseDbFolder => choose_db_folder(ctx),

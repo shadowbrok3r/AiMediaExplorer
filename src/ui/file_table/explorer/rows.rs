@@ -164,7 +164,7 @@ impl FileExplorer {
         }
     }
 
-    fn open_external(&mut self, path: &str) {
+    pub(crate) fn open_external(&mut self, path: &str) {
         #[cfg(test)]
         self.row_sync.opened.push(path.to_string());
         #[cfg(not(test))]
@@ -236,12 +236,7 @@ impl FileExplorer {
                     }
                 }
                 DetailsEvent::Tab(action) => self.viewer.requested_tabs.push(action),
-                DetailsEvent::Menu(action) => {
-                    self.sync_view();
-                    let view = ViewRef::new(&self.table, &self.view);
-                    let rows = self.selection.rows(&view);
-                    self.viewer.run_action(action, &rows);
-                }
+                DetailsEvent::Menu(action) => self.run_menu_action(ctx, action),
                 DetailsEvent::Key(key) => self.apply_key(ctx, key),
             }
         }

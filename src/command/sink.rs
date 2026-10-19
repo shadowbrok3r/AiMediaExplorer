@@ -2,6 +2,7 @@
 
 use std::time::Instant;
 
+use super::browser::{DialogKind, QueryMode};
 use super::dispatch::{CommandError, CommandResult, CommandSink};
 use super::model::{ActionId, DevtoolsWindow, NavOp, RowsTab, Section, Selector, Target, ToastLevel, Tool};
 use super::scope::Scope;
@@ -148,7 +149,20 @@ impl CommandSink for SmartMediaApp {
                 });
                 Ok(format!("generating CLIP for {count} files"))
             }
-            ActionId::Describe => Err(CommandError::unsupported("describing chosen files is not wired to the command bus yet")),
+            ActionId::Describe
+            | ActionId::RegenerateDescription
+            | ActionId::RegenerateClip
+            | ActionId::AddToLibrary
+            | ActionId::RemoveFromLibrary
+            | ActionId::FindSimilar
+            | ActionId::Tag
+            | ActionId::Category
+            | ActionId::AddToCollection
+            | ActionId::RemoveFromCollection
+            | ActionId::OpenInNewTab
+            | ActionId::CopyTo
+            | ActionId::MoveTo
+            | ActionId::ExcludeFolder => self.context.active_explorer().run_action_paths(&self.egui_ctx, action, paths),
             ActionId::AttachToAssistant => self.attach_to_assistant(paths),
             ActionId::Refine => self.refine(paths),
         }
@@ -192,6 +206,17 @@ impl CommandSink for SmartMediaApp {
         let count = ex.selection_count();
         ex.clear_selection();
         Ok(format!("cleared {count} selected"))
+    }
+
+    fn query(&mut self, mode: QueryMode, text: String, run: bool) -> CommandResult {
+        self.focus_active_browser();
+        self.context.active_explorer().apply_query_command(mode, &text, run)
+    }
+
+    fn open_dialog(&mut self, dialog: DialogKind, folder: Option<String>) -> CommandResult {
+        self.focus_active_browser();
+        let ctx = self.egui_ctx.clone();
+        self.context.active_explorer().open_dialog(&ctx, dialog, folder)
     }
 
     fn focus_path(&mut self, path: &str) -> CommandResult {

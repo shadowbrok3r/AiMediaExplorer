@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use super::browser::{DialogKind, QueryMode};
 use super::scope::Scope;
 use crate::database::Thumbnail;
 use crate::tasks::{TaskEvent, TaskId};
@@ -43,6 +44,19 @@ pub enum ActionId {
     Open,
     Reveal,
     CopyPath,
+    AddToLibrary,
+    RemoveFromLibrary,
+    RegenerateDescription,
+    RegenerateClip,
+    FindSimilar,
+    Tag,
+    Category,
+    AddToCollection,
+    RemoveFromCollection,
+    OpenInNewTab,
+    CopyTo,
+    MoveTo,
+    ExcludeFolder,
     GenerateClip,
     Describe,
     AttachToAssistant,
@@ -50,10 +64,23 @@ pub enum ActionId {
 }
 
 impl ActionId {
-    pub const ALL: [ActionId; 7] = [
+    pub const ALL: [ActionId; 20] = [
         Self::Open,
         Self::Reveal,
         Self::CopyPath,
+        Self::AddToLibrary,
+        Self::RemoveFromLibrary,
+        Self::RegenerateDescription,
+        Self::RegenerateClip,
+        Self::FindSimilar,
+        Self::Tag,
+        Self::Category,
+        Self::AddToCollection,
+        Self::RemoveFromCollection,
+        Self::OpenInNewTab,
+        Self::CopyTo,
+        Self::MoveTo,
+        Self::ExcludeFolder,
         Self::GenerateClip,
         Self::Describe,
         Self::AttachToAssistant,
@@ -65,6 +92,19 @@ impl ActionId {
             Self::Open => "Open",
             Self::Reveal => "Show in folder",
             Self::CopyPath => "Copy path",
+            Self::AddToLibrary => "Add to library",
+            Self::RemoveFromLibrary => "Remove from library",
+            Self::RegenerateDescription => "Regenerate description",
+            Self::RegenerateClip => "Regenerate CLIP",
+            Self::FindSimilar => "Find similar",
+            Self::Tag => "Tag",
+            Self::Category => "Category",
+            Self::AddToCollection => "Add to collection",
+            Self::RemoveFromCollection => "Remove from collection",
+            Self::OpenInNewTab => "Open in new tab",
+            Self::CopyTo => "Copy to",
+            Self::MoveTo => "Move to",
+            Self::ExcludeFolder => "Exclude folder",
             Self::GenerateClip => "Generate CLIP",
             Self::Describe => "Describe",
             Self::AttachToAssistant => "Attach to assistant",
@@ -144,6 +184,8 @@ pub enum DevtoolsWindow {
     Perf,
     RowStore,
     Collections,
+    Query,
+    BrowserActions,
     Video,
     Scope,
     Filters,
@@ -244,6 +286,20 @@ pub enum AppCommand {
     /// Report progress of a task, or start one with `begin`.
     TaskUpdate { id: TaskId, event: TaskEvent },
     ClearSelection,
+    /// Set the query bar of the focused tab; with `run` Enter is pressed: Name and Text filter, Semantic and Similar open their scope.
+    Query {
+        mode: QueryMode,
+        #[serde(default)]
+        text: String,
+        #[serde(default, skip_serializing_if = "is_false")]
+        run: bool,
+    },
+    /// Open the scan or process dialog of the focused tab; `folder` fills the folder field.
+    Dialog {
+        dialog: DialogKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        folder: Option<String>,
+    },
     /// Select and preview the row of `path` in the focused tab.
     FocusPath { path: String },
     OpenDevtools { window: DevtoolsWindow },
@@ -313,6 +369,8 @@ impl AppCommand {
             Self::Toast { .. } => "toast",
             Self::TaskUpdate { .. } => "task_update",
             Self::ClearSelection => "clear_selection",
+            Self::Query { .. } => "query",
+            Self::Dialog { .. } => "dialog",
             Self::FocusPath { .. } => "focus_path",
             Self::OpenDevtools { .. } => "open_devtools",
             Self::ShowTaskCenter => "show_task_center",
@@ -418,6 +476,12 @@ mod tests {
             AppCommand::TaskUpdate { id: 3, event: TaskEvent::Fail { error: "boom".into() } },
             AppCommand::TaskUpdate { id: 3, event: TaskEvent::Complete },
             AppCommand::ClearSelection,
+            AppCommand::Query { mode: QueryMode::Semantic, text: "a red car".into(), run: true },
+            AppCommand::Query { mode: QueryMode::Name, text: String::new(), run: false },
+            AppCommand::Dialog { dialog: DialogKind::Scan, folder: Some("/p".into()) },
+            AppCommand::Dialog { dialog: DialogKind::Process, folder: None },
+            AppCommand::Run { action: ActionId::Tag, on: Selector::Selection },
+            AppCommand::Run { action: ActionId::MoveTo, on: Selector::View },
             AppCommand::FocusPath { path: "/a".into() },
             AppCommand::OpenDevtools { window: DevtoolsWindow::CommandLog },
             AppCommand::ShowTaskCenter,
@@ -480,7 +544,7 @@ mod tests {
                 parsed.insert(cmd.name());
             }
         }
-        for name in ["open_scope", "open_rows", "open_tool", "run", "show_settings", "attach_to_assistant", "refine", "toast", "task_update", "clear_selection", "focus_path", "open_devtools", "show_task_center", "navigate", "connect_database", "set_filter", "clear_filters", "apply_saved_view", "set_view_mode", "inspector_toggle", "open_palette", "mcp"] {
+        for name in ["open_scope", "open_rows", "open_tool", "run", "show_settings", "attach_to_assistant", "refine", "toast", "task_update", "clear_selection", "query", "dialog", "focus_path", "open_devtools", "show_task_center", "navigate", "connect_database", "set_filter", "clear_filters", "apply_saved_view", "set_view_mode", "inspector_toggle", "open_palette", "mcp"] {
             assert!(parsed.contains(name), "the docs have no example for {name}");
         }
     }

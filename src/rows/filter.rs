@@ -113,7 +113,7 @@ pub struct FilterSpec {
     pub excluded_terms: Vec<String>,
     /// Folders; everything below one is not listed.
     pub excluded_dirs: Vec<String>,
-    /// Text that must appear in the name, type, path, tags or category.
+    /// Text that must appear in the name, type, path, tags, category or description.
     pub query: String,
     /// Text that must appear in the file name.
     pub name: String,

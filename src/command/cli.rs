@@ -1,4 +1,4 @@
-//! Start-up commands from `--run <json|scope>`, `--scope <scope>` and `--devtools <window>[,<window>...]`.
+//! Start-up commands from `--run <json|scope>`, `--scope <scope>`, `--query <mode>:<text>` and `--devtools <window>[,<window>...]`.
 
 use super::model::{AppCommand, DevtoolsWindow, parse_input};
 use super::scope::Scope;
@@ -10,6 +10,13 @@ fn devtools_command(name: &str) -> Result<AppCommand, String> {
         .map_err(|_| format!("unknown devtools window '{name}'"))
 }
 
+/// The query command `--query <mode>:<text>` stands for.
+fn query_command(value: &str) -> Result<AppCommand, String> {
+    let (mode, text) = value.split_once(':').unwrap_or((value, ""));
+    let mode = serde_json::from_value::<super::browser::QueryMode>(serde_json::Value::String(mode.trim().to_lowercase())).map_err(|_| format!("unknown query mode '{}' (use name, text, semantic or similar)", mode.trim()))?;
+    Ok(AppCommand::Query { mode, text: text.to_string(), run: true })
+}
+
 /// The commands the arguments ask for, in the order given.
 pub fn startup_commands(args: &[String]) -> Result<Vec<AppCommand>, String> {
     let mut commands = Vec::new();
@@ -19,7 +26,7 @@ pub fn startup_commands(args: &[String]) -> Result<Vec<AppCommand>, String> {
             Some((flag, value)) => (flag, Some(value.to_string())),
             None => (arg.as_str(), None),
         };
-        if flag != "--run" && flag != "--devtools" && flag != "--scope" {
+        if flag != "--run" && flag != "--devtools" && flag != "--scope" && flag != "--query" {
             continue;
         }
         let value = match inline {
@@ -30,6 +37,8 @@ pub fn startup_commands(args: &[String]) -> Result<Vec<AppCommand>, String> {
             commands.extend(parse_input(&value).map_err(|e| format!("--run: {e}"))?);
         } else if flag == "--scope" {
             commands.push(Scope::parse(&value).map(AppCommand::open).map_err(|e| format!("--scope: {e}"))?);
+        } else if flag == "--query" {
+            commands.push(query_command(&value).map_err(|e| format!("--query: {e}"))?);
         } else {
             for name in value.split(',').filter(|n| !n.trim().is_empty()) {
                 commands.push(devtools_command(name)?);
@@ -85,6 +94,18 @@ mod tests {
         assert!(matches!(&cmds[1], AppCommand::ApplySavedView { name } if name == "Holidays"));
         assert!(matches!(cmds[2], AppCommand::ClearFilters));
         assert!(matches!(cmds[3], AppCommand::OpenDevtools { window: DevtoolsWindow::Filters }));
+    }
+
+    #[test]
+    fn query_takes_a_mode_and_text_and_runs_it() {
+        let cmds = startup_commands(&args(&["--query", "semantic:a red car", "--query=name:beach", "--query", "similar:"])).unwrap();
+        assert!(matches!(&cmds[0], AppCommand::Query { mode: crate::command::QueryMode::Semantic, text, run: true } if text == "a red car"));
+        assert!(matches!(&cmds[1], AppCommand::Query { mode: crate::command::QueryMode::Name, text, run: true } if text == "beach"));
+        assert!(matches!(&cmds[2], AppCommand::Query { mode: crate::command::QueryMode::Similar, text, run: true } if text.is_empty()));
+        assert!(startup_commands(&args(&["--query", "fuzzy:x"])).unwrap_err().starts_with("--query: unknown query mode 'fuzzy'"));
+        assert!(startup_commands(&args(&["--query"])).unwrap_err().contains("--query needs a value"));
+        let colon = startup_commands(&args(&["--query", "text:key: value"])).unwrap();
+        assert!(matches!(&colon[0], AppCommand::Query { text, .. } if text == "key: value"), "only the first colon splits");
     }
 
     #[test]

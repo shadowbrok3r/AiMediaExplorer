@@ -115,15 +115,29 @@ Runs an action on files. `on` says which files: `"selection"` (selected rows of 
 ```json
 {"cmd": "run", "action": "generate_clip", "on": "selection"}
 {"cmd": "run", "action": "copy_path", "on": {"paths": ["/a.jpg", "/b.jpg"]}}
+{"cmd": "run", "action": "tag", "on": "selection"}
+{"cmd": "run", "action": "remove_from_library", "on": "view"}
 ```
+
+The actions are the entries of the action registry (`src/command/actions.rs`), which also builds the selection action bar and the context menu of the grid and the table; Devtools > Browser actions lists each with whether it can run on the current selection, the reason when it cannot, and a Run button. An action that cannot run on the files it is given is an `invalid` error that names the reason. Actions that need more than a file list (tags, a collection, a folder, a confirmation) do not guess: they open the same popover or confirmation the action bar opens, over the focused tab, and change nothing until the user answers.
 
 | Action | Does |
 |---|---|
-| `open` | Opens each file with the system default (at most 20) |
+| `open` | Opens each file with the system default (at most 20); a single folder or archive opens in the tab |
 | `reveal` | Opens the folder of each file (at most 20) |
 | `copy_path` | Copies the paths to the clipboard, one per line |
+| `add_to_library` | Saves the files to the library and the active collection; a toast reports the counts |
+| `remove_from_library` | Asks first with the exact count (always, also from a command), then deletes the rows and CLIP embeddings; files on disk and collection memberships stay |
+| `describe` | Describes the images with the vision model; files that already have a description are skipped unless the overwrite setting is on |
+| `regenerate_description` | Describes the images again and replaces the description |
 | `generate_clip` | Generates CLIP embeddings; a toast reports the result |
-| `describe` | Reserved: returns `unsupported` |
+| `regenerate_clip` | Generates CLIP embeddings again |
+| `find_similar` | Opens `sim:<path>` for the first file |
+| `tag`, `category` | Open the batch popover for those files; applying it adds and removes tags, or sets or clears the category, and toasts the counts |
+| `add_to_collection`, `remove_from_collection` | Open the collection picker (with Create new when adding) |
+| `open_in_new_tab` | Shows the rows in a new tab |
+| `copy_to`, `move_to` | Open a folder picker; `move_to` asks first. Both run as Backup tasks and toast the counts |
+| `exclude_folder` | Adds the selected folders to the excluded folders of the settings and the tab's filter |
 | `attach_to_assistant` | Same as `attach_to_assistant` |
 | `refine` | Same as `refine` |
 
@@ -188,6 +202,26 @@ Clears the selection of the focused tab.
 {"cmd": "clear_selection"}
 ```
 
+### query
+
+Sets the query bar of the focused tab. `mode` is `name` or `text` (live filters: the text goes to the name condition or the search-text condition of the tab's filter, so rows are only hidden, never removed), `semantic` (search the library by meaning, as Enter does) or `similar` (files like the one `text` names, else the focused file). `text` can be left out. Without `run` the bar is set and its live filter applied: `name` and `text` filter at once, `semantic` and `similar` clear the live filter and wait for Enter. With `"run": true` Enter is pressed: `semantic` opens `q:sem:"<text>"` and `similar` opens `sim:<path>` in the focused tab. An empty semantic text, or `similar` with no text and no focused file, is an `invalid` error. The Query window of Devtools shows the text, what typing runs, what Enter runs and the history of runs.
+
+```json
+{"cmd": "query", "mode": "name", "text": "beach"}
+{"cmd": "query", "mode": "semantic", "text": "a red car", "run": true}
+```
+
+Start-up flag: `--query <mode>:<text>` (repeatable) is the same command with `run`, for example `--query semantic:'a red car'`.
+
+### dialog
+
+Opens the Scan dialog or the Process dialog of the focused tab (Tools > Scan folder, the Scan and Process buttons of the toolbar and the Scan / Process menu of the status bar open the same dialogs). `folder` is optional: it fills the folder field and, for Process, chooses the Folder scope. The dialogs are described in `docs/browser.md`.
+
+```json
+{"cmd": "dialog", "dialog": "scan", "folder": "/home/u/Pictures"}
+{"cmd": "dialog", "dialog": "process"}
+```
+
 ### focus_path
 
 Selects the row of a path in the focused tab, which the inspector rail previews and opens when it was hidden; `not_found` when the tab has no such row or the filters hide it.
@@ -198,7 +232,7 @@ Selects the row of a path in the focused tab, which the inspector rail previews 
 
 ### open_devtools
 
-Opens a debug window: `theme_panel`, `settings_store`, `db_maintenance`, `legacy_import`, `thumb_storage`, `thumb_cache`, `tasks`, `command_log`, `perf`, `row_store`, `collections`, `video`, `scope`, `filters`, `grid`, `inspector`, `sidebar`, `actions`, `mcp_server`.
+Opens a debug window: `theme_panel`, `settings_store`, `db_maintenance`, `legacy_import`, `thumb_storage`, `thumb_cache`, `tasks`, `command_log`, `perf`, `row_store`, `collections`, `query`, `browser_actions`, `video`, `scope`, `filters`, `grid`, `inspector`, `sidebar`, `actions`, `mcp_server`.
 
 The `scope` window takes a scope string and shows how it parses (kind, title, parent, whether a folder exists), opens it in the focused tab or a new one, steps back and forward, lists the history stack of the focused tab with the scroll row and selection saved in each entry, and shows the timing of its recent loads: rows, batches, time to the first batch and total time.
 
@@ -238,7 +272,7 @@ Changes the filters of the focused tab. Filters never remove rows: a row that is
 | `modified`, `created` | `after` and `before` as `YYYY-MM-DD` (local days, inclusive); `created` is the date the row was added to the library |
 | `excluded_terms` | Lowercase text; a file whose path contains one is not listed |
 | `excluded_dirs` | Folders; everything below one is not listed |
-| `query` | Text that must appear in the name, type, path, tags or category |
+| `query` | Text that must appear in the name, type, path, tags, category or description |
 | `name` | Text that must appear in the file name |
 | `skip_icons` | Hides `.ico` files and small icon-sized images |
 | `ext_allow`, `ext_deny` | Extensions without the dot; with `ext_allow` set only those are listed |

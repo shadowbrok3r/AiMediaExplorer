@@ -317,7 +317,7 @@ fn an_action_on_an_empty_selection_never_reaches_the_app() {
     let too_many: Vec<String> = (0..30).map(|i| format!("/x/{i}.jpg")).collect();
     let err = rig.app.run_action(ActionId::Open, too_many).unwrap_err();
     assert_eq!(err.kind, ErrorKind::Invalid);
-    assert_eq!(rig.app.run_action(ActionId::Describe, vec!["/a".into()]).unwrap_err().kind, ErrorKind::Unsupported);
+    assert_eq!(rig.app.run_action(ActionId::Describe, vec!["/a".into()]).unwrap_err().kind, ErrorKind::Invalid, "a path that is no image cannot be described");
 }
 
 #[test]

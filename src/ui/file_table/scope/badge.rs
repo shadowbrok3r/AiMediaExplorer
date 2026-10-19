@@ -79,6 +79,14 @@ impl Badges {
         inner.indexed.extend(paths.into_iter().map(str::to_string));
     }
 
+    /// Notes that these files left the library.
+    pub fn unmark_indexed<'a>(&self, paths: impl IntoIterator<Item = &'a str>) {
+        let mut inner = self.inner();
+        for p in paths {
+            inner.indexed.remove(p);
+        }
+    }
+
     pub fn is_indexed(&self, path: &str) -> bool {
         self.inner().indexed.contains(path)
     }

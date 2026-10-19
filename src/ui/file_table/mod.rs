@@ -5,17 +5,25 @@ use egui::style::StyleModifier;
 use serde::Serialize;
 use table::FileTableViewer;
 
+pub mod action_bar;
+pub mod batch;
 pub mod chips;
+pub mod dialogs;
 pub mod explorer;
 pub mod filters;
 pub mod load;
 pub mod menus;
+pub mod query;
 pub mod scan_perf;
 pub mod receive;
 #[path = "../../rows/mod.rs"]
 pub mod rows;
 pub mod scope;
+pub mod shortcuts;
 pub mod table;
+#[cfg(test)]
+pub(crate) mod test_rig;
+pub mod toolbar;
 #[path = "../../thumbs/mod.rs"]
 pub mod thumbs;
 
@@ -223,6 +231,9 @@ pub struct FileExplorer {
     // Where the tab is, where it came from and the loader feeding it
     #[serde(skip)]
     pub nav: scope::Nav,
+    // Toolbar, query bar, action bar and the scan and process dialogs
+    #[serde(skip)]
+    pub toolbar: toolbar::Toolbar,
 }
 
 impl FileExplorer {
@@ -318,6 +329,7 @@ impl FileExplorer {
             failed_thumbs: Vec::new(),
             repaint_next: false,
             nav: scope::Nav::new(crate::command::Scope::Folder(current_path.clone())),
+            toolbar: Default::default(),
         };
         // Preload saved filter groups
         {
@@ -346,8 +358,7 @@ impl FileExplorer {
             ui.ctx().request_repaint();
             self.repaint_next = false;
         }
-        self.navbar(ui);
-        self.breadcrumbs(ui);
+        self.toolbar(ui);
         self.scope_footer(ui);
 
         // For recursive scan pagination: ensure filtered snapshot stays in sync with current user filter
@@ -359,7 +370,7 @@ impl FileExplorer {
         let style = StyleModifier::default();
         style.apply(ui.style_mut());
 
-        CentralPanel::default().show(ui, |ui| {
+        let browser = CentralPanel::default().show(ui, |ui| {
             // Recursive scan pagination controls (only when snapshot large enough)
             if self.recursive_scan && self.last_scan_rows.len() > self.recursive_page_size {
                 self.update_recursive_total_pages();
@@ -512,15 +523,11 @@ impl FileExplorer {
             }
 
             self.apply_tab_actions(ui);
-
-            // Summary inline (counts) if selection active
-            if !self.selection.is_empty() {
-                ui.separator();
-                ui.label(format!("Selected: {}", self.selection.len()));
-            }
-
-            // Similarity button relocated to navbar
-        });
+        })
+        .response
+        .rect;
+        self.show_action_bar(ui.ctx(), browser);
+        self.show_dialogs(ui.ctx());
         self.auto_load_more();
         self.viewer.thumbs.record_ui_time(started.elapsed());
     }
@@ -645,14 +652,13 @@ impl FileExplorer {
             self.recursive_current_page = 0;
         }
         self.recursive_filter_sig = Some(sig.clone());
-        let filter = self.viewer.row_filter();
-        let mut out: Vec<Thumbnail> = self
-            .last_scan_rows
-            .iter()
-            .filter(|r| filter.matches(r))
-            .cloned()
-            .collect();
-        drop(filter);
+        // A scan that fits one page keeps every row; the view's filter decides what is listed. Pages of a larger scan hold the rows the filter lists.
+        let mut out: Vec<Thumbnail> = if self.last_scan_rows.len() > self.recursive_page_size {
+            let filter = self.viewer.row_filter();
+            self.last_scan_rows.iter().filter(|r| filter.matches(r)).cloned().collect()
+        } else {
+            self.last_scan_rows.clone()
+        };
         // Optional sort (basic keys; can expand)
         if let Some(key) = self.recursive_sort_key {
             match key {

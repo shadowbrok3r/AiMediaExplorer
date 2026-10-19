@@ -37,26 +37,7 @@ impl crate::ui::file_table::FileExplorer {
         self.failed_thumbs.clear();
         let mut filters = crate::Filters::default();
         filters.root = std::path::PathBuf::from(self.current_path.clone());
-        filters.min_size_bytes = self.viewer.ui_settings.db_min_size_bytes;
-        filters.max_size_bytes = self.viewer.ui_settings.db_max_size_bytes;
-        filters.include_images = self.viewer.types_show_images;
-        filters.include_videos = self.viewer.types_show_videos;
-        filters.skip_icons = self.viewer.ui_settings.filter_skip_icons;
-        filters.modified_after = self.viewer.ui_settings.filter_modified_after.clone();
-        filters.modified_before = self.viewer.ui_settings.filter_modified_before.clone();
-        filters.excluded_terms = self.excluded_terms.clone();
-        if let Some(ref excluded_dirs) = self.viewer.ui_settings.excluded_dirs {
-            let mut set: std::collections::BTreeSet<std::path::PathBuf> = std::collections::BTreeSet::new();
-            for s in excluded_dirs.iter() {
-                let norm = crate::utilities::windows::normalize_wsl_unc(s);
-                let pb = std::path::PathBuf::from(norm);
-                set.insert(std::path::absolute(&pb).unwrap_or(pb));
-            }
-            filters.recursive_excluded_dirs = set;
-        }
-        if let Some(ref exts) = self.viewer.ui_settings.db_excluded_exts {
-            filters.recursive_excluded_exts = exts.iter().map(|s| s.to_ascii_lowercase()).collect();
-        }
+        filters.include_archives = true;
         self.launch_recorded_scan(filters, true);
     }
 

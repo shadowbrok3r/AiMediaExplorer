@@ -123,18 +123,12 @@ impl crate::ui::file_table::FileExplorer {
         self.last_scan_root = Some(self.current_path.clone());
         self.table.clear();
         self.files.clear();
-        let excluded: Vec<String> = self
-            .excluded_terms
-            .iter()
-            .map(|s| s.to_ascii_lowercase())
-            .collect();
         // Build scan parameters up-front
         let mut filters = crate::utilities::types::Filters::default();
         filters.root = path.clone();
         filters.include_images = true;
         filters.include_videos = true;
         filters.include_archives = true; // show .zip alongside media in shallow scans
-        filters.excluded_terms = excluded;
         let tx = self.scan_tx.clone();
         let scan_id = next_scan_id();
         self.current_scan_id = Some(scan_id);
