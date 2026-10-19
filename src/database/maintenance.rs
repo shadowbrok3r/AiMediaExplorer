@@ -390,16 +390,16 @@ fn refresh_now() {
 
 fn pick_file_then(confirm: bool) {
     spawn(async move {
-        let picked = tokio::task::spawn_blocking(|| rfd::FileDialog::new().set_title("Choose a .surql file").add_filter("SurrealQL", &["surql"]).pick_file()).await.ok().flatten();
-        let Some(file) = picked else { return };
+        let picked = rfd::AsyncFileDialog::new().set_title("Choose a .surql file").add_filter("SurrealQL", &["surql"]).pick_file().await;
+        let Some(file) = picked.map(|h| h.path().to_path_buf()) else { return };
         if confirm {
             with(|p| p.confirm = Some(Confirm::ImportCurrent(file)));
             repaint();
             return;
         }
-        let dir = tokio::task::spawn_blocking(|| rfd::FileDialog::new().set_title("Choose an empty folder for the new store").pick_folder()).await.ok().flatten();
+        let dir = rfd::AsyncFileDialog::new().set_title("Choose an empty folder for the new store").pick_folder().await;
         if let Some(dir) = dir {
-            op_import_new(file, dir).await;
+            op_import_new(file, dir.path().to_path_buf()).await;
         }
     });
 }

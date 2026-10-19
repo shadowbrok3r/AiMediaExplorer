@@ -892,3 +892,48 @@ async fn bench_stage() {
     let (rss, peak) = rss_mb();
     println!("BENCH stage={stage} wall_secs={:.1} rss_mb={rss} peak_rss_mb={peak}", started.elapsed().as_secs_f32());
 }
+
+#[test]
+fn a_failed_schema_transaction_reports_the_statement_with_its_own_error() {
+    let errors = vec![
+        (0, "The query was not executed due to a failed transaction".to_string()),
+        (109, "Cannot COMMIT: Transaction conflict: Transaction write conflict. This transaction can be retried".to_string()),
+        (3, "The query was not executed due to a failed transaction".to_string()),
+    ];
+    let why = super::schema_failure(errors).unwrap();
+    assert!(why.starts_with("schema statement 109: Cannot COMMIT"), "{why}");
+    assert_eq!(super::schema_failure(Vec::new()), None);
+    let only = super::schema_failure(vec![(2, "The query was not executed due to a failed transaction".to_string())]).unwrap();
+    assert!(only.starts_with("schema statement 2:"), "without another cause the first error is reported");
+}
+
+#[tokio::test]
+async fn schema_setup_is_tried_again_after_a_transaction_conflict_but_not_after_other_errors() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let conflict = || anyhow::anyhow!("schema statement 109: Cannot COMMIT: Transaction conflict: Transaction write conflict. This transaction can be retried");
+    assert!(super::is_retriable(&conflict()));
+    assert!(!super::is_retriable(&anyhow::anyhow!("schema statement 4: parse error")));
+
+    let calls = AtomicU32::new(0);
+    let result = super::retry_conflicts("test", || async { if calls.fetch_add(1, Ordering::SeqCst) < 2 { Err(conflict()) } else { Ok(7) } }).await;
+    assert_eq!(result.unwrap(), 7);
+    assert_eq!(calls.load(Ordering::SeqCst), 3, "two conflicts, then success");
+
+    let calls = AtomicU32::new(0);
+    let failed: anyhow::Result<()> = super::retry_conflicts("test", || async {
+        calls.fetch_add(1, Ordering::SeqCst);
+        Err(anyhow::anyhow!("schema statement 4: parse error"))
+    })
+    .await;
+    assert!(failed.is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "other errors are not retried");
+
+    let calls = AtomicU32::new(0);
+    let gave_up: anyhow::Result<()> = super::retry_conflicts("test", || async {
+        calls.fetch_add(1, Ordering::SeqCst);
+        Err(conflict())
+    })
+    .await;
+    assert!(gave_up.is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), 5, "one try and four repeats");
+}

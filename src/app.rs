@@ -1,9 +1,8 @@
 use eframe::egui::Context;
 use crossbeam::channel::{Receiver, Sender};
 use egui_dock::{DockState, NodePath, SurfaceIndex};
-use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use crate::{ui::{file_table::FileExplorer, refine::RefinementsPanel, tabs::{BrowserId, TabKind}}, UiSettings};
+use crate::ui::{file_table::FileExplorer, refine::RefinementsPanel, tabs::{BrowserId, TabKind}};
 use egui_toast::Toasts;
 use crate::theme::chrome::Chrome;
 
@@ -23,34 +22,23 @@ pub struct SmartMediaApp {
     pub shell: crate::ui::shell::Shell,
 }
 
-/// Preferences window state: the settings when it opened and the copy being edited.
-pub struct PrefsDraft {
-    pub baseline: UiSettings,
-    pub draft: UiSettings,
-}
-
 pub struct SmartMediaContext {
     pub first_run: bool,
-    pub page: Page,
     pub db_ready_tx: Sender<()>,
     pub db_ready_rx: Receiver<()>,
     pub db_ready: bool,
-    // Database selection modal state (shown when no database is found)
-    pub show_db_select_modal: bool,
-    pub db_select_mode: DbSelectMode,
-    pub db_websocket_url: String,
-    pub db_local_path: String,
-    pub db_connection_error: Option<String>,
-    // UI State
-    pub open_settings_modal: bool,
+    // First-run wizard, shown while no library is configured
+    pub wizard: crate::ui::wizard::Wizard,
+    // Launch restore of the open scopes and their recording
+    pub startup: crate::ui::settings::startup::Tracker,
     // AI init status flags
     pub ai_initializing: bool,
     pub ai_ready: bool,
     // Theme picker window, its database store and the theme sync
     pub appearance: crate::theme::Appearance,
-    // Preferences edits, present only while the window is open
-    pub prefs: Option<PrefsDraft>,
-    // Set by the Egui Settings Save button; handled once the frame storage is reachable
+    // Settings tab state, kept while the tab is closed
+    pub settings_page: crate::ui::settings::SettingsPage,
+    // Set by the Appearance section's Save button; handled once the frame storage is reachable
     pub egui_prefs_save_requested: bool,
     // Dock add-button presses waiting to become new explorer tabs
     pub pending_tab_adds: Vec<NodePath>,
@@ -65,36 +53,14 @@ pub struct SmartMediaContext {
     pub inspector: crate::ui::inspector::Inspector,
     // Watchers that feed the task registry
     pub task_poller: crate::tasks::Poller,
-    pub open_ui_settings: bool,
     // Toggle for showing the AI Assistant as a separate viewport window
     pub assistant_window_open: bool,
-    // UI state for adding excluded directories
-    pub new_excluded_dir: String,
     // Toasts manager and channel for async notifications
     pub toasts: Toasts,
     pub toast_tx: Sender<(egui_toast::ToastKind, String)>,
     pub toast_rx: Receiver<(egui_toast::ToastKind, String)>,
     // The focused browser tab (updated each frame from the dock state)
     pub active_tab: Option<TabKind>,
-    pub ref_old_category: String,
-    pub ref_new_category: String,
-    pub ref_old_tag: String,
-    pub ref_new_tag: String,
-    pub ref_delete_tag: String,
-    pub ref_limit_tags: i32,
-}
-
-#[derive(PartialEq, Debug, Serialize, Deserialize, Default)]
-pub enum Page {
-    #[default]
-    Main
-}
-
-#[derive(PartialEq, Debug, Clone, Default)]
-pub enum DbSelectMode {
-    #[default]
-    Local,
-    WebSocket,
 }
 
 impl SmartMediaApp {
@@ -133,19 +99,14 @@ impl SmartMediaApp {
 
         let context = SmartMediaContext {
             first_run: true,
-            page: Default::default(),
             db_ready_tx, db_ready_rx,
             db_ready: false,
-            show_db_select_modal: false,
-            db_select_mode: DbSelectMode::Local,
-            db_websocket_url: "ws://localhost:8000".to_string(),
-            db_local_path: crate::database::DB_DEFAULT_PATH.to_string(),
-            db_connection_error: None,
-            open_settings_modal: false,
+            wizard: Default::default(),
+            startup: Default::default(),
             ai_initializing: false,
             ai_ready: false,
             appearance,
-            prefs: None,
+            settings_page: Default::default(),
             egui_prefs_save_requested: false,
             pending_tab_adds: Vec::new(),
             file_explorer,
@@ -156,19 +117,11 @@ impl SmartMediaApp {
             image_edit: Default::default(),
             inspector: Default::default(),
             task_poller: crate::tasks::Poller::new(),
-            open_ui_settings: false,
             assistant_window_open: false,
-            new_excluded_dir: String::new(),
             toasts: crate::theme::toast::style(Toasts::new().anchor(eframe::egui::Align2::RIGHT_TOP, (-10.0, 10.0))),
             toast_tx,
             toast_rx,
             active_tab: None,
-            ref_old_category: String::new(),
-            ref_new_category: String::new(),
-            ref_old_tag: String::new(),
-            ref_new_tag: String::new(),
-            ref_delete_tag: String::new(),
-            ref_limit_tags: 0,
         };
 
         Self {

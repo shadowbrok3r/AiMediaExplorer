@@ -70,7 +70,7 @@ impl crate::app::SmartMediaApp {
             self.shell_item(ui, ShellAction::ChooseDbFolder, svg::FOLDER_OPEN, None);
         });
         ui.separator();
-        if item(ui, svg::GEAR, "Preferences", None).clicked() {
+        if item(ui, svg::GEAR, "Preferences", Some("Ctrl+,")).clicked() {
             command::send(AppCommand::ShowSettings { section: None });
             ui.close();
         }
@@ -91,11 +91,8 @@ impl crate::app::SmartMediaApp {
         }
         ui.separator();
         if item(ui, svg::PALETTE, "Appearance…", None).on_hover_text("Theme presets, colors, density and text size").clicked() {
-            self.context.appearance.open();
+            command::send(AppCommand::ShowSettings { section: Some(crate::command::Section::Appearance) });
             ui.close();
-        }
-        if item(ui, svg::SLIDERS, "Egui Settings", None).clicked() {
-            self.context.open_ui_settings = true;
         }
         let _ = chrome::toggle_row(ui, &mut self.chrome, "Custom title bar");
         ui.separator();
@@ -134,6 +131,10 @@ impl crate::app::SmartMediaApp {
             }
             if icons::button(ui, svg::DATABASE, "Settings store").clicked() {
                 crate::ui::devtools::toggle_settings_store(ui.ctx());
+                ui.close();
+            }
+            if icons::button(ui, svg::SPARKLE, "Wizard").clicked() {
+                crate::ui::devtools::toggle_wizard(ui.ctx());
                 ui.close();
             }
             if icons::button(ui, svg::AME_DATABASE, "Database maintenance").clicked() {

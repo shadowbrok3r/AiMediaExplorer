@@ -204,7 +204,7 @@ impl SmartMediaApp {
         for action in actions {
             match action {
                 SidebarAction::Command(cmd) => command::send(cmd),
-                SidebarAction::Connect => self.context.show_db_select_modal = true,
+                SidebarAction::Connect => command::send(AppCommand::ShowSettings { section: Some(crate::command::Section::Library) }),
             }
         }
     }
@@ -302,17 +302,15 @@ impl SmartMediaApp {
             }
             ShellAction::OpenFolder => dialogs::pick_folder(ctx, "Open folder", |dir| command::send(open_folder_command(&dir, false))),
             ShellAction::ScanFolder => command::send(AppCommand::Dialog { dialog: command::DialogKind::Scan, folder: None }),
-            ShellAction::ExportBackup => export_backup(ctx),
-            ShellAction::ImportBackup => import_backup(ctx),
-            ShellAction::ChooseDbFolder => choose_db_folder(ctx),
-            ShellAction::DatabaseMaintenance => crate::ui::devtools::open_db_maintenance(ctx),
+            ShellAction::ExportBackup | ShellAction::ImportBackup | ShellAction::ChooseDbFolder | ShellAction::DatabaseMaintenance | ShellAction::ConnectLibrary => {
+                command::send(AppCommand::ShowSettings { section: Some(crate::command::Section::Library) })
+            }
             ShellAction::NewCollection => self.shell.new_collection = Some(String::new()),
             ShellAction::ShowCollections => {
                 let layout = &mut self.shell.layout.layout;
                 layout.sidebar_open = true;
                 layout.set_section_open(SectionId::Collections.key(), true);
             }
-            ShellAction::ConnectLibrary => self.context.show_db_select_modal = true,
             ShellAction::EnableAiSearch => {
                 VISION_STATUS.set_state(StatusState::Initializing, "Loading vision model");
                 tokio::spawn(async move {
@@ -451,45 +449,6 @@ fn resize_handle(ui: &mut Ui, panel: Rect, layout: &mut UiLayout) {
 pub fn open_folder_command(dir: &std::path::Path, scan: bool) -> AppCommand {
     let scope = Scope::Folder(dir.display().to_string());
     if scan { AppCommand::OpenScope { scope, target: Target::NewTab, title: None, recursive: true } } else { AppCommand::OpenScope { scope, target: Target::Current, title: None, recursive: false } }
-}
-
-fn export_backup(ctx: &Context) {
-    let confirm_ctx = ctx.clone();
-    dialogs::save_file(ctx, "Export SurrealDB backup to .surql", "backup.surql", Some(("SurrealQL", &["surql"])), move |file| {
-        let description = format!("Export database to {}?", file.display());
-        dialogs::confirm(&confirm_ctx, "Export Database", &description, rfd::MessageLevel::Info, move || {
-            tokio::spawn(async move {
-                let spec = crate::tasks::TaskSpec::new(crate::tasks::TaskKind::Database, format!("Export database to {}", file.display())).user_initiated();
-                let _ = crate::tasks::track(spec, |_| crate::database::export_to(&file)).await;
-            });
-        });
-    });
-}
-
-fn import_backup(ctx: &Context) {
-    let confirm_ctx = ctx.clone();
-    dialogs::pick_file(ctx, "Import SurrealDB .surql file", move |file| {
-        let description = format!("Import from {}? This may overwrite existing data.", file.display());
-        dialogs::confirm(&confirm_ctx, "Import Database", &description, rfd::MessageLevel::Warning, move || {
-            tokio::spawn(async move {
-                let spec = crate::tasks::TaskSpec::new(crate::tasks::TaskKind::Database, format!("Import database from {}", file.display())).user_initiated();
-                let _ = crate::tasks::track(spec, |_| crate::database::import_from(&file)).await;
-            });
-        });
-    });
-}
-
-fn choose_db_folder(ctx: &Context) {
-    dialogs::pick_folder(ctx, "Choose database folder", move |dir| {
-        let path_str = dir.display().to_string();
-        match crate::database::set_db_path(&path_str) {
-            Ok(()) => dialogs::toast(egui_toast::ToastKind::Info, format!("Database folder set to {path_str}. Restart the app to open it.")),
-            Err(e) => {
-                log::error!("set_db_path failed: {e}");
-                dialogs::toast(egui_toast::ToastKind::Error, format!("Could not set the database folder: {e}"));
-            }
-        }
-    });
 }
 
 #[cfg(test)]

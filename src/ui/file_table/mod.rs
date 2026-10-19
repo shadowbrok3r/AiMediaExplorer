@@ -460,6 +460,9 @@ impl FileExplorer {
                 ui.separator();
             }
             chips::show(ui, self);
+            if crate::ui::wizard::card_applies(self) {
+                crate::ui::wizard::checklist_card(ui);
+            }
             self.browse_panel(ui);
 
             // Modal password prompt (appears at end of scans or when browsing encrypted archives)

@@ -9,8 +9,8 @@ use once_cell::sync::Lazy;
 /// Picked path to apply to UI state owned by a specific surface.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DialogResult {
-    DbSetupFolder(PathBuf),
-    PrefsModelFolder(PathBuf),
+    /// A folder or file chosen for the field named `slot`.
+    Picked { slot: &'static str, path: PathBuf },
     AssistantAttach(PathBuf),
 }
 
@@ -43,6 +43,26 @@ pub fn take<T>(mut pick: impl FnMut(&DialogResult) -> Option<T>) -> Option<T> {
     let index = results.iter().position(|r| pick(r).is_some())?;
     let result = results.remove(index);
     pick(&result)
+}
+
+/// Opens a folder picker for the field `slot`; the chosen folder is queued as [`DialogResult::Picked`].
+pub fn pick_folder_into(ctx: &egui::Context, title: &str, slot: &'static str) {
+    let deliver_ctx = ctx.clone();
+    pick_folder(ctx, title, move |path| deliver(&deliver_ctx, DialogResult::Picked { slot, path }));
+}
+
+/// Opens a file picker for the field `slot`; the chosen file is queued as [`DialogResult::Picked`].
+pub fn pick_file_into(ctx: &egui::Context, title: &str, slot: &'static str) {
+    let deliver_ctx = ctx.clone();
+    pick_file(ctx, title, move |path| deliver(&deliver_ctx, DialogResult::Picked { slot, path }));
+}
+
+/// Takes the path queued for the field `slot`.
+pub fn take_picked(slot: &'static str) -> Option<PathBuf> {
+    take(|r| match r {
+        DialogResult::Picked { slot: s, path } if *s == slot => Some(path.clone()),
+        _ => None,
+    })
 }
 
 /// Opens a folder picker without blocking the UI; `on_done` runs with the chosen folder.
@@ -121,7 +141,7 @@ mod tests {
     fn take_returns_the_first_matching_result_and_leaves_the_rest() {
         lock(&RESULTS).clear();
         let ctx = egui::Context::default();
-        deliver(&ctx, DialogResult::DbSetupFolder("/a".into()));
+        deliver(&ctx, DialogResult::Picked { slot: "a", path: "/a".into() });
         deliver(&ctx, DialogResult::AssistantAttach("/b".into()));
         let picked = take(|r| match r {
             DialogResult::AssistantAttach(p) => Some(p.clone()),
@@ -129,7 +149,18 @@ mod tests {
         });
         assert_eq!(picked, Some(PathBuf::from("/b")));
         assert!(take(|r| matches!(r, DialogResult::AssistantAttach(_)).then_some(())).is_none());
-        assert!(matches!(take(|r| Some(r.clone())), Some(DialogResult::DbSetupFolder(_))));
+        assert!(matches!(take(|r| Some(r.clone())), Some(DialogResult::Picked { slot: "a", .. })));
+    }
+
+    #[test]
+    fn a_picked_path_is_taken_by_its_slot_only() {
+        lock(&RESULTS).clear();
+        let ctx = egui::Context::default();
+        deliver(&ctx, DialogResult::Picked { slot: "one", path: "/one".into() });
+        deliver(&ctx, DialogResult::Picked { slot: "two", path: "/two".into() });
+        assert_eq!(take_picked("two"), Some(PathBuf::from("/two")));
+        assert_eq!(take_picked("two"), None);
+        assert_eq!(take_picked("one"), Some(PathBuf::from("/one")));
     }
 
     #[test]

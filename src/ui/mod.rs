@@ -14,6 +14,8 @@ pub mod inspector;
 pub mod dialogs;
 pub mod taskbar;
 pub mod titlebar;
+pub mod settings;
+pub mod wizard;
 #[cfg(test)]
 pub(crate) mod test_support;
 

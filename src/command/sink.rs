@@ -169,12 +169,22 @@ impl CommandSink for SmartMediaApp {
     }
 
     fn show_settings(&mut self, section: Option<Section>) -> CommandResult {
-        match section {
-            Some(Section::Appearance) => self.context.appearance.open(),
-            Some(Section::Advanced) => self.context.open_ui_settings = true,
-            _ => self.context.open_settings_modal = true,
-        }
+        self.context.settings_page.select(section);
+        self.focus_or_open_tab(TabKind::Settings);
         Ok(format!("settings opened{}", section.map(|s| format!(" at {s:?}")).unwrap_or_default()))
+    }
+
+    fn backup(&mut self, op: crate::ui::settings::backup::Op, path: Option<String>, dir: Option<String>, redact_keys: bool, include_thumbs: bool) -> CommandResult {
+        let choice = crate::ui::settings::backup::ExportChoice { redact_keys, include_thumb_blobs: include_thumbs };
+        crate::ui::settings::backup::run_command(op, path.as_deref(), dir.as_deref(), choice)
+    }
+
+    fn wizard(&mut self, step: Option<crate::ui::wizard::Step>) -> CommandResult {
+        match step {
+            Some(step) => self.context.wizard.open_at(step, crate::ui::wizard::Reason::Asked),
+            None => self.context.wizard.open_next_pending(),
+        }
+        Ok(format!("wizard opened at {}", self.context.wizard.current().label()))
     }
 
     fn attach_to_assistant(&mut self, paths: Vec<String>) -> CommandResult {

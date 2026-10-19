@@ -74,6 +74,15 @@ pub fn body(ui: &mut Ui, store: &Arc<SettingsStore>) {
 
     ui.add_space(6.0);
     ui.horizontal_wrapped(|ui| {
+        ui.label("Settings tab at");
+        for section in crate::ui::settings::sections::ALL {
+            if ui.small_button(crate::ui::settings::sections::label(section)).clicked() {
+                crate::command::send(crate::command::AppCommand::ShowSettings { section: Some(section) });
+            }
+        }
+    });
+    ui.add_space(6.0);
+    ui.horizontal_wrapped(|ui| {
         if icons::button(ui, svg::ARROWS_CLOCKWISE, "Reload from DB").on_hover_text("Read the stored record again and replace the live settings").clicked() {
             let store = Arc::clone(store);
             tokio::spawn(async move {

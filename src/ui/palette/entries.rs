@@ -32,9 +32,10 @@ pub struct Sources<'a> {
 }
 
 /// Windows of the Devtools menu the palette lists.
-pub const DEVTOOLS: [DevtoolsWindow; 23] = [
+pub const DEVTOOLS: [DevtoolsWindow; 24] = [
     DevtoolsWindow::ThemePanel,
     DevtoolsWindow::SettingsStore,
+    DevtoolsWindow::Wizard,
     DevtoolsWindow::DbMaintenance,
     DevtoolsWindow::LegacyImport,
     DevtoolsWindow::ThumbStorage,
@@ -205,7 +206,7 @@ pub fn registry(cx: &ActionContext) -> Vec<Entry> {
         all.push(command(format!("open_tool.{name}"), format!("Open tool: {}", tool.tab_title()), icon, AppCommand::OpenTool { tool, path: None, target: Target::NewTab }).keywords(words));
     }
 
-    all.push(command("show_settings", "Settings", svg::GEAR, AppCommand::ShowSettings { section: None }).keywords("preferences options"));
+    all.push(command("show_settings", "Settings", svg::GEAR, AppCommand::ShowSettings { section: None }).shortcut("Ctrl+,").keywords("preferences options"));
     for section in SECTIONS {
         let slug = serde_json::to_value(section).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
         all.push(command(format!("show_settings.{slug}"), format!("Settings: {}", section_label(section)), svg::GEAR, AppCommand::ShowSettings { section: Some(section) }).keywords("preferences options"));

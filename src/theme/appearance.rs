@@ -83,6 +83,11 @@ impl Appearance {
         picker::window(ctx, &mut self.picker, &*self.store);
     }
 
+    /// Draws the picker into `ui` instead of its window.
+    pub fn show_embedded(&mut self, ui: &mut eframe::egui::Ui) {
+        picker::show(ui, &mut self.picker, &*self.store);
+    }
+
     /// Writes a pending theme change and waits briefly for the store to drain; call on exit.
     pub fn flush(&mut self, ctx: &Context) {
         self.picker.flush(ctx, &*self.store);

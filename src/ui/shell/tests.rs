@@ -362,17 +362,20 @@ fn show_collections_opens_the_sidebar_and_its_collections_section() {
 }
 
 #[test]
-fn connect_actions_open_the_database_setup() {
+fn connect_and_backup_actions_open_the_library_settings() {
+    let _serial = serial();
+    take_matching(|_| true);
     let mut rig = Rig::new(1000.0, 700.0);
     let ctx = rig.ctx.clone();
-    assert!(!rig.app.context.show_db_select_modal);
-    rig.app.run_shell_action(&ctx, ShellAction::ConnectLibrary);
-    assert!(rig.app.context.show_db_select_modal);
-    rig.app.context.show_db_select_modal = false;
+    let library = |c: &AppCommand| matches!(c, AppCommand::ShowSettings { section: Some(crate::command::Section::Library) });
+    for action in [ShellAction::ConnectLibrary, ShellAction::ExportBackup, ShellAction::ImportBackup, ShellAction::ChooseDbFolder, ShellAction::DatabaseMaintenance] {
+        rig.app.run_shell_action(&ctx, action);
+        assert_eq!(take_matching(library).len(), 1, "{action:?}");
+    }
     rig.app.context.db_ready = false;
     let out = rig.settle();
     rig.click(out.pos("Connect") + vec2(6.0, 6.0));
-    assert!(rig.app.context.show_db_select_modal, "the sidebar button asks for the setup");
+    assert_eq!(take_matching(library).len(), 1, "the sidebar button asks for the setup");
 }
 
 #[test]

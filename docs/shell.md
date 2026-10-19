@@ -8,8 +8,8 @@ Top strip, global sidebar, command palette and the saved window layout. Code: `s
 
 | Menu | Entries |
 |---|---|
-| File | Open folder, Scan folder, Database (view entire database, backup and restore, export, import, choose folder), Preferences, Quit |
-| View | Sidebar (Ctrl+B), Bottom bar, Right rail, Appearance, Egui Settings, Custom title bar, Tabs, AI Assistant Window, Devtools |
+| File | Open folder, Scan folder, Database (view entire database; backup and restore, export, import and choose folder open Settings > Library), Preferences (the Settings tab, see `settings.md`), Quit |
+| View | Sidebar (Ctrl+B), Bottom bar, Right rail, Appearance (Settings > Appearance, which also holds the egui options), Custom title bar, Tabs, AI Assistant Window, Devtools |
 | Tools | Undo and Redo of metadata changes (Ctrl+Z, Ctrl+Shift+Z), Scan folder (opens the Scan dialog), Process files (opens the Process dialog), AI processing, Refine, Image edit, Collections, Scan settings (batch size) |
 | Help | Logs, Command palette, About |
 
@@ -73,7 +73,7 @@ Open them with `View > Devtools` or `--devtools sidebar,actions`.
 | File > Preferences | File > Preferences |
 | File > Appearance, View > Appearance | View > Appearance |
 | File > Exit | File > Quit |
-| View > Egui Settings | View > Egui Settings |
+| View > Egui Settings | Settings > Appearance > Egui options |
 | View > File Explorer, Logs, AI Refinements | View > Tabs; Help > Logs; Tools > Refine |
 | View > AI Assistant Window | View > AI Assistant Window |
 | View > Icon gallery | View > Devtools > Icon gallery |

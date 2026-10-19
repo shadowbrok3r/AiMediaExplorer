@@ -241,12 +241,56 @@ fn failed_thumb_rows_carry_the_marker_category_and_the_error() {
 }
 
 #[test]
-fn settings_open_the_window_the_section_names() {
+fn settings_open_one_tab_at_the_section_the_command_names() {
     let mut rig = Rig::new();
     rig.app.show_settings(None).unwrap();
-    assert!(rig.app.context.open_settings_modal);
+    assert_eq!(rig.focused_kind(), Some(TabKind::Settings));
+    assert_eq!(rig.app.context.settings_page.section, Section::General);
     rig.app.show_settings(Some(Section::Advanced)).unwrap();
-    assert!(rig.app.context.open_ui_settings);
+    assert_eq!(rig.app.context.settings_page.section, Section::Advanced);
+    assert_eq!(rig.titles().iter().filter(|t| t.as_str() == "Settings").count(), 1, "the tab is reused");
+}
+
+#[test]
+fn the_wizard_command_opens_the_dialog_at_a_step_or_at_the_first_pending_one() {
+    crate::settings::ui_prefs::update(|p| *p = Default::default());
+    let mut rig = Rig::new();
+    rig.app.wizard(Some(crate::ui::wizard::Step::Ai)).unwrap();
+    assert!(rig.app.context.wizard.open);
+    assert_eq!(rig.app.context.wizard.current(), crate::ui::wizard::Step::Ai);
+    rig.app.context.wizard.close();
+    crate::settings::ui_prefs::update(|p| p.checklist.location = crate::settings::ui_prefs::StepState::Done);
+    rig.app.wizard(None).unwrap();
+    assert_eq!(rig.app.context.wizard.current(), crate::ui::wizard::Step::Folders, "the first step still to do");
+    crate::settings::ui_prefs::update(|p| *p = Default::default());
+}
+
+#[test]
+fn the_wizard_devtools_buttons_close_the_dialog_and_simulate_a_first_run() {
+    crate::settings::ui_prefs::update(|p| *p = Default::default());
+    let mut rig = Rig::new();
+    let ctx = rig.app.egui_ctx.clone();
+    rig.app.context.wizard.open_at(crate::ui::wizard::Step::Scan, crate::ui::wizard::Reason::Asked);
+    crate::ui::devtools::wizard::request(&ctx, crate::ui::devtools::wizard::Request::Close);
+    rig.app.context.run_wizard_devtools(&ctx);
+    assert!(!rig.app.context.wizard.open);
+    crate::settings::ui_prefs::update(|p| p.checklist.scan = crate::settings::ui_prefs::StepState::Done);
+    crate::ui::devtools::wizard::request(&ctx, crate::ui::devtools::wizard::Request::SimulateFirstRun);
+    rig.app.context.run_wizard_devtools(&ctx);
+    assert!(rig.app.context.wizard.open);
+    assert_eq!(rig.app.context.wizard.current(), crate::ui::wizard::Step::Location);
+    assert_eq!(crate::settings::ui_prefs::get().checklist, Default::default(), "the checklist is reset");
+    crate::settings::ui_prefs::update(|p| *p = Default::default());
+}
+
+#[test]
+fn a_dirty_settings_tab_says_so_in_its_title() {
+    use egui_dock::TabViewer;
+    let mut rig = Rig::new();
+    let mut tab = TabKind::Settings;
+    assert_eq!(rig.app.context.title(&mut tab).text(), "Settings");
+    rig.app.context.settings_page.draft.value.filter_skip_icons = !rig.app.context.settings_page.draft.value.filter_skip_icons;
+    assert_eq!(rig.app.context.title(&mut tab).text(), "Settings (unsaved)");
 }
 
 #[test]

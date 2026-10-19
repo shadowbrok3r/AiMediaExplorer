@@ -174,11 +174,10 @@ impl Lab {
 
     fn browse(&self) {
         let lab = self.clone();
-        std::thread::spawn(move || {
+        tokio::spawn(async move {
             let exts: Vec<&str> = crate::utilities::types::VIDEO_EXTS.iter().copied().collect();
-            let picked = rfd::FileDialog::new().add_filter("Video", &exts).pick_file();
-            if let Some(p) = picked {
-                lab.state().picked = Some(p.display().to_string());
+            if let Some(handle) = rfd::AsyncFileDialog::new().add_filter("Video", &exts).pick_file().await {
+                lab.state().picked = Some(handle.path().display().to_string());
                 lab.repaint();
             }
         });

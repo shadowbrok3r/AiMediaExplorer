@@ -77,6 +77,8 @@ pub trait CommandSink {
     fn resolve(&mut self, on: &Selector) -> Vec<String>;
     fn run_action(&mut self, action: ActionId, paths: Vec<String>) -> CommandResult;
     fn show_settings(&mut self, section: Option<Section>) -> CommandResult;
+    fn wizard(&mut self, step: Option<crate::ui::wizard::Step>) -> CommandResult;
+    fn backup(&mut self, op: crate::ui::settings::backup::Op, path: Option<String>, dir: Option<String>, redact_keys: bool, include_thumbs: bool) -> CommandResult;
     fn attach_to_assistant(&mut self, paths: Vec<String>) -> CommandResult;
     fn refine(&mut self, paths: Vec<String>) -> CommandResult;
     /// Reverts the newest batch of the metadata journal.
@@ -122,6 +124,8 @@ pub fn dispatch(sink: &mut dyn CommandSink, cmd: AppCommand) -> CommandResult {
             sink.run_action(action, paths)
         }
         AppCommand::ShowSettings { section } => sink.show_settings(section),
+        AppCommand::Wizard { step } => sink.wizard(step),
+        AppCommand::Backup { op, path, dir, redact_keys, include_thumbs } => sink.backup(op, path, dir, redact_keys, include_thumbs),
         AppCommand::AttachToAssistant { paths } if paths.is_empty() => Err(CommandError::invalid("no paths to attach")),
         AppCommand::AttachToAssistant { paths } => sink.attach_to_assistant(paths),
         AppCommand::Refine { paths } if paths.is_empty() => Err(CommandError::invalid("no paths to refine")),
@@ -220,6 +224,12 @@ pub(crate) mod fake {
         fn show_settings(&mut self, section: Option<Section>) -> CommandResult {
             self.done(format!("show_settings {section:?}"))
         }
+        fn wizard(&mut self, step: Option<crate::ui::wizard::Step>) -> CommandResult {
+            self.done(format!("wizard {step:?}"))
+        }
+        fn backup(&mut self, op: crate::ui::settings::backup::Op, path: Option<String>, dir: Option<String>, redact_keys: bool, include_thumbs: bool) -> CommandResult {
+            self.done(format!("backup {op:?} {path:?} {dir:?} {redact_keys} {include_thumbs}"))
+        }
         fn attach_to_assistant(&mut self, paths: Vec<String>) -> CommandResult {
             self.done(format!("attach {}", paths.join(",")))
         }
@@ -296,6 +306,8 @@ mod tests {
             AppCommand::OpenTool { tool: Tool::Logs, path: None, target: Target::Current },
             AppCommand::Run { action: ActionId::Open, on: Selector::Selection },
             AppCommand::ShowSettings { section: Some(Section::Library) },
+            AppCommand::Wizard { step: Some(crate::ui::wizard::Step::Ai) },
+            AppCommand::Backup { op: crate::ui::settings::backup::Op::Export, path: Some("/b.surql".into()), dir: None, redact_keys: true, include_thumbs: false },
             AppCommand::AttachToAssistant { paths: vec!["/a".into()] },
             AppCommand::Refine { paths: vec!["/b".into()] },
             AppCommand::Undo,
@@ -325,6 +337,8 @@ mod tests {
                 "open_tool Logs None Current",
                 "run Open /sel",
                 "show_settings Some(Library)",
+                "wizard Some(Ai)",
+                "backup Export Some(\"/b.surql\") None true false",
                 "attach /a",
                 "refine /b",
                 "undo",

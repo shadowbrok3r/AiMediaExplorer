@@ -1,4 +1,4 @@
-//! Start-up commands from `--run <json|scope>`, `--scope <scope>`, `--query <mode>:<text>` and `--devtools <window>[,<window>...]`.
+//! Start-up commands from `--run <json|scope>`, `--scope <scope>`, `--query <mode>:<text>`, `--devtools <window>[,<window>...]` and `--wizard <step>`.
 
 use super::model::{AppCommand, DevtoolsWindow, parse_input};
 use super::scope::Scope;
@@ -17,6 +17,11 @@ fn query_command(value: &str) -> Result<AppCommand, String> {
     Ok(AppCommand::Query { mode, text: text.to_string(), run: true })
 }
 
+/// The wizard command `--wizard <step>` stands for.
+fn wizard_command(name: &str) -> Result<AppCommand, String> {
+    crate::ui::wizard::Step::parse(name).map(|step| AppCommand::Wizard { step: Some(step) }).ok_or_else(|| format!("--wizard: unknown step '{name}' (location, folders, ai or scan)"))
+}
+
 /// The commands the arguments ask for, in the order given.
 pub fn startup_commands(args: &[String]) -> Result<Vec<AppCommand>, String> {
     let mut commands = Vec::new();
@@ -26,7 +31,7 @@ pub fn startup_commands(args: &[String]) -> Result<Vec<AppCommand>, String> {
             Some((flag, value)) => (flag, Some(value.to_string())),
             None => (arg.as_str(), None),
         };
-        if flag != "--run" && flag != "--devtools" && flag != "--scope" && flag != "--query" {
+        if flag != "--run" && flag != "--devtools" && flag != "--scope" && flag != "--query" && flag != "--wizard" {
             continue;
         }
         let value = match inline {
@@ -39,6 +44,8 @@ pub fn startup_commands(args: &[String]) -> Result<Vec<AppCommand>, String> {
             commands.push(Scope::parse(&value).map(AppCommand::open).map_err(|e| format!("--scope: {e}"))?);
         } else if flag == "--query" {
             commands.push(query_command(&value).map_err(|e| format!("--query: {e}"))?);
+        } else if flag == "--wizard" {
+            commands.push(wizard_command(&value)?);
         } else {
             for name in value.split(',').filter(|n| !n.trim().is_empty()) {
                 commands.push(devtools_command(name)?);
@@ -113,6 +120,16 @@ mod tests {
         let cmds = startup_commands(&args(&["--devtools", "tasks,command-log", "--devtools=perf,scope"])).unwrap();
         let windows: Vec<_> = cmds.iter().map(|c| match c { AppCommand::OpenDevtools { window } => *window, other => panic!("{other:?}") }).collect();
         assert_eq!(windows, vec![DevtoolsWindow::Tasks, DevtoolsWindow::CommandLog, DevtoolsWindow::Perf, DevtoolsWindow::Scope]);
+    }
+
+    #[test]
+    fn wizard_takes_a_step_name() {
+        let cmds = startup_commands(&args(&["--wizard", "folders", "--wizard=AI", "--devtools", "wizard"])).unwrap();
+        assert!(matches!(cmds[0], AppCommand::Wizard { step: Some(crate::ui::wizard::Step::Folders) }));
+        assert!(matches!(cmds[1], AppCommand::Wizard { step: Some(crate::ui::wizard::Step::Ai) }));
+        assert!(matches!(cmds[2], AppCommand::OpenDevtools { window: DevtoolsWindow::Wizard }));
+        assert!(startup_commands(&args(&["--wizard", "tour"])).unwrap_err().starts_with("--wizard:"));
+        assert!(startup_commands(&args(&["--wizard"])).unwrap_err().contains("--wizard needs a value"));
     }
 
     #[test]

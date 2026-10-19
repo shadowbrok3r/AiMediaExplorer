@@ -92,6 +92,7 @@ impl egui_dock::TabViewer for crate::app::SmartMediaContext {
     fn title(&mut self, tab: &mut Self::Tab) -> WidgetText {
         match tab {
             TabKind::Browser { id } => self.explorer_mut(*id).map(|ex| ex.tab_title()).unwrap_or_else(|| tab.fixed_title().to_string()).into(),
+            TabKind::Settings if self.settings_page.is_dirty() => "Settings (unsaved)".into(),
             other => other.fixed_title().into(),
         }
     }
@@ -106,13 +107,7 @@ impl egui_dock::TabViewer for crate::app::SmartMediaContext {
             },
             TabKind::Refine => self.refinements.ui(ui),
             TabKind::ImageEdit => self.image_edit.ui(ui),
-            TabKind::Settings => {
-                ui.add_space(8.0);
-                ui.label("Settings open in their own window for now.");
-                if ui.button("Open settings").clicked() {
-                    crate::command::send(crate::command::AppCommand::ShowSettings { section: None });
-                }
-            }
+            TabKind::Settings => crate::ui::settings::show(self, ui),
             TabKind::Devtools => {
                 ui.add_space(8.0);
                 ui.label("Debug windows open from View > Devtools.");

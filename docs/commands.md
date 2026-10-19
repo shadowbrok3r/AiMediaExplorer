@@ -11,7 +11,7 @@ The JSON form is the stable surface. Names are `snake_case`. Fields marked optio
 | Rust | `crate::command::send(AppCommand::...)` from any thread; the next frame runs it |
 | Text | `crate::command::send_text(text)`: a JSON object, a JSON array of objects, or a scope string (opens the scope in a new tab) |
 | Devtools | View > Devtools > Command log: the runner box takes the same text; Run again re-sends a logged command |
-| Command line | `--run '<json or scope>'`, `--scope '<scope>'` (both repeatable) and `--devtools tasks,command-log,perf` queue commands for the first frame |
+| Command line | `--run '<json or scope>'`, `--scope '<scope>'` (both repeatable), `--devtools tasks,command-log,perf` and `--wizard <step>` queue commands for the first frame |
 
 The dispatcher drains the bus once per frame (at most 256 commands), runs each against the application and records it in the command log (500 entries; Devtools > Command log). A failed command shows a warning toast naming it, at most three per frame.
 
@@ -143,10 +143,31 @@ The actions are the entries of the action registry (`src/command/actions.rs`), w
 
 ### show_settings
 
-Opens settings. `section` is optional: `general`, `library`, `ai_models`, `automation`, `assistant`, `metadata_tools`, `shortcuts`, `appearance`, `advanced`. Today `appearance` opens the theme window, `advanced` the egui settings window and everything else the preferences window.
+Opens the Settings tab, or focuses it when it is open. `section` is optional: `general`, `library`, `ai_models`, `automation`, `assistant`, `metadata_tools`, `shortcuts`, `appearance`, `advanced`; without it the tab keeps the section it shows. Every older way in (File > Preferences, View > Appearance, the database items of the File menu, the sidebar Connect button, the palette) sends this command. See `settings.md`.
 
 ```json
 {"cmd": "show_settings", "section": "appearance"}
+```
+
+### wizard
+
+Opens the first-run wizard at `step` (`location`, `folders`, `ai`, `scan`), or at the first step that is still to do. The wizard opens by itself when no library exists. The command line form is `--wizard <step>`.
+
+```json
+{"cmd": "wizard", "step": "folders"}
+{"cmd": "wizard"}
+```
+
+### backup
+
+Backs up or restores the library without a dialog, as Database tasks (Task Center). `op` is `export` (a `.surql` file at `path`; the API keys are left out of the settings record unless `redact_keys` is `false`, thumbnail blobs are included with `include_thumbs`), `restore` (builds a new library in the folder `dir` from the `.surql` file at `path`; `dir` must be missing or empty and the open library is not touched), `import` (runs the `.surql` file at `path` against the open library, no confirmation; records that exist already make it fail) or `snapshot` (copies the library folder into the snapshots folder). Export and import wait for the library to open (at most two minutes), so they can be sent with `--run` at start-up.
+
+```json
+{"cmd": "backup", "op": "export", "path": "/home/u/backups/library.surql"}
+{"cmd": "backup", "op": "export", "path": "/home/u/backups/full.surql", "redact_keys": false}
+{"cmd": "backup", "op": "restore", "path": "/home/u/backups/library.surql", "dir": "/home/u/restored-library"}
+{"cmd": "backup", "op": "import", "path": "/home/u/backups/other.surql"}
+{"cmd": "backup", "op": "snapshot"}
 ```
 
 ### attach_to_assistant
@@ -241,7 +262,7 @@ Selects the row of a path in the focused tab, which the inspector rail previews 
 
 ### open_devtools
 
-Opens a debug window: `theme_panel`, `settings_store`, `db_maintenance`, `legacy_import`, `thumb_storage`, `thumb_cache`, `tasks`, `command_log`, `perf`, `row_store`, `collections`, `query`, `browser_actions`, `video`, `scope`, `filters`, `grid`, `inspector`, `journal`, `refine`, `sidebar`, `actions`, `mcp_server`.
+Opens a debug window: `theme_panel`, `settings_store`, `wizard`, `db_maintenance`, `legacy_import`, `thumb_storage`, `thumb_cache`, `tasks`, `command_log`, `perf`, `row_store`, `collections`, `query`, `browser_actions`, `video`, `scope`, `filters`, `grid`, `inspector`, `journal`, `refine`, `sidebar`, `actions`, `mcp_server`.
 
 The `scope` window takes a scope string and shows how it parses (kind, title, parent, whether a folder exists), opens it in the focused tab or a new one, steps back and forward, lists the history stack of the focused tab with the scroll row and selection saved in each entry, and shows the timing of its recent loads: rows, batches, time to the first batch and total time.
 

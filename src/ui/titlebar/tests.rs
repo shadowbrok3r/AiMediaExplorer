@@ -186,10 +186,26 @@ fn close_menus(rig: &mut Rig) {
 fn file_view_tools_and_help_open_under_the_strip_with_every_entry() {
     let mut rig = Rig::new(true, 1200.0);
     open_menu(&mut rig, "File", &["Open folder...", "Scan folder...", "Database", "Preferences", "Quit"]);
-    let view = open_menu(&mut rig, "View", &["Sidebar", "Bottom bar", "Right rail", "Appearance…", "Egui Settings", "Custom title bar", "Tabs", "AI Assistant Window", "Devtools"]);
+    let view = open_menu(&mut rig, "View", &["Sidebar", "Bottom bar", "Right rail", "Appearance…", "Custom title bar", "Tabs", "AI Assistant Window", "Devtools"]);
     assert!(view.texts().iter().all(|(t, _)| t != "Quit"), "File closed when View opened");
     open_menu(&mut rig, "Tools", &["Scan folder...", "AI processing", "Refine (AI, DB-only)", "Image edit", "Collections", "Scan settings"]);
     open_menu(&mut rig, "Help", &["Logs", "Command palette", "About"]);
+}
+
+#[test]
+fn preferences_and_appearance_ask_for_the_settings_tab_through_the_command() {
+    use crate::command::bus::testing::{serial, take_matching};
+    use crate::command::{AppCommand, Section};
+    let _serial = serial();
+    take_matching(|_| true);
+    let mut rig = Rig::new(true, 1200.0);
+    let file = open_menu(&mut rig, "File", &["Preferences"]);
+    rig.click(file.text_pos("Preferences") + vec2(6.0, 6.0));
+    assert_eq!(take_matching(|c| matches!(c, AppCommand::ShowSettings { section: None })).len(), 1);
+    close_menus(&mut rig);
+    let view = open_menu(&mut rig, "View", &["Appearance…"]);
+    rig.click(view.text_pos("Appearance…") + vec2(6.0, 6.0));
+    assert_eq!(take_matching(|c| matches!(c, AppCommand::ShowSettings { section: Some(Section::Appearance) })).len(), 1);
 }
 
 #[test]
@@ -198,7 +214,7 @@ fn submenus_hold_the_rest_of_the_old_menu_actions() {
     let cases: [(&str, &str, &[&str]); 6] = [
         ("File", "Database", &["View Entire Database", "Database backup and restore", "Export backup...", "Import backup...", "Choose database folder..."]),
         ("View", "Tabs", &["File Explorer", "Logs", "AI Refinements"]),
-        ("View", "Devtools", &["Icon gallery", "Theme panel", "Settings store", "Tasks", "Command log", "Perf", "Row store", "Collections", "Video", "Sidebar", "Actions"]),
+        ("View", "Devtools", &["Icon gallery", "Theme panel", "Settings store", "Wizard", "Tasks", "Command log", "Perf", "Row store", "Collections", "Video", "Sidebar", "Actions"]),
         ("Tools", "AI processing", &["Enable AI search", "Enable auto indexing", "Enable auto CLIP", "Generate CLIP for missing files", "Generate CLIP for the previewed file", "Count files missing CLIP"]),
         ("Tools", "Collections", &["Show collections", "New collection..."]),
         ("Tools", "Scan settings", &["FoundBatch size"]),

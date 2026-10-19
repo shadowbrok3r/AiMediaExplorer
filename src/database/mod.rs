@@ -212,9 +212,43 @@ pub const SCHEMA_DDL: &str = r#"
 
 /// Run the schema definition script against a handle already pointed at NS/DB.
 pub async fn define_schema<C: surrealdb::Connection>(db: &Surreal<C>) -> anyhow::Result<(), anyhow::Error> {
-    let response = db.query(SCHEMA_DDL).await?;
-    let _ = response.check()?;
-    Ok(())
+    let mut response = db.query(SCHEMA_DDL).await?;
+    let errors: Vec<(usize, String)> = response.take_errors().into_iter().map(|(index, e)| (index, e.to_string())).collect();
+    match schema_failure(errors) {
+        Some(why) => Err(anyhow::anyhow!(why)),
+        None => Ok(()),
+    }
+}
+
+/// The error that explains a failed schema transaction: the first statement that failed for a reason of its own.
+pub fn schema_failure(mut errors: Vec<(usize, String)>) -> Option<String> {
+    errors.sort_by_key(|(index, _)| *index);
+    let cause = errors.iter().find(|(_, e)| !e.contains("failed transaction")).or(errors.first())?;
+    Some(format!("schema statement {}: {}", cause.0, cause.1))
+}
+
+/// True for errors that say the transaction can be run again.
+pub fn is_retriable(error: &anyhow::Error) -> bool {
+    let text = format!("{error:#}");
+    text.contains("can be retried") || text.contains("Transaction conflict")
+}
+
+/// Runs `attempt` again while it fails with a retriable transaction conflict, at most five times.
+pub async fn retry_conflicts<T, Fut>(what: &str, mut attempt: impl FnMut() -> Fut) -> anyhow::Result<T>
+where
+    Fut: std::future::Future<Output = anyhow::Result<T>>,
+{
+    let mut tries = 0u32;
+    loop {
+        match attempt().await {
+            Err(e) if tries < 4 && is_retriable(&e) => {
+                tries += 1;
+                log::warn!("[DB] {what} hit a transaction conflict, trying again ({tries}/4)");
+                tokio::time::sleep(std::time::Duration::from_millis(150 * u64::from(tries))).await;
+            }
+            other => return other,
+        }
+    }
 }
 
 pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
@@ -241,9 +275,9 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
     DB.use_ns(NS).use_db(DB_NAME).await?;
 
     // DEFINE BUCKET userfiles BACKEND "memory";
-    define_schema(&DB).await?;
-    let _ = ui_themes::ensure_schema(&DB).await;
-    if let Err(e) = collections::ensure_schema(&DB).await {
+    retry_conflicts("schema setup", || define_schema(&DB)).await?;
+    let _ = retry_conflicts("themes schema setup", || ui_themes::ensure_schema(&DB)).await;
+    if let Err(e) = retry_conflicts("collections schema setup", || collections::ensure_schema(&DB)).await {
         log::error!("[collections] schema setup failed: {e:#}");
     }
     if pre_open.is_some() {
@@ -264,20 +298,15 @@ pub async fn new(tx: Sender<()>) -> anyhow::Result<(), anyhow::Error> {
     Ok(())
 }
 
-/// Read the configured SurrealKV database folder path from disk (./db/path.txt)
-/// falling back to ./db/ai_search if not present or invalid.
+/// Reads the library folder from ./db/path.txt, then the config-dir pointer, else ./db/ai_search.
 pub fn get_db_path() -> String {
     match fs::read_to_string(DB_PATH_FILE) {
-        Ok(s) => {
-            let p = s.trim();
-            if p.is_empty() { DB_DEFAULT_PATH.to_string() } else { p.to_string() }
-        }
-        Err(_) => DB_DEFAULT_PATH.to_string(),
+        Ok(s) if !s.trim().is_empty() => s.trim().to_string(),
+        _ => crate::settings::location::configured().unwrap_or_else(|| DB_DEFAULT_PATH.to_string()),
     }
 }
 
-/// Persist the SurrealKV database folder path to ./db/path.txt.
-/// Returns Ok(()) if saved. Actual reconnection may require app restart.
+/// Saves the library folder in the config dir, and in ./db/path.txt when that file exists; a reconnect may need a restart.
 pub fn set_db_path<P: AsRef<Path>>(dir: P) -> anyhow::Result<(), anyhow::Error> {
     let dir = dir.as_ref();
     if !dir.exists() {
@@ -286,8 +315,11 @@ pub fn set_db_path<P: AsRef<Path>>(dir: P) -> anyhow::Result<(), anyhow::Error> 
     if !dir.is_dir() {
         anyhow::bail!("Provided path is not a directory: {}", dir.display());
     }
+    crate::settings::location::remember(dir);
     let mut pb = PathBuf::new();
     pb.push(DB_PATH_FILE);
+    let keep_legacy_file = pb.exists() || crate::settings::location::pointer_path().is_none();
+    if !keep_legacy_file || cfg!(test) { return Ok(()); }
     if let Some(parent) = pb.parent() { fs::create_dir_all(parent)?; }
     fs::write::<&PathBuf, &str>(&pb, dir.as_os_str().to_string_lossy().as_ref())?;
     Ok(())

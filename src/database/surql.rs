@@ -62,6 +62,11 @@ async fn export_without_blobs(db: &Surreal<Db>, partial: &Path, progress: &Progr
     if !has_blobs {
         return Ok(());
     }
+    append_table_definition(db, partial, thumb_blobs::TABLE).await
+}
+
+/// Append the definition of `table`, without its records, to the export at `partial`.
+async fn append_table_definition(db: &Surreal<Db>, partial: &Path, table: &str) -> anyhow::Result<()> {
     let mut schema_path = partial.as_os_str().to_owned();
     schema_path.push(".schema");
     let schema_path = PathBuf::from(schema_path);
@@ -80,7 +85,7 @@ async fn export_without_blobs(db: &Surreal<Db>, partial: &Path, progress: &Progr
             .configs(false)
             .sequences(false)
             .records(false)
-            .tables(vec![thumb_blobs::TABLE])
+            .tables(vec![table.to_string()])
             .await?;
         let schema = String::from_utf8_lossy(&tokio::fs::read(&schema_path).await?).into_owned();
         let section = schema.find("-- TABLE: ").map(|i| schema[..i].rfind("-- ------------------------------").unwrap_or(i)).map(|start| &schema[start..]);
@@ -104,6 +109,50 @@ pub async fn export_atomic(db: &Surreal<Db>, path: &Path, progress: &ProgressFn)
 
 /// Export the NS/DB to `path` via a `.partial` file that is renamed on success.
 pub async fn export_atomic_with(db: &Surreal<Db>, path: &Path, progress: &ProgressFn, opts: ExportOptions) -> anyhow::Result<ExportReport> {
+    export_atomic_via(path, progress, |partial| async move {
+        if opts.include_thumb_blobs {
+            drive_export(db.export(&partial), &partial, progress).await
+        } else {
+            export_without_blobs(db, &partial, progress).await
+        }
+    })
+    .await
+}
+
+/// Export the NS/DB like [`export_atomic_with`], with the API keys left out of the settings records.
+pub async fn export_atomic_redacted(db: &Surreal<Db>, path: &Path, progress: &ProgressFn, opts: ExportOptions) -> anyhow::Result<ExportReport> {
+    export_atomic_via(path, progress, |partial| async move { export_redacted(db, &partial, opts, progress).await }).await
+}
+
+/// Every table but the settings, then the settings records without their credential fields.
+async fn export_redacted(db: &Surreal<Db>, partial: &Path, opts: ExportOptions, progress: &ProgressFn) -> anyhow::Result<()> {
+    let settings = crate::database::USER_SETTINGS;
+    let all = table_names(db).await?;
+    let others: Vec<String> = all.iter().filter(|t| t.as_str() != settings && (opts.include_thumb_blobs || t.as_str() != thumb_blobs::TABLE)).cloned().collect();
+    drive_export(db.export(partial).with_config().tables(others), partial, progress).await?;
+    if !opts.include_thumb_blobs && all.iter().any(|t| t == thumb_blobs::TABLE) {
+        append_table_definition(db, partial, thumb_blobs::TABLE).await?;
+    }
+    if !all.iter().any(|t| t == settings) {
+        return Ok(());
+    }
+    append_table_definition(db, partial, settings).await?;
+    let omit: Vec<&str> = crate::database::settings::PERSISTED_FIELDS.iter().copied().filter(|f| crate::settings::is_secret_field(f)).collect();
+    let rows: Vec<surrealdb::types::Value> = db.query(format!("SELECT * OMIT {} FROM {settings}", omit.join(", "))).await?.take(0)?;
+    let records: Vec<String> = rows.iter().map(|r| r.to_sql()).collect();
+    let text = format!("\n-- ------------------------------\n-- TABLE DATA: {settings} (API keys left out)\n-- ------------------------------\n\nINSERT [ {} ];\n", records.join(", "));
+    let mut main = tokio::fs::OpenOptions::new().append(true).open(partial).await?;
+    tokio::io::AsyncWriteExt::write_all(&mut main, text.as_bytes()).await?;
+    main.sync_all().await?;
+    Ok(())
+}
+
+/// Runs `write` against a `.partial` file next to `path` and renames it over `path` once it holds data.
+async fn export_atomic_via<F, Fut>(path: &Path, progress: &ProgressFn, write: F) -> anyhow::Result<ExportReport>
+where
+    F: FnOnce(PathBuf) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
+{
     let started = Instant::now();
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         tokio::fs::create_dir_all(parent).await?;
@@ -111,11 +160,7 @@ pub async fn export_atomic_with(db: &Surreal<Db>, path: &Path, progress: &Progre
     let mut partial = path.as_os_str().to_owned();
     partial.push(".partial");
     let partial = PathBuf::from(partial);
-    let result = if opts.include_thumb_blobs {
-        drive_export(db.export(&partial), &partial, progress).await
-    } else {
-        export_without_blobs(db, &partial, progress).await
-    };
+    let result = write(partial.clone()).await;
     if let Err(e) = result {
         let _ = tokio::fs::remove_file(&partial).await;
         return Err(e);

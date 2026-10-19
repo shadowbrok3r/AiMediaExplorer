@@ -175,6 +175,7 @@ impl Tool {
 pub enum DevtoolsWindow {
     ThemePanel,
     SettingsStore,
+    Wizard,
     DbMaintenance,
     LegacyImport,
     ThumbStorage,
@@ -252,6 +253,14 @@ fn is_false(v: &bool) -> bool {
     !*v
 }
 
+fn is_true(v: &bool) -> bool {
+    *v
+}
+
+fn yes() -> bool {
+    true
+}
+
 /// One request to the application. The JSON form is `{"cmd": "<snake_case name>", ...fields}`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
@@ -281,6 +290,24 @@ pub enum AppCommand {
     ShowSettings {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         section: Option<Section>,
+    },
+    /// Open the first-run wizard at `step`, or at the first step still to do.
+    Wizard {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step: Option<crate::ui::wizard::Step>,
+    },
+    /// Back up or restore the library without a dialog; the keys are left out of an export unless `redact_keys` is false.
+    Backup {
+        op: crate::ui::settings::backup::Op,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        /// The folder `restore` builds the new library in.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dir: Option<String>,
+        #[serde(default = "yes", skip_serializing_if = "is_true")]
+        redact_keys: bool,
+        #[serde(default, skip_serializing_if = "is_false")]
+        include_thumbs: bool,
     },
     AttachToAssistant { paths: Vec<String> },
     Refine { paths: Vec<String> },
@@ -370,6 +397,8 @@ impl AppCommand {
             Self::OpenTool { .. } => "open_tool",
             Self::Run { .. } => "run",
             Self::ShowSettings { .. } => "show_settings",
+            Self::Wizard { .. } => "wizard",
+            Self::Backup { .. } => "backup",
             Self::AttachToAssistant { .. } => "attach_to_assistant",
             Self::Refine { .. } => "refine",
             Self::Undo => "undo",
@@ -476,6 +505,12 @@ mod tests {
             AppCommand::Run { action: ActionId::Describe, on: Selector::View },
             AppCommand::ShowSettings { section: Some(Section::AiModels) },
             AppCommand::ShowSettings { section: None },
+            AppCommand::Wizard { step: Some(crate::ui::wizard::Step::Folders) },
+            AppCommand::Wizard { step: None },
+            AppCommand::Backup { op: crate::ui::settings::backup::Op::Export, path: Some("/b/out.surql".into()), dir: None, redact_keys: true, include_thumbs: false },
+            AppCommand::Backup { op: crate::ui::settings::backup::Op::Export, path: Some("/b/full.surql".into()), dir: None, redact_keys: false, include_thumbs: true },
+            AppCommand::Backup { op: crate::ui::settings::backup::Op::Snapshot, path: None, dir: None, redact_keys: true, include_thumbs: false },
+            AppCommand::Backup { op: crate::ui::settings::backup::Op::Restore, path: Some("/b/out.surql".into()), dir: Some("/lib/restored".into()), redact_keys: true, include_thumbs: false },
             AppCommand::AttachToAssistant { paths: vec!["/a".into()] },
             AppCommand::Refine { paths: vec!["/a".into()] },
             AppCommand::Undo,
@@ -554,7 +589,7 @@ mod tests {
                 parsed.insert(cmd.name());
             }
         }
-        for name in ["open_scope", "open_rows", "open_tool", "run", "show_settings", "attach_to_assistant", "refine", "undo", "redo", "toast", "task_update", "clear_selection", "query", "dialog", "focus_path", "open_devtools", "show_task_center", "navigate", "connect_database", "set_filter", "clear_filters", "apply_saved_view", "set_view_mode", "inspector_toggle", "open_palette", "mcp"] {
+        for name in ["open_scope", "open_rows", "open_tool", "run", "show_settings", "wizard", "backup", "attach_to_assistant", "refine", "undo", "redo", "toast", "task_update", "clear_selection", "query", "dialog", "focus_path", "open_devtools", "show_task_center", "navigate", "connect_database", "set_filter", "clear_filters", "apply_saved_view", "set_view_mode", "inspector_toggle", "open_palette", "mcp"] {
             assert!(parsed.contains(name), "the docs have no example for {name}");
         }
     }

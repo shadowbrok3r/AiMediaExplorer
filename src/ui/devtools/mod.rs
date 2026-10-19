@@ -23,6 +23,7 @@ pub mod tasks;
 pub mod thumb_cache;
 pub mod thumb_storage;
 pub mod video;
+pub mod wizard;
 
 use eframe::egui::Context;
 
@@ -34,6 +35,10 @@ pub fn open_settings_store(ctx: &Context) {
 
 pub fn toggle_settings_store(ctx: &Context) {
     settings_store::set_open(ctx, !settings_store::is_open(ctx));
+}
+
+pub fn toggle_wizard(ctx: &Context) {
+    wizard::set_open(ctx, !wizard::is_open(ctx));
 }
 
 pub fn open_db_maintenance(ctx: &Context) {
@@ -125,6 +130,7 @@ pub fn open(ctx: &Context, window: DevtoolsWindow) {
     match window {
         DevtoolsWindow::ThemePanel => crate::theme::debug_panel::set_open(ctx, true),
         DevtoolsWindow::SettingsStore => settings_store::set_open(ctx, true),
+        DevtoolsWindow::Wizard => wizard::set_open(ctx, true),
         DevtoolsWindow::DbMaintenance => db_maintenance::set_open(ctx, true),
         DevtoolsWindow::LegacyImport => legacy_import::set_open(ctx, true),
         DevtoolsWindow::ThumbStorage => thumb_storage::set_open(ctx, true),
@@ -153,6 +159,7 @@ pub fn open(ctx: &Context, window: DevtoolsWindow) {
 /// Draws every open devtools window.
 pub fn show(ctx: &Context) {
     settings_store::show(ctx);
+    wizard::show(ctx);
     db_maintenance::show(ctx);
     legacy_import::show(ctx);
     thumb_cache::show(ctx);
@@ -183,6 +190,7 @@ mod tests {
     fn is_open(ctx: &Context, w: DevtoolsWindow) -> bool {
         match w {
             DevtoolsWindow::SettingsStore => settings_store::is_open(ctx),
+            DevtoolsWindow::Wizard => wizard::is_open(ctx),
             DevtoolsWindow::DbMaintenance => db_maintenance::is_open(ctx),
             DevtoolsWindow::LegacyImport => legacy_import::is_open(ctx),
             DevtoolsWindow::ThumbStorage => thumb_storage::is_open(ctx),
@@ -214,6 +222,7 @@ mod tests {
         let windows = [
             DevtoolsWindow::ThemePanel,
             DevtoolsWindow::SettingsStore,
+            DevtoolsWindow::Wizard,
             DevtoolsWindow::DbMaintenance,
             DevtoolsWindow::LegacyImport,
             DevtoolsWindow::ThumbStorage,
