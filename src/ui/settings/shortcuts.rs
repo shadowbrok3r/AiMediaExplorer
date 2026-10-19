@@ -7,8 +7,16 @@ use super::widgets::{Focus, titled};
 use crate::ui::palette::{self, ActionContext, Effect};
 
 /// Bindings that no palette entry carries.
-pub const EXTRA: [(&str, &str); 5] = [
+pub const EXTRA: [(&str, &str); 13] = [
     ("Toggle the right rail", "Ctrl+I"),
+    ("Open the assistant (Ask tab)", "Ctrl+J"),
+    ("Focus the query bar", "Ctrl+F"),
+    ("Edit the path", "Ctrl+L"),
+    ("Refresh the focused tab", "F5 or Ctrl+R"),
+    ("Tag the selection", "T"),
+    ("Categorize the selection", "C"),
+    ("Describe the selection", "D"),
+    ("Remove the selection from the library", "Delete"),
     ("Back in the focused tab", "Alt+Left or mouse back"),
     ("Forward in the focused tab", "Alt+Right or mouse forward"),
     ("Up one level", "Alt+Up"),
