@@ -2,11 +2,12 @@ use crate::{ScanEnvelope, Thumbnail};
 use crossbeam::channel::{Receiver, Sender};
 use eframe::egui::*;
 use egui::style::StyleModifier;
-use humansize::DECIMAL;
 use serde::Serialize;
 use table::FileTableViewer;
 
+pub mod chips;
 pub mod explorer;
+pub mod filters;
 pub mod load;
 pub mod menus;
 pub mod preview_pane;
@@ -94,7 +95,6 @@ pub struct FileExplorer {
     pub file_scan_progress: f32,
     recursive_scan: bool,
     pub scan_done: bool,
-    excluded_term_input: String,
     excluded_terms: Vec<String>,
     pub current_thumb: Thumbnail,
     #[serde(skip)]
@@ -144,13 +144,6 @@ pub struct FileExplorer {
     last_scan_paths: std::collections::HashSet<String>,
     #[serde(skip)]
     last_scan_root: Option<String>,
-    // Temporary text inputs for size filters (MB). Persisted to UiSettings on Apply.
-    #[serde(skip)]
-    pub min_size_mb_input: String,
-    #[serde(skip)]
-    pub max_size_mb_input: String,
-    #[serde(skip)]
-    pub filter_group_name_input: String,
     pub active_filter_group: Option<String>,
     #[serde(skip)]
     filter_groups: Vec<crate::database::FilterGroup>,
@@ -266,7 +259,6 @@ impl FileExplorer {
             file_scan_progress: 0.0,
             recursive_scan: false,
             scan_done: false,
-            excluded_term_input: String::new(),
             excluded_terms: Vec::new(),
             current_thumb: Thumbnail::new(""),
             thumbnail_tx,
@@ -289,9 +281,6 @@ impl FileExplorer {
             last_scan_rows: Vec::new(),
             last_scan_paths: std::collections::HashSet::new(),
             last_scan_root: None,
-            min_size_mb_input: String::new(),
-            max_size_mb_input: String::new(),
-            filter_group_name_input: String::new(),
             active_filter_group: None,
             filter_groups: Vec::new(),
             filter_groups_tx,
@@ -461,60 +450,7 @@ impl FileExplorer {
                 });
                 ui.separator();
             }
-            // Active filter preset summary
-            if let Some(name) = self.active_filter_group.clone() {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("Preset: {}", name)).strong());
-                    let types = format!(
-                        "Types: {}{}{}",
-                        if self.viewer.types_show_images {
-                            "I"
-                        } else {
-                            ""
-                        },
-                        if self.viewer.types_show_videos {
-                            "V"
-                        } else {
-                            ""
-                        },
-                        if self.viewer.types_show_dirs { "D" } else { "" }
-                    );
-                    ui.separator();
-                    ui.label(types);
-                    ui.separator();
-                    let minb = self.viewer.ui_settings.db_min_size_bytes;
-                    let maxb = self.viewer.ui_settings.db_max_size_bytes;
-                    let size_str = match (minb, maxb) {
-                        (None, None) => "Size: any".to_string(),
-                        (Some(mn), None) => {
-                            format!("Size: ≥{}", humansize::format_size(mn, DECIMAL))
-                        }
-                        (None, Some(mx)) => {
-                            format!("Size: ≤{}", humansize::format_size(mx, DECIMAL))
-                        }
-                        (Some(mn), Some(mx)) => format!(
-                            "Size: {}..{}",
-                            humansize::format_size(mn, DECIMAL),
-                            humansize::format_size(mx, DECIMAL)
-                        ),
-                    };
-                    ui.label(size_str);
-                    ui.separator();
-                    ui.label(format!(
-                        "Skip icons: {}",
-                        if self.viewer.ui_settings.filter_skip_icons {
-                            "on"
-                        } else {
-                            "off"
-                        }
-                    ));
-                    if !self.excluded_terms.is_empty() {
-                        ui.separator();
-                        ui.label(format!("Excluded: {}", self.excluded_terms.len()));
-                    }
-                });
-                ui.separator();
-            }
+            chips::show(ui, self);
             self.details_panel(ui);
 
             // Modal password prompt (appears at end of scans or when browsing encrypted archives)
@@ -680,8 +616,8 @@ impl FileExplorer {
         // Build signature (filter text + type toggles + source row count) to avoid unnecessary rebuild work
         // Include last_scan_rows.len() so we recompute when new rows arrive during a scan
         let sig = format!(
-            "{}|i{}|v{}|d{}|n{}",
-            self.viewer.filter,
+            "{:x}|i{}|v{}|d{}|n{}",
+            self.viewer.filter_signature(),
             self.viewer.types_show_images as u8,
             self.viewer.types_show_videos as u8,
             self.viewer.types_show_dirs as u8,
@@ -711,12 +647,14 @@ impl FileExplorer {
             self.recursive_current_page = 0;
         }
         self.recursive_filter_sig = Some(sig.clone());
+        let filter = self.viewer.row_filter();
         let mut out: Vec<Thumbnail> = self
             .last_scan_rows
             .iter()
-            .filter(|r| self.viewer.row_passes_filter(r))
+            .filter(|r| filter.matches(r))
             .cloned()
             .collect();
+        drop(filter);
         // Optional sort (basic keys; can expand)
         if let Some(key) = self.recursive_sort_key {
             match key {

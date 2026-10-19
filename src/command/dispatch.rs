@@ -87,6 +87,9 @@ pub trait CommandSink {
     fn navigate(&mut self, op: NavOp) -> CommandResult;
     /// Opens the database at the configured folder.
     fn connect_database(&mut self) -> CommandResult;
+    fn set_filter(&mut self, filter: &serde_json::Value, replace: bool) -> CommandResult;
+    fn clear_filters(&mut self) -> CommandResult;
+    fn apply_saved_view(&mut self, name: &str) -> CommandResult;
 }
 
 /// Runs one command; an action on an empty set of files is an error, never "all files".
@@ -115,6 +118,10 @@ pub fn dispatch(sink: &mut dyn CommandSink, cmd: AppCommand) -> CommandResult {
         AppCommand::ShowTaskCenter => sink.show_task_center(),
         AppCommand::Navigate { op } => sink.navigate(op),
         AppCommand::ConnectDatabase => sink.connect_database(),
+        AppCommand::SetFilter { filter, replace } => sink.set_filter(&filter, replace),
+        AppCommand::ClearFilters => sink.clear_filters(),
+        AppCommand::ApplySavedView { name } if name.trim().is_empty() => Err(CommandError::invalid("no view name")),
+        AppCommand::ApplySavedView { name } => sink.apply_saved_view(&name),
     }
 }
 
@@ -219,6 +226,15 @@ pub(crate) mod fake {
         fn connect_database(&mut self) -> CommandResult {
             self.done("connect_database".to_string())
         }
+        fn set_filter(&mut self, filter: &serde_json::Value, replace: bool) -> CommandResult {
+            self.done(format!("set_filter {filter} {replace}"))
+        }
+        fn clear_filters(&mut self) -> CommandResult {
+            self.done("clear_filters".to_string())
+        }
+        fn apply_saved_view(&mut self, name: &str) -> CommandResult {
+            self.done(format!("apply_saved_view {name}"))
+        }
     }
 }
 
@@ -245,6 +261,9 @@ mod tests {
             AppCommand::ShowTaskCenter,
             AppCommand::Navigate { op: NavOp::Forward },
             AppCommand::ConnectDatabase,
+            AppCommand::SetFilter { filter: serde_json::json!({"skip_icons": true}), replace: true },
+            AppCommand::ClearFilters,
+            AppCommand::ApplySavedView { name: "Holidays".into() },
         ];
         for cmd in cmds {
             assert!(dispatch(&mut sink, cmd).is_ok());
@@ -266,6 +285,9 @@ mod tests {
                 "task_center",
                 "navigate Forward",
                 "connect_database",
+                "set_filter {\"skip_icons\":true} true",
+                "clear_filters",
+                "apply_saved_view Holidays",
             ]
         );
     }
@@ -280,6 +302,7 @@ mod tests {
         assert_eq!(err.kind, ErrorKind::Invalid);
         assert!(dispatch(&mut sink, AppCommand::AttachToAssistant { paths: vec![] }).is_err());
         assert!(dispatch(&mut sink, AppCommand::Refine { paths: vec![] }).is_err());
+        assert!(dispatch(&mut sink, AppCommand::ApplySavedView { name: "  ".into() }).is_err());
         assert!(sink.calls.is_empty());
     }
 

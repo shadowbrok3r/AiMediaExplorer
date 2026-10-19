@@ -79,6 +79,15 @@ mod tests {
     }
 
     #[test]
+    fn run_takes_filter_commands() {
+        let cmds = startup_commands(&args(&["--run", r#"[{"cmd":"set_filter","filter":{"skip_icons":true},"replace":true},{"cmd":"apply_saved_view","name":"Holidays"},{"cmd":"clear_filters"}]"#, "--devtools", "filters"])).unwrap();
+        assert!(matches!(&cmds[0], AppCommand::SetFilter { filter, replace: true } if filter["skip_icons"] == true));
+        assert!(matches!(&cmds[1], AppCommand::ApplySavedView { name } if name == "Holidays"));
+        assert!(matches!(cmds[2], AppCommand::ClearFilters));
+        assert!(matches!(cmds[3], AppCommand::OpenDevtools { window: DevtoolsWindow::Filters }));
+    }
+
+    #[test]
     fn devtools_accepts_lists_with_dashes_or_underscores() {
         let cmds = startup_commands(&args(&["--devtools", "tasks,command-log", "--devtools=perf,scope"])).unwrap();
         let windows: Vec<_> = cmds.iter().map(|c| match c { AppCommand::OpenDevtools { window } => *window, other => panic!("{other:?}") }).collect();

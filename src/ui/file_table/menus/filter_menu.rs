@@ -1,448 +1,223 @@
-use chrono::{DateTime, Local};
 use eframe::egui::*;
 use egui::containers::menu::{MenuButton, MenuConfig};
 
 use crate::icons::{self, svg};
+use crate::ui::file_table::FileExplorer;
+use crate::ui::file_table::rows::filter::{format_size, parse_date, parse_size, split_tokens};
+use crate::ui::file_table::rows::{DateRange, Tri};
 
-impl crate::ui::file_table::FileExplorer {
-    pub fn filter_menu(&mut self, ui: &mut Ui) {
-        let button = icons::icon_button_widget(ui, svg::FUNNEL, icons::IconSize::Md);
-        let (button_response, _) = MenuButton::from_button(button)
-        .config(MenuConfig::new().close_behavior(PopupCloseBehavior::IgnoreClicks))
-        .ui(ui, |ui| {
-            ui.set_width(300.);
-            ui.vertical_centered(|ui| 
-                ui.heading(RichText::new("Excluded Terms").underline().color(crate::theme::primary(ui)))
-            );
-            ui.add_space(5.);
-            ui.horizontal(|ui| {
-                let resp = TextEdit::singleline(&mut self.excluded_term_input)
-                .hint_text("term")
-                .desired_width(140.)
-                .ui(ui);
+const EDITOR_WIDTH: f32 = 340.0;
 
-                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    resp.request_focus();
-                    let term = self.excluded_term_input.trim().to_ascii_lowercase();
-                    if !term.is_empty() && !self.excluded_terms.iter().any(|t| t == &term) { self.excluded_terms.push(term); }
-                    // Manual change invalidates active preset label
-                    self.active_filter_group = None;
-                    self.excluded_term_input.clear();
-                    // Apply excluded terms immediately to current table (keep directories)
-                    if !self.excluded_terms.is_empty() {
-                        let terms = self.excluded_terms.clone();
-                        self.table.retain(|r| {
-                            if r.file_type == "<DIR>" { return true; }
-                            let lp = r.path.to_ascii_lowercase();
-                            !terms.iter().any(|t| lp.contains(t))
-                        });
-                    }
-                }
-                
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.button("Clear All").clicked() { 
-                        self.excluded_terms.clear();
-                        self.active_filter_group = None;
-                        // Note: clearing does not restore previously filtered rows to keep UX consistent with size filters
-                    }
-                });
-            });
-            ui.separator();
-            ui.add_space(5.);
-            ui.vertical_centered(|ui| 
-                ui.heading(RichText::new("Filter by Date Range").underline().color(crate::theme::primary(ui)))
-            );
-            ui.add_space(5.);
-            ui.horizontal(|ui| {
-                // Parse current settings or default to today (without forcing persistence until user changes)
-                let today = jiff::Zoned::now().date();
-                let mut after_date: jiff::civil::Date = self.viewer.ui_settings
-                    .filter_modified_after
-                    .as_deref()
-                    .and_then(|s| s.parse::<jiff::civil::Date>().ok())
-                    .unwrap_or(today);
-
-                let mut before_date: jiff::civil::Date = self.viewer.ui_settings
-                    .filter_modified_before
-                    .as_deref()
-                    .and_then(|s| s.parse::<jiff::civil::Date>().ok())
-                    .unwrap_or(today);
-
-                let after_id =  format!("{after_date} Start date");
-                let resp_after = egui_extras::DatePickerButton::new(&mut after_date)
-                .id_salt(&after_id)
-                .ui(ui);
-
-                if icons::icon_button(ui, svg::X, "Clear start date").clicked() {
-                    crate::settings::update("filters:clear-start-date", |s| s.filter_modified_after = None);
-                    self.viewer.sync_settings();
-                    self.active_filter_group = None;
-                    self.apply_filters_to_current_table();
-                }
-
-                ui.label("  ->  ");
-
-                let before_id = format!("{before_date} End date");
-                let resp_before = egui_extras::DatePickerButton::new(&mut before_date)
-                .id_salt(&before_id)
-                .ui(ui);
-
-                if icons::icon_button(ui, svg::X, "Clear end date").clicked() {
-                    crate::settings::update("filters:clear-end-date", |s| s.filter_modified_before = None);
-                    self.viewer.sync_settings();
-                    self.active_filter_group = None;
-                    self.apply_filters_to_current_table();
-                }
-
-                if resp_after.changed() {
-                    let picked = after_date.to_string();
-                    crate::settings::update("filters:start-date", |s| s.filter_modified_after = Some(picked));
-                    self.viewer.sync_settings();
-                    self.active_filter_group = None;
-                    self.apply_filters_to_current_table();
-                }
-                if resp_before.changed() {
-                    let picked = before_date.to_string();
-                    crate::settings::update("filters:end-date", |s| s.filter_modified_before = Some(picked));
-                    self.viewer.sync_settings();
-                    self.active_filter_group = None;
-                    self.apply_filters_to_current_table();
-                }
-            });
-
-            ui.horizontal_wrapped(|ui| {
-                let mut remove_idx: Option<usize> = None;
-                for (i, term) in self.excluded_terms.iter().enumerate() {
-                    if icons::small_button(ui, svg::X, term.as_str()).clicked() { remove_idx = Some(i); }
-                }
-                if let Some(i) = remove_idx { 
-                    self.excluded_terms.remove(i);
-                    // Re-apply exclusion after removal (cannot restore already removed rows)
-                    if !self.excluded_terms.is_empty() {
-                        let terms = self.excluded_terms.clone();
-                        self.table.retain(|r| {
-                            if r.file_type == "<DIR>" { return true; }
-                            let lp = r.path.to_ascii_lowercase();
-                            !terms.iter().any(|t| lp.contains(t))
-                        });
-                    }
-                }
-            });
-
-            ui.add_space(5.);
-            ui.separator();
-            ui.add_space(5.);
-
-            ui.vertical_centered(|ui| 
-                ui.heading(RichText::new("Size Filters (KB)").underline().color(crate::theme::primary(ui)))
-            );
-
-            ui.add_space(5.);
-            
-            ui.horizontal(|ui| {
-                ui.label("Min:");
-                let mut min_kb: i64 = self.viewer.ui_settings.db_min_size_bytes
-                    .map(|b| (b / 1024) as i64)
-                    .unwrap_or(0);
-                let mut max_kb: i64 = self.viewer.ui_settings.db_max_size_bytes
-                    .map(|b| (b / 1024) as i64)
-                    .unwrap_or(0);
-                let min_resp = egui::DragValue::new(&mut min_kb).speed(1).range(0..=i64::MAX).suffix(" KB").ui(ui).on_hover_text("Minimum file size in KiB");
-                ui.add_space(20.);
-                ui.label("Max:");
-                let max_resp = egui::DragValue::new(&mut max_kb).speed(10).range(0..=i64::MAX).suffix(" KB").ui(ui).on_hover_text("Maximum file size in KiB (0 = no max)");
-                ui.add_space(5.);
-                let changed = min_resp.changed() || max_resp.changed();
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.button("Clear").on_hover_text("Clear size constraints").clicked() {
-                        self.min_size_mb_input.clear();
-                        self.max_size_mb_input.clear();
-                        crate::settings::update("filters:clear-size", |s| {
-                            s.db_min_size_bytes = None;
-                            s.db_max_size_bytes = None;
-                        });
-                        self.viewer.sync_settings();
-                        self.active_filter_group = None;
-                    }
-                    if changed || ui.button("Apply").clicked() {
-                        let min_b = if min_kb <= 0 { None } else { Some(min_kb as u64 * 1024) };
-                        let max_b = if max_kb <= 0 { None } else { Some(max_kb as u64 * 1024) };
-                        // Enforce min <= max if both set
-                        let (min_b, max_b) = match (min_b, max_b) {
-                            (Some(a), Some(b)) if a > b => (Some(b), Some(a)),
-                            other => other,
-                        };
-                        crate::settings::update("filters:size", |s| {
-                            s.db_min_size_bytes = min_b;
-                            s.db_max_size_bytes = max_b;
-                        });
-                        self.viewer.sync_settings();
-                        self.active_filter_group = None;
-                        // Apply to current table view
-                        let (minb, maxb) = (min_b, max_b);
-                        self.table.retain(|r| {
-                            if r.file_type == "<DIR>" { return true; }
-                            let ok_min = minb.map(|m| r.size >= m).unwrap_or(true);
-                            let ok_max = maxb.map(|m| r.size <= m).unwrap_or(true);
-                            ok_min && ok_max
-                        });
-                    }
-                });
-            });
-
-            ui.add_space(5.);
-            ui.separator();
-            ui.add_space(5.);
-
-            ui.vertical_centered(|ui| 
-                ui.heading(RichText::new("Extension filters").underline().color(crate::theme::primary(ui)))
-            );
-            ui.add_space(5.);
-            ui.vertical(|ui| {
-                let changed_i = ui.checkbox(&mut self.viewer.types_show_images, "Images").changed();
-                let changed_v = ui.checkbox(&mut self.viewer.types_show_videos, "Videos").changed();
-                let changed_d = ui.checkbox(&mut self.viewer.types_show_dirs, "Folders").changed();
-                if changed_i || changed_v || changed_d {
-                    // Immediate effect via RowViewer::filter_row; avoid destructive pruning
-                    self.active_filter_group = None;
-                }
-
-                let mut skip_icons = self.viewer.ui_settings.filter_skip_icons;
-                if ui.checkbox(&mut skip_icons, "Skip likely icons").on_hover_text("Filter out tiny images (.ico, <= 16–64px, and small files)").changed() {
-                    crate::settings::update("filters:skip-icons", |s| s.filter_skip_icons = skip_icons);
-                    self.viewer.sync_settings();
-                    self.active_filter_group = None;
-                    if skip_icons {
-                        // Apply to current table using same heuristic as scanner
-                        let tiny_thresh = self.viewer.ui_settings.db_min_size_bytes.unwrap_or(10 * 1024);
-                        self.table.retain(|r| {
-                            if r.file_type == "<DIR>" { return true; }
-                            // ico extension
-                            let is_ico = std::path::Path::new(&r.path)
-                                .extension()
-                                .and_then(|e| e.to_str())
-                                .map(|s| s.eq_ignore_ascii_case("ico"))
-                                .unwrap_or(false);
-                            if is_ico { return false; }
-                            // Evaluate size (use row.size, fall back to fs)
-                            let mut size_val = r.size;
-                            if size_val == 0 { if let Ok(md) = std::fs::metadata(&r.path) { size_val = md.len(); } }
-                            if size_val > tiny_thresh { return true; }
-                            // Only images: check tiny dims
-                            let is_img = std::path::Path::new(&r.path)
-                                .extension()
-                                .and_then(|e| e.to_str())
-                                .map(|s| s.to_ascii_lowercase())
-                                .map(|ext| crate::is_image(ext.as_str()))
-                                .unwrap_or(false);
-                            if !is_img { return true; }
-                            let tiny_dims = image::ImageReader::open(&r.path)
-                                .ok()
-                                .and_then(|r| r.with_guessed_format().ok())
-                                .and_then(|r| r.into_dimensions().ok())
-                                .map(|(w,h)| w <= 64 && h <= 64)
-                                .unwrap_or(false);
-                            !(size_val <= tiny_thresh && tiny_dims)
-                        });
-                    }
-                }
-            });
-            ui.separator();
-            ui.add_space(5.);
-            ui.vertical_centered(|ui| 
-                ui.heading(RichText::new("Save filters as group").underline().color(crate::theme::primary(ui)))
-            );
-            ui.add_space(5.);
-            ui.horizontal(|ui| {
-                ui.add_sized([180., 22.], TextEdit::singleline(&mut self.filter_group_name_input).hint_text("Group name"));
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let save_clicked = ui.button("Save").clicked();
-                    if save_clicked && !self.filter_group_name_input.trim().is_empty() {
-                        let name = self.filter_group_name_input.trim().to_string();
-                        let include_images = self.viewer.types_show_images;
-                        let include_videos = self.viewer.types_show_videos;
-                        let include_dirs = self.viewer.types_show_dirs;
-                        let skip_icons = self.viewer.ui_settings.filter_skip_icons;
-                        let minb = self.viewer.ui_settings.db_min_size_bytes;
-                        let maxb = self.viewer.ui_settings.db_max_size_bytes;
-                        let excluded_terms = self.excluded_terms.clone();
-                        let tx_groups = self.filter_groups_tx.clone();
-                        tokio::spawn(async move {
-                            let g = crate::database::FilterGroup {
-                                id: None,
-                                name,
-                                include_images,
-                                include_videos,
-                                include_dirs,
-                                skip_icons,
-                                min_size_bytes: minb,
-                                max_size_bytes: maxb,
-                                excluded_terms,
-                                created: None,
-                                updated: None,
-                            };
-                            match crate::database::save_filter_group(g).await {
-                                Ok(_) => {
-                                    // After saving, refresh list
-                                    match crate::database::list_filter_groups().await {
-                                        Ok(groups) => { let _ = tx_groups.try_send(groups); },
-                                        Err(e) => log::error!("list_filter_groups after save failed: {e:?}"),
-                                    }
-                                }
-                                Err(e) => log::error!("save filter group failed: {e:?}"),
-                            }
-                        });
-                        self.filter_group_name_input.clear();
-                    }
-                });            
-            });
-            ui.add_space(5.);
-            ui.separator();
-            ui.add_space(5.);
-            ui.vertical_centered(|ui| 
-                ui.heading(RichText::new("Saved filter groups").underline().color(crate::theme::primary(ui)))
-            );
-            ui.add_space(5.);
-            ui.horizontal(|ui| {
-                ui.label("");
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if icons::icon_button(ui, svg::ARROWS_CLOCKWISE, "Refresh saved groups").clicked() {
-                        let tx = self.filter_groups_tx.clone();
-                        tokio::spawn(async move {
-                            match crate::database::list_filter_groups().await {
-                                Ok(groups) => { let _ = tx.try_send(groups); },
-                                Err(e) => log::error!("list_filter_groups failed: {e:?}"),
-                            }
-                        });
-                    }
-                });
-            });
-            if self.filter_groups.is_empty() {
-                ui.label(RichText::new("No saved groups yet.").weak());
-            } else {
-                egui::ScrollArea::vertical().max_height(250.0).show(ui, |ui| {
-                    let groups = self.filter_groups.clone();
-                    for g in groups.iter() {
-                        ui.horizontal(|ui| {
-                            ui.label(&g.name);
-                            if ui.button("Apply").on_hover_text("Apply this filter group to settings and current table").clicked() {
-                                // Apply toggles and settings
-                                self.viewer.types_show_images = g.include_images;
-                                self.viewer.types_show_videos = g.include_videos;
-                                self.viewer.types_show_dirs = g.include_dirs;
-                                crate::settings::update("filters:apply-group", |s| {
-                                    s.filter_skip_icons = g.skip_icons;
-                                    s.db_min_size_bytes = g.min_size_bytes;
-                                    s.db_max_size_bytes = g.max_size_bytes;
-                                });
-                                self.viewer.sync_settings();
-                                self.excluded_terms = g.excluded_terms.clone();
-                                self.excluded_term_input.clear();
-                                self.active_filter_group = Some(g.name.clone());
-                                // Prune current table with the newly applied filters
-                                self.apply_filters_to_current_table();
-                            }
-                            if ui.button("Delete").on_hover_text("Delete this saved group").clicked() {
-                                let name = g.name.clone();
-                                let name_for_spawn = name.clone();
-                                let tx = self.filter_groups_tx.clone();
-                                let active = self.active_filter_group.clone();
-                                tokio::spawn(async move {
-                                    match crate::database::delete_filter_group_by_name(&name_for_spawn).await {
-                                        Ok(_) => {
-                                            match crate::database::list_filter_groups().await {
-                                                Ok(groups) => { let _ = tx.try_send(groups); },
-                                                Err(e) => log::error!("refresh groups after delete failed: {e:?}"),
-                                            }
-                                        }
-                                        Err(e) => log::error!("delete filter group failed: {e:?}"),
-                                    }
-                                });
-                                if active.as_deref() == Some(&name) { self.active_filter_group = None; }
-                            }
-                        });
-                    }
-                });
-            }
-            
-            if !self.last_scan_rows.is_empty() {
-                ui.separator();
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Restore Last Scan").on_hover_text("Restore last recursive scan results").clicked() {
-                        self.table.replace_all(self.last_scan_rows.iter().cloned());
-                        self.viewer.showing_similarity = false;
-                        self.viewer.similar_scores.clear();
-                        self.scan_done = true;
-                        self.file_scan_progress = 1.0;
-                    }
-                });
-            }
-        });
-        button_response.on_hover_text("Filters");
+/// Single-line box that returns its text when Enter is pressed or focus leaves it; Escape drops the edit.
+fn commit_text(ui: &mut Ui, id: Id, shown: &str, hint: &str, width: f32) -> Option<String> {
+    let mut text: String = ui.data(|d| d.get_temp(id)).unwrap_or_else(|| shown.to_string());
+    let resp = ui.add(TextEdit::singleline(&mut text).id(id.with("edit")).hint_text(hint).desired_width(width));
+    if resp.has_focus() {
+        ui.data_mut(|d| d.insert_temp(id, text.clone()));
     }
-
-    pub fn apply_filters_to_current_table(&mut self) {
-        use crate::utilities::filtering::FiltersExt;
-        // Build a Filters value from UI settings for consistent evaluation
-        let mut filters = crate::Filters::default();
-        filters.include_images = self.viewer.types_show_images;
-        filters.include_videos = self.viewer.types_show_videos;
-        // Archives are not shown in DB table rows normally; keep false
-        filters.include_archives = false;
-        filters.min_size_bytes = self.viewer.ui_settings.db_min_size_bytes;
-        filters.max_size_bytes = self.viewer.ui_settings.db_max_size_bytes;
-        filters.skip_icons = self.viewer.ui_settings.filter_skip_icons;
-        // Date filters from UI
-        filters.modified_after = self.viewer.ui_settings.filter_modified_after.clone();
-        filters.modified_before = self.viewer.ui_settings.filter_modified_before.clone();
-        let include_dirs = self.viewer.types_show_dirs;
-        let excluded_terms = self.excluded_terms.clone();
-        let have_date_filters = filters.modified_after.is_some() || filters.modified_before.is_some();
-
-        self.table.retain(|r| {
-            // Keep directories independent of FiltersExt logic
-            if r.file_type == "<DIR>" { return include_dirs; }
-
-            // Excluded terms (path/filename contains any term)
-            if !excluded_terms.is_empty() {
-                let lp = r.path.to_ascii_lowercase();
-                if excluded_terms.iter().any(|t| lp.contains(t)) { return false; }
-            }
-
-            let path = std::path::Path::new(&r.path);
-            // Quick kind check from extension to mirror scanner behavior
-            let is_archive_file = path.extension()
-                .and_then(|e| e.to_str())
-                .map(|s| s.to_ascii_lowercase())
-                .map(|e| crate::is_archive(e.as_str()))
-                .unwrap_or(false);
-            let kind = if let Some(ext) = path.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()) {
-                if crate::is_image(ext.as_str()) { crate::utilities::types::MediaKind::Image }
-                else if crate::is_video(ext.as_str()) { crate::utilities::types::MediaKind::Video }
-                else if crate::is_archive(ext.as_str()) { crate::utilities::types::MediaKind::Archive }
-                else { crate::utilities::types::MediaKind::Other }
-            } else { crate::utilities::types::MediaKind::Other };
-            if !filters.kind_allowed(&kind, is_archive_file) { return false; }
-
-            // Use FiltersExt to evaluate size and skip_icons heuristics (dates are not applied to DB view here)
-            let size_val = if r.size == 0 {
-                std::fs::metadata(&r.path).ok().map(|m| m.len()).unwrap_or(0)
-            } else { r.size };
-            // Use strict UI variant: still allows small non-image files, but filters tiny icon-like images
-            if !filters.skip_icons_strict_allows(path, size_val) { return false; }
-            if !filters.size_ok(size_val) { return false; }
-            // Apply date filter if active (use filesystem metadata; DB may not have timezone-local timestamps)
-            if have_date_filters {
-                let modified: Option<DateTime<Local>> = std::fs::metadata(&r.path)
-                    .ok()
-                    .and_then(|m| m.modified().ok())
-                    .map(|st| DateTime::<Local>::from(st));
-                if !filters.date_ok(modified, None, /*recursive*/ false) { return false; }
-            }
-            true
-        });
+    if !resp.lost_focus() {
+        return None;
     }
-
+    ui.data_mut(|d| d.remove_temp::<String>(id));
+    (!ui.input(|i| i.key_pressed(Key::Escape))).then_some(text)
 }
 
+/// Box that returns its text when Enter is pressed and keeps the focus for the next entry.
+fn add_text(ui: &mut Ui, id: Id, hint: &str, width: f32) -> Option<String> {
+    let mut text: String = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+    let resp = ui.add(TextEdit::singleline(&mut text).id(id.with("edit")).hint_text(hint).desired_width(width));
+    let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+    if enter {
+        ui.data_mut(|d| d.remove_temp::<String>(id));
+        resp.request_focus();
+        return (!text.trim().is_empty()).then_some(text);
+    }
+    ui.data_mut(|d| d.insert_temp(id, text));
+    None
+}
+
+fn heading(ui: &mut Ui, text: &str) {
+    ui.add_space(4.0);
+    ui.label(RichText::new(text).strong().color(crate::theme::primary(ui)));
+}
+
+fn tri_row(ui: &mut Ui, label: &str, value: &mut Tri, yes: &str, no: &str) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.selectable_value(value, Tri::No, no);
+            ui.selectable_value(value, Tri::Yes, yes);
+            ui.selectable_value(value, Tri::Any, "Any");
+        });
+    });
+}
+
+fn date_edit(ui: &mut Ui, id: Id, bound: &mut Option<String>, hint: &str, err: &mut Option<String>) {
+    let shown = bound.clone().unwrap_or_default();
+    let Some(text) = commit_text(ui, id, &shown, hint, 92.0) else { return };
+    let text = text.trim();
+    if text.is_empty() {
+        *bound = None;
+    } else if parse_date(text).is_some() {
+        *bound = Some(text.to_string());
+    } else {
+        *err = Some(format!("'{text}' is not a date like 2024-01-31"));
+    }
+}
+
+fn date_row(ui: &mut Ui, id: Id, label: &str, range: &mut DateRange, presets: bool, err: &mut Option<String>) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        date_edit(ui, id.with("after"), &mut range.after, "from YYYY-MM-DD", err);
+        ui.label("to");
+        date_edit(ui, id.with("before"), &mut range.before, "to YYYY-MM-DD", err);
+    });
+    if !presets {
+        return;
+    }
+    ui.horizontal(|ui| {
+        let today = chrono::Local::now().date_naive();
+        for (name, days) in [("Last 7 days", 7), ("Last 30 days", 30), ("Last year", 365)] {
+            if ui.small_button(name).clicked() {
+                range.after = Some((today - chrono::Duration::days(days)).format("%Y-%m-%d").to_string());
+                range.before = None;
+            }
+        }
+    });
+}
+
+fn list_add(ui: &mut Ui, id: Id, label: &str, hint: &str, split: bool, list: &mut Vec<String>) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        let width = ui.available_width();
+        if let Some(text) = add_text(ui, id, hint, width) {
+            if split {
+                list.extend(split_tokens(&text));
+            } else {
+                list.push(text.trim().to_string());
+            }
+        }
+    });
+}
+
+/// Like [`list_add`], with a removable button per entry.
+fn entry_list(ui: &mut Ui, id: Id, label: &str, hint: &str, split: bool, list: &mut Vec<String>) {
+    list_add(ui, id, label, hint, split, list);
+    let mut drop: Option<usize> = None;
+    ui.horizontal_wrapped(|ui| {
+        for (i, item) in list.iter().enumerate() {
+            if icons::small_button(ui, svg::X, item.as_str()).on_hover_text("Remove").clicked() {
+                drop = Some(i);
+            }
+        }
+    });
+    if let Some(i) = drop {
+        list.remove(i);
+    }
+}
+
+impl FileExplorer {
+    /// Navbar button that opens the filter editor.
+    pub fn filter_menu(&mut self, ui: &mut Ui) {
+        let button = icons::icon_button_widget(ui, svg::FUNNEL, icons::IconSize::Md);
+        let (response, _) = MenuButton::from_button(button)
+            .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside))
+            .ui(ui, |ui| self.filter_editor(ui, "navbar"));
+        response.on_hover_text("Filters");
+    }
+
+    /// Controls for every condition of the tab's filter; changes take effect at once and rows are never removed.
+    pub fn filter_editor(&mut self, ui: &mut Ui, salt: &str) {
+        ui.set_width(EDITOR_WIDTH);
+        let id = Id::new(("ame_filter_editor", self.viewer.scope, salt));
+        let before = self.filter_spec();
+        let mut spec = before.clone();
+        let mut err: Option<String> = None;
+
+        let max_height = (ui.ctx().content_rect().height() - 160.0).max(160.0);
+        ScrollArea::vertical().max_height(max_height).auto_shrink([false, true]).show(ui, |ui| {
+            heading(ui, "Show");
+            ui.horizontal_wrapped(|ui| {
+                ui.toggle_value(&mut spec.types.images, "Images");
+                ui.toggle_value(&mut spec.types.videos, "Videos");
+                ui.toggle_value(&mut spec.types.dirs, "Folders");
+                ui.toggle_value(&mut spec.types.archives, "Archives");
+                ui.toggle_value(&mut spec.types.other, "Other files");
+            });
+            ui.checkbox(&mut spec.skip_icons, "Skip likely icons").on_hover_text("Hides .ico files and small images that are icon-sized");
+
+            heading(ui, "Text");
+            ui.horizontal(|ui| {
+                ui.label("Search");
+                ui.add(TextEdit::singleline(&mut spec.query).id(id.with("query")).hint_text("name, type, path, tags, category").desired_width(ui.available_width()));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Name");
+                ui.add(TextEdit::singleline(&mut spec.name).id(id.with("name")).hint_text("file name contains").desired_width(ui.available_width()));
+            });
+            list_add(ui, id.with("term"), "Exclude", "text in the path, Enter to add", false, &mut spec.excluded_terms);
+            list_add(ui, id.with("dir"), "Folder", "exclude a folder, Enter to add", false, &mut spec.excluded_dirs);
+
+            heading(ui, "Size and dates");
+            ui.horizontal(|ui| {
+                ui.label("Size");
+                for (side, bound) in [("min", &mut spec.size.min), ("max", &mut spec.size.max)] {
+                    let shown = bound.map(format_size).unwrap_or_default();
+                    if let Some(text) = commit_text(ui, id.with(side), &shown, &format!("{side} e.g. 10 KiB"), 96.0) {
+                        match parse_size(&text) {
+                            Ok(v) => *bound = v,
+                            Err(e) => err = Some(e),
+                        }
+                    }
+                    if side == "min" {
+                        ui.label("to");
+                    }
+                }
+            });
+            date_row(ui, id.with("modified"), "Modified", &mut spec.modified, true, &mut err);
+            date_row(ui, id.with("created"), "Added", &mut spec.created, false, &mut err);
+
+            heading(ui, "Extensions");
+            entry_list(ui, id.with("allow"), "Only", "jpg, png, ... Enter to add", true, &mut spec.ext_allow);
+            list_add(ui, id.with("deny"), "Not", "gif, tmp, ... Enter to add", true, &mut spec.ext_deny);
+
+            heading(ui, "Library");
+            tri_row(ui, "Indexed", &mut spec.indexed, "Yes", "No");
+            tri_row(ui, "Description", &mut spec.description, "Has", "None");
+            tri_row(ui, "CLIP", &mut spec.clip, "Has", "None");
+            tri_row(ui, "Files", &mut spec.offline, "Offline", "Online");
+            entry_list(ui, id.with("category"), "Category", "any of, Enter to add", false, &mut spec.categories);
+            entry_list(ui, id.with("tag"), "Tag", "Enter to add", false, &mut spec.tags);
+            if spec.tags.len() > 1 {
+                ui.checkbox(&mut spec.tags_all, "Match all tags");
+            }
+        });
+        if let Some(e) = &err {
+            ui.colored_label(crate::theme::error(ui), e);
+        }
+        if spec != before {
+            self.set_filter_spec(spec);
+        }
+
+        ui.separator();
+        ui.horizontal_wrapped(|ui| {
+            let differs = self.filters_differ_from_defaults();
+            if ui.add_enabled(differs, Button::new("Make default")).on_hover_text("Use these size, date, icon, extension and folder filters in every new tab and for scans").clicked() {
+                self.make_filters_default();
+            }
+            if ui.button("Reset").on_hover_text("Back to the default filters").clicked() {
+                self.reset_filters();
+            }
+            if ui.button("Clear all").on_hover_text("Remove every filter, the defaults included").clicked() {
+                self.clear_filters();
+            }
+        });
+        if !self.last_scan_rows.is_empty() && ui.button("Restore last scan").on_hover_text("Show the results of the last recursive scan again").clicked() {
+            self.table.replace_all(self.last_scan_rows.iter().cloned());
+            self.viewer.showing_similarity = false;
+            self.viewer.similar_scores.clear();
+            self.scan_done = true;
+            self.file_scan_progress = 1.0;
+        }
+    }
+}

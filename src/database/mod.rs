@@ -177,6 +177,7 @@ pub const SCHEMA_DDL: &str = r#"
         DEFINE FIELD IF NOT EXISTS min_size_bytes ON filter_groups TYPE option<number> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS max_size_bytes ON filter_groups TYPE option<number> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS excluded_terms ON filter_groups TYPE array<string> PERMISSIONS FULL;
+        DEFINE FIELD IF NOT EXISTS spec ON filter_groups TYPE option<string> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS created ON filter_groups TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS updated ON filter_groups TYPE datetime DEFAULT time::now() PERMISSIONS FULL;
         

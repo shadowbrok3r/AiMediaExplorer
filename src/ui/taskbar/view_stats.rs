@@ -13,6 +13,7 @@ pub enum FilterKind {
     SkipIcons,
     Search,
     HiddenTypes,
+    Other,
 }
 
 /// An active filter narrowing the view.

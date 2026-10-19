@@ -3,6 +3,7 @@
 pub mod collections;
 pub mod command_log;
 pub mod db_maintenance;
+pub mod filters;
 pub mod legacy_import;
 pub mod perf;
 pub mod row_store;
@@ -57,6 +58,10 @@ pub fn toggle_scope(ctx: &Context) {
     scope::set_open(ctx, !scope::is_open(ctx));
 }
 
+pub fn toggle_filters(ctx: &Context) {
+    filters::toggle(ctx);
+}
+
 pub fn toggle_tasks(ctx: &Context) {
     tasks::set_open(ctx, !tasks::is_open(ctx));
 }
@@ -85,6 +90,7 @@ pub fn open(ctx: &Context, window: DevtoolsWindow) {
         DevtoolsWindow::Collections => collections::set_open(ctx, true),
         DevtoolsWindow::Video => video::set_open(ctx, true),
         DevtoolsWindow::Scope => scope::set_open(ctx, true),
+        DevtoolsWindow::Filters => filters::set_open(ctx, true),
     }
     ctx.request_repaint();
 }
@@ -103,6 +109,7 @@ pub fn show(ctx: &Context) {
     collections::show(ctx);
     video::show(ctx);
     scope::show(ctx);
+    filters::show(ctx);
 }
 
 #[cfg(test)]
@@ -123,6 +130,7 @@ mod tests {
             DevtoolsWindow::Collections => collections::is_open(ctx),
             DevtoolsWindow::Video => video::is_open(ctx),
             DevtoolsWindow::Scope => scope::is_open(ctx),
+            DevtoolsWindow::Filters => filters::is_open(ctx),
             DevtoolsWindow::ThemePanel => crate::theme::debug_panel::is_open(ctx),
         }
     }
@@ -144,6 +152,7 @@ mod tests {
             DevtoolsWindow::Collections,
             DevtoolsWindow::Video,
             DevtoolsWindow::Scope,
+            DevtoolsWindow::Filters,
         ];
         for w in windows {
             assert!(!is_open(&ctx, w), "{w:?} starts closed");

@@ -145,6 +145,7 @@ pub enum DevtoolsWindow {
     Collections,
     Video,
     Scope,
+    Filters,
 }
 
 /// A move through the history of the focused tab, or the load it is showing.
@@ -246,6 +247,16 @@ pub enum AppCommand {
     Navigate { op: NavOp },
     /// Open the database at the configured folder; the retry of a failed start.
     ConnectDatabase,
+    /// Change the focused tab's filters: `filter` is a JSON object merged into them (`null` turns a part off), or into the defaults when `replace`.
+    SetFilter {
+        filter: serde_json::Value,
+        #[serde(default, skip_serializing_if = "is_false")]
+        replace: bool,
+    },
+    /// Remove every filter of the focused tab, the defaults included.
+    ClearFilters,
+    /// Apply the saved filter view called `name` to the focused tab.
+    ApplySavedView { name: String },
 }
 
 impl AppCommand {
@@ -267,6 +278,9 @@ impl AppCommand {
             Self::ShowTaskCenter => "show_task_center",
             Self::Navigate { .. } => "navigate",
             Self::ConnectDatabase => "connect_database",
+            Self::SetFilter { .. } => "set_filter",
+            Self::ClearFilters => "clear_filters",
+            Self::ApplySavedView { .. } => "apply_saved_view",
         }
     }
 
@@ -367,6 +381,10 @@ mod tests {
             AppCommand::Navigate { op: NavOp::LoadMore },
             AppCommand::ConnectDatabase,
             AppCommand::OpenDevtools { window: DevtoolsWindow::Scope },
+            AppCommand::SetFilter { filter: serde_json::json!({"size": {"min": null, "max": 5242880}, "types": {"videos": false}}), replace: false },
+            AppCommand::SetFilter { filter: serde_json::json!({"tags": ["sun"]}), replace: true },
+            AppCommand::ClearFilters,
+            AppCommand::ApplySavedView { name: "Holidays".into() },
         ]
     }
 
@@ -412,7 +430,7 @@ mod tests {
                 parsed.insert(cmd.name());
             }
         }
-        for name in ["open_scope", "open_rows", "open_tool", "run", "show_settings", "attach_to_assistant", "refine", "toast", "task_update", "clear_selection", "focus_path", "open_devtools", "show_task_center", "navigate", "connect_database"] {
+        for name in ["open_scope", "open_rows", "open_tool", "run", "show_settings", "attach_to_assistant", "refine", "toast", "task_update", "clear_selection", "focus_path", "open_devtools", "show_task_center", "navigate", "connect_database", "set_filter", "clear_filters", "apply_saved_view"] {
             assert!(parsed.contains(name), "the docs have no example for {name}");
         }
     }

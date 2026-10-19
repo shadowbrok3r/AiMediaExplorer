@@ -66,6 +66,7 @@ impl FileExplorer {
 
     /// Brings the view up to date with the rows, the filters and the sort, then settles the selection.
     pub fn sync_view(&mut self) -> Refresh {
+        self.refresh_filter_facts();
         let Self { table, view, selection, viewer, details, row_sync, .. } = self;
         let available = Col::available(viewer.mode, viewer.showing_similarity);
         if view.sort().keys().iter().any(|k| !available.iter().any(|c| c.id() == k.column)) {

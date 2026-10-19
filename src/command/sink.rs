@@ -244,6 +244,21 @@ impl CommandSink for SmartMediaApp {
         let path = self.context.connect_database();
         Ok(format!("opening the database at {path}"))
     }
+
+    fn set_filter(&mut self, filter: &serde_json::Value, replace: bool) -> CommandResult {
+        self.context.active_explorer().apply_filter_patch(filter, replace).map_err(CommandError::invalid)
+    }
+
+    fn clear_filters(&mut self) -> CommandResult {
+        let ex = self.context.active_explorer();
+        let count = ex.filter_spec().chips().len();
+        ex.clear_filters();
+        Ok(format!("cleared {count} filters"))
+    }
+
+    fn apply_saved_view(&mut self, name: &str) -> CommandResult {
+        self.context.active_explorer().apply_saved_view(name).map_err(CommandError::not_found)
+    }
 }
 
 /// Rows describing each failed thumbnail, marked with the failed-thumbnail category.

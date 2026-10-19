@@ -362,3 +362,55 @@ fn a_command_sent_from_another_thread_runs_on_the_next_pump() {
     assert!(rig.toasts().iter().any(|(_, t)| t == "from-thread"));
     with_log(|log| log.clear());
 }
+
+fn sized_row(path: &str, size: u64) -> Thumbnail {
+    let mut t = row(path);
+    t.size = size;
+    t
+}
+
+#[test]
+fn filter_commands_change_the_focused_tab_and_never_remove_its_rows() {
+    let mut rig = Rig::new();
+    {
+        let ex = &mut rig.app.context.file_explorer;
+        ex.table.push(sized_row("/p/small.jpg", 500));
+        ex.table.push(sized_row("/p/big.jpg", 5_000));
+    }
+    let done = dispatch(&mut rig.app, AppCommand::SetFilter { filter: serde_json::json!({"size": {"min": 1000}}), replace: false }).unwrap();
+    assert_eq!(done, "1 active filters");
+    assert_eq!(rig.app.resolve(&Selector::View), vec!["/p/big.jpg"], "a view selector reaches only the listed rows");
+    assert_eq!(rig.app.context.file_explorer.table.len(), 2);
+
+    let err = dispatch(&mut rig.app, AppCommand::SetFilter { filter: serde_json::json!({"size": {"min": "big"}}), replace: false }).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Invalid);
+    assert_eq!(rig.app.resolve(&Selector::View), vec!["/p/big.jpg"], "a rejected filter changes nothing");
+
+    let done = dispatch(&mut rig.app, AppCommand::ClearFilters).unwrap();
+    assert_eq!(done, "cleared 1 filters");
+    assert_eq!(rig.app.resolve(&Selector::View), vec!["/p/small.jpg", "/p/big.jpg"]);
+}
+
+#[test]
+fn a_saved_view_is_applied_by_name_and_an_unknown_name_is_not_found() {
+    let mut rig = Rig::new();
+    let err = dispatch(&mut rig.app, AppCommand::ApplySavedView { name: "Big".into() }).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::NotFound);
+    let mut spec = crate::ui::file_table::rows::FilterSpec::none();
+    spec.size.min = Some(1000);
+    rig.app.context.file_explorer.set_saved_views(vec![crate::ui::file_table::filters::group_from_spec("Big", &spec)]);
+    {
+        let ex = &mut rig.app.context.file_explorer;
+        ex.table.push(sized_row("/p/small.jpg", 500));
+        ex.table.push(sized_row("/p/big.jpg", 5_000));
+    }
+    assert_eq!(dispatch(&mut rig.app, AppCommand::ApplySavedView { name: "big".into() }).unwrap(), "applied view 'Big'");
+    assert_eq!(rig.app.resolve(&Selector::View), vec!["/p/big.jpg"]);
+}
+
+#[test]
+fn the_filters_window_opens_by_command() {
+    let mut rig = Rig::new();
+    rig.app.open_devtools(DevtoolsWindow::Filters).unwrap();
+    assert!(crate::ui::devtools::filters::is_open(&rig.app.egui_ctx));
+}

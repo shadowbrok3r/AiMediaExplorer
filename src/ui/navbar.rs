@@ -242,6 +242,10 @@ impl crate::app::SmartMediaApp {
                 crate::ui::devtools::toggle_scope(ui.ctx());
                 ui.close();
             }
+            if icons::button(ui, svg::FUNNEL, "Filters").clicked() {
+                crate::ui::devtools::toggle_filters(ui.ctx());
+                ui.close();
+            }
         });
 
         ui.separator();

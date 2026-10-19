@@ -115,7 +115,7 @@ impl crate::ui::file_table::FileExplorer {
                         if !dirs.contains(p) { dirs.push(p.clone()); }
                     }
                 });
-                self.apply_filters_to_current_table();
+                self.edit_filters(|spec| spec.excluded_dirs.extend(selected_dirs.iter().cloned()));
                 ui.close();
             }
 
