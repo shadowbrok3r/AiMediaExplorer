@@ -47,6 +47,7 @@ struct Rig {
     app: SmartMediaApp,
     ctx: Context,
     width: f32,
+    height: f32,
     all_engines: bool,
     _fixture: Fixture,
     _runtime: tokio::runtime::EnterGuard<'static>,
@@ -60,12 +61,12 @@ impl Rig {
         let appearance = Appearance::attach(&ctx, None, Arc::new(fixture.store()));
         let chrome = Chrome { frameless, available: true };
         let app = SmartMediaApp::assemble(ctx.clone(), appearance, chrome, FileExplorer::new(true));
-        Self { app, ctx, width, all_engines: false, _fixture: fixture, _runtime: runtime }
+        Self { app, ctx, width, height: 600.0, all_engines: false, _fixture: fixture, _runtime: runtime }
     }
 
     fn frame(&mut self, events: Vec<Event>) -> Frame {
         let input = RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(self.width, 600.0))),
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(self.width, self.height))),
             events,
             ..Default::default()
         };
@@ -241,6 +242,7 @@ fn preferences_and_appearance_ask_for_the_settings_tab_through_the_command() {
 #[test]
 fn submenus_hold_the_rest_of_the_old_menu_actions() {
     let mut rig = Rig::new(true, 1200.0);
+    rig.height = 1400.0;
     let cases: [(&str, &str, &[&str]); 6] = [
         ("File", "Database", &["View Entire Database", "Database backup and restore", "Export backup...", "Import backup...", "Choose database folder..."]),
         ("View", "Tabs", &["File Explorer", "Logs", "AI Refinements"]),
@@ -259,6 +261,21 @@ fn submenus_hold_the_rest_of_the_old_menu_actions() {
             assert!(texts.iter().any(|(t, _)| t == entry), "{menu} > {item} lacks {entry}: {texts:?}");
         }
     }
+}
+
+#[test]
+fn the_devtools_submenu_scrolls_inside_a_short_window() {
+    let mut rig = Rig::new(true, 1200.0);
+    rig.height = 400.0;
+    let open = open_menu(&mut rig, "View", &["Devtools"]);
+    let sub = rig.click(open.text_pos("Devtools") + vec2(6.0, 6.0));
+    let texts = sub.texts();
+    assert!(texts.iter().any(|(t, _)| t == "Icon gallery"));
+    assert!(texts.iter().all(|(t, _)| t != "ZeroClaw usage"), "the last entry is below the fold");
+    let over = texts.iter().find(|(t, _)| t == "Theme panel").map(|(_, at)| *at).unwrap() + vec2(6.0, 6.0);
+    rig.frame(vec![Event::PointerMoved(over)]);
+    let scrolled = (0..4).map(|_| rig.frame(vec![Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: vec2(0.0, -2000.0), phase: egui::TouchPhase::Move, source: egui::MouseWheelSource::Wheel, modifiers: egui::Modifiers::NONE }])).last().unwrap();
+    assert!(scrolled.texts().iter().any(|(t, _)| t == "ZeroClaw usage"), "scrolling reaches the last entry");
 }
 
 #[test]

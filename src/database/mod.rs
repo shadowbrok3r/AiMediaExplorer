@@ -163,7 +163,7 @@ pub const SCHEMA_DDL: &str = r#"
         DEFINE FIELD IF NOT EXISTS last_used_model ON user_settings TYPE option<string> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS session_ref ON assistant_messages TYPE record<assistant_sessions> PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS auto_save_to_database ON user_settings TYPE bool PERMISSIONS FULL;
-        DEFINE FIELD IF NOT EXISTS egui_preferences ON user_settings TYPE object DEFAULT {} PERMISSIONS FULL;
+        DEFINE FIELD OVERWRITE egui_preferences ON user_settings TYPE object DEFAULT ALWAYS {} PERMISSIONS FULL;
 
         DEFINE FIELD IF NOT EXISTS root ON cached_scans TYPE string PERMISSIONS FULL;
         DEFINE FIELD IF NOT EXISTS started ON cached_scans TYPE datetime DEFAULT time::now() PERMISSIONS FULL;

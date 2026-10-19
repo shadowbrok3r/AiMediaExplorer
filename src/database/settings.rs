@@ -436,4 +436,18 @@ mod tests {
         }
         assert_eq!(json.len(), PERSISTED_FIELDS.len());
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_second_content_save_keeps_the_schema_default_of_egui_preferences() {
+        use surrealdb::engine::local::Mem;
+        let db = surrealdb::Surreal::new::<Mem>(()).await.expect("memory database");
+        db.use_ns("test").use_db("test").await.expect("namespace");
+        crate::database::define_schema(&db).await.expect("schema");
+        let mut settings = UiSettings::default();
+        for round in 0..2 {
+            settings.auto_indexing = round == 1;
+            let content: UiSettingsDb = (&settings).into();
+            db.upsert::<Option<UiSettingsDb>>(settings_id()).content::<UiSettingsDb>(content).await.unwrap_or_else(|e| panic!("save {round}: {e}"));
+        }
+    }
 }

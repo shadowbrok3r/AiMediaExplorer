@@ -121,110 +121,115 @@ impl crate::app::SmartMediaApp {
 
     fn devtools_menu(&mut self, ui: &mut Ui) {
         icons::menu_button(ui, svg::WRENCH, "Devtools", |ui| {
-            if icons::button(ui, svg::AME_LOGO, "Icon gallery").clicked() {
-                icons::gallery::toggle(ui.ctx());
-                ui.close();
-            }
-            if icons::button(ui, svg::SLIDERS, "Theme panel").clicked() {
-                crate::theme::debug_panel::toggle(ui.ctx());
-                ui.close();
-            }
-            if icons::button(ui, svg::DATABASE, "Settings store").clicked() {
-                crate::ui::devtools::toggle_settings_store(ui.ctx());
-                ui.close();
-            }
-            if icons::button(ui, svg::SPARKLE, "Wizard").clicked() {
-                crate::ui::devtools::toggle_wizard(ui.ctx());
-                ui.close();
-            }
-            if icons::button(ui, svg::AME_DATABASE, "Database maintenance").clicked() {
-                crate::ui::devtools::toggle_db_maintenance(ui.ctx());
-                ui.close();
-            }
-            if icons::button(ui, svg::FILE_ARROW_DOWN, "Legacy import").clicked() {
-                crate::ui::devtools::toggle_legacy_import(ui.ctx());
-                ui.close();
-            }
-            if icons::button(ui, svg::AME_THUMBNAIL_GRID, "Thumbnail storage").clicked() {
-                crate::ui::devtools::toggle_thumb_storage(ui.ctx());
-                ui.close();
-            }
-            if icons::button(ui, svg::IMAGE, "Thumbnail cache").clicked() {
-                crate::ui::devtools::thumb_cache::toggle(ui.ctx());
-                ui.close();
-            }
-            if icons::button(ui, svg::LIST_CHECKS, "Tasks").clicked() {
-                crate::ui::devtools::toggle_tasks(ui.ctx());
-                ui.close();
-            }
-            if icons::button(ui, svg::TERMINAL_WINDOW, "Command log").clicked() {
-                crate::ui::devtools::toggle_command_log(ui.ctx());
-                ui.close();
-            }
-            if icons::button(ui, svg::GAUGE, "Perf").clicked() {
-                crate::ui::devtools::toggle_perf(ui.ctx());
-                ui.close();
-            }
-            if icons::button(ui, svg::PULSE, "Scale").clicked() {
-                crate::ui::devtools::toggle_scale(ui.ctx());
-                ui.close();
-            }
-            if icons::button(ui, svg::AME_ASSISTANT, "ZeroClaw").clicked() {
-                crate::ui::devtools::toggle_zeroclaw(ui.ctx());
-                ui.close();
-            }
-            if icons::button(ui, svg::LIST_CHECKS, "ZeroClaw jobs").clicked() {
-                crate::ui::devtools::toggle_zc_jobs(ui.ctx());
-                ui.close();
-            }
-            if icons::button(ui, svg::STACK, "Row store").clicked() {
-                crate::ui::devtools::toggle_row_store(ui.ctx());
-                ui.close();
-            }
-            if icons::button(ui, svg::AME_LOGICAL_GROUP, "Collections").clicked() {
-                crate::ui::devtools::toggle_collections(ui.ctx());
-                ui.close();
-            }
-            if icons::button(ui, svg::MAGNIFYING_GLASS, "Query").clicked() {
-                crate::ui::devtools::toggle_query(ui.ctx());
-                ui.close();
-            }
-            if icons::button(ui, svg::LIST_CHECKS, "Browser actions").clicked() {
-                crate::ui::devtools::toggle_browser_actions(ui.ctx());
-                ui.close();
-            }
-            if icons::button(ui, svg::VIDEO_CAMERA, "Video").clicked() {
-                crate::ui::devtools::toggle_video(ui.ctx());
-                ui.close();
-            }
-            if icons::button(ui, svg::SIDEBAR_SIMPLE, "Sidebar").clicked() {
-                crate::ui::devtools::toggle_sidebar(ui.ctx());
-                ui.close();
-            }
-            if icons::button(ui, svg::CLOCK_COUNTER_CLOCKWISE, "Journal").clicked() {
-                crate::ui::devtools::toggle_journal(ui.ctx());
-                ui.close();
-            }
-            if icons::button(ui, svg::TABS, "Workspace").clicked() {
-                crate::ui::devtools::toggle_workspace(ui.ctx());
-                ui.close();
-            }
-            if icons::button(ui, svg::AME_REFINE, "Refine and Image Edit").clicked() {
-                crate::ui::devtools::toggle_refine(ui.ctx());
-                ui.close();
-            }
-            if icons::button(ui, svg::LIST_BULLETS, "Actions").clicked() {
-                crate::ui::devtools::toggle_actions(ui.ctx());
-                ui.close();
-            }
-            if icons::button(ui, svg::AME_MCP, "MCP server").clicked() {
-                crate::ui::devtools::toggle_mcp(ui.ctx());
-                ui.close();
-            }
-            if icons::button(ui, svg::GAUGE, "ZeroClaw usage").clicked() {
-                crate::ui::devtools::toggle_zeroclaw_usage(ui.ctx());
-                ui.close();
-            }
+            // Scrolls when the entries are taller than the window.
+            let max_height = (ui.ctx().content_rect().height() - 90.0).max(160.0);
+            ui.set_max_height(max_height);
+            ScrollArea::vertical().max_height(max_height).show(ui, |ui| {
+                if icons::button(ui, svg::AME_LOGO, "Icon gallery").clicked() {
+                    icons::gallery::toggle(ui.ctx());
+                    ui.close();
+                }
+                if icons::button(ui, svg::SLIDERS, "Theme panel").clicked() {
+                    crate::theme::debug_panel::toggle(ui.ctx());
+                    ui.close();
+                }
+                if icons::button(ui, svg::DATABASE, "Settings store").clicked() {
+                    crate::ui::devtools::toggle_settings_store(ui.ctx());
+                    ui.close();
+                }
+                if icons::button(ui, svg::SPARKLE, "Wizard").clicked() {
+                    crate::ui::devtools::toggle_wizard(ui.ctx());
+                    ui.close();
+                }
+                if icons::button(ui, svg::AME_DATABASE, "Database maintenance").clicked() {
+                    crate::ui::devtools::toggle_db_maintenance(ui.ctx());
+                    ui.close();
+                }
+                if icons::button(ui, svg::FILE_ARROW_DOWN, "Legacy import").clicked() {
+                    crate::ui::devtools::toggle_legacy_import(ui.ctx());
+                    ui.close();
+                }
+                if icons::button(ui, svg::AME_THUMBNAIL_GRID, "Thumbnail storage").clicked() {
+                    crate::ui::devtools::toggle_thumb_storage(ui.ctx());
+                    ui.close();
+                }
+                if icons::button(ui, svg::IMAGE, "Thumbnail cache").clicked() {
+                    crate::ui::devtools::thumb_cache::toggle(ui.ctx());
+                    ui.close();
+                }
+                if icons::button(ui, svg::LIST_CHECKS, "Tasks").clicked() {
+                    crate::ui::devtools::toggle_tasks(ui.ctx());
+                    ui.close();
+                }
+                if icons::button(ui, svg::TERMINAL_WINDOW, "Command log").clicked() {
+                    crate::ui::devtools::toggle_command_log(ui.ctx());
+                    ui.close();
+                }
+                if icons::button(ui, svg::GAUGE, "Perf").clicked() {
+                    crate::ui::devtools::toggle_perf(ui.ctx());
+                    ui.close();
+                }
+                if icons::button(ui, svg::PULSE, "Scale").clicked() {
+                    crate::ui::devtools::toggle_scale(ui.ctx());
+                    ui.close();
+                }
+                if icons::button(ui, svg::AME_ASSISTANT, "ZeroClaw").clicked() {
+                    crate::ui::devtools::toggle_zeroclaw(ui.ctx());
+                    ui.close();
+                }
+                if icons::button(ui, svg::LIST_CHECKS, "ZeroClaw jobs").clicked() {
+                    crate::ui::devtools::toggle_zc_jobs(ui.ctx());
+                    ui.close();
+                }
+                if icons::button(ui, svg::STACK, "Row store").clicked() {
+                    crate::ui::devtools::toggle_row_store(ui.ctx());
+                    ui.close();
+                }
+                if icons::button(ui, svg::AME_LOGICAL_GROUP, "Collections").clicked() {
+                    crate::ui::devtools::toggle_collections(ui.ctx());
+                    ui.close();
+                }
+                if icons::button(ui, svg::MAGNIFYING_GLASS, "Query").clicked() {
+                    crate::ui::devtools::toggle_query(ui.ctx());
+                    ui.close();
+                }
+                if icons::button(ui, svg::LIST_CHECKS, "Browser actions").clicked() {
+                    crate::ui::devtools::toggle_browser_actions(ui.ctx());
+                    ui.close();
+                }
+                if icons::button(ui, svg::VIDEO_CAMERA, "Video").clicked() {
+                    crate::ui::devtools::toggle_video(ui.ctx());
+                    ui.close();
+                }
+                if icons::button(ui, svg::SIDEBAR_SIMPLE, "Sidebar").clicked() {
+                    crate::ui::devtools::toggle_sidebar(ui.ctx());
+                    ui.close();
+                }
+                if icons::button(ui, svg::CLOCK_COUNTER_CLOCKWISE, "Journal").clicked() {
+                    crate::ui::devtools::toggle_journal(ui.ctx());
+                    ui.close();
+                }
+                if icons::button(ui, svg::TABS, "Workspace").clicked() {
+                    crate::ui::devtools::toggle_workspace(ui.ctx());
+                    ui.close();
+                }
+                if icons::button(ui, svg::AME_REFINE, "Refine and Image Edit").clicked() {
+                    crate::ui::devtools::toggle_refine(ui.ctx());
+                    ui.close();
+                }
+                if icons::button(ui, svg::LIST_BULLETS, "Actions").clicked() {
+                    crate::ui::devtools::toggle_actions(ui.ctx());
+                    ui.close();
+                }
+                if icons::button(ui, svg::AME_MCP, "MCP server").clicked() {
+                    crate::ui::devtools::toggle_mcp(ui.ctx());
+                    ui.close();
+                }
+                if icons::button(ui, svg::GAUGE, "ZeroClaw usage").clicked() {
+                    crate::ui::devtools::toggle_zeroclaw_usage(ui.ctx());
+                    ui.close();
+                }
+            });
         });
     }
 
